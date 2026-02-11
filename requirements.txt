@@ -1,4 +1,5 @@
 streamlit
-finmind
+FinMind
 pandas
 requests
+tqdm
