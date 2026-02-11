@@ -6,7 +6,8 @@ import requests
 st.set_page_config(page_title="台股交易決策系統", layout="wide")
 st.title("📈 台股自動交易決策系統")
 
-token = st.text_input("輸入 FinMind Token", type="password")
+import os
+token = os.getenv("FINMIND_TOKEN")
 stock_id = st.text_input("輸入股票代號")
 
 def pick_col(df: pd.DataFrame, candidates: list[str]) -> str:
