@@ -1,0 +1,4 @@
+streamlit
+finmind
+pandas
+requests
