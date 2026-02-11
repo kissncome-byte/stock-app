@@ -4,21 +4,6 @@ import pandas as pd
 import requests
 
 st.set_page_config(page_title="台股交易決策系統", layout="wide")
-# ====== 簡單登入系統 ======
-APP_PASSWORD = os.getenv("APP_PASSWORD")
-
-if "authenticated" not in st.session_state:
-    st.session_state.authenticated = False
-
-if not st.session_state.authenticated:
-    password = st.text_input("請輸入存取密碼", type="password")
-
-    if password == APP_PASSWORD:
-        st.session_state.authenticated = True
-        st.rerun()
-    else:
-        st.stop()
-# ===========================
 
 st.title("📈 台股自動交易決策系統")
 
