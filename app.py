@@ -178,5 +178,5 @@ if st.button("查詢", type="primary"):
         st.write(f"Pivot（前高）：**{pivot:.2f}**")
         st.write(f"Breakout Entry：**{breakout_entry:.2f}**")
         st.write(f"停損出場價：**{breakout_stop:.2f}**")
-        st.write(f"目標出場價：**TP1 {tp1:.2f} / TP2 {tp2:.2f} / TP3 {tp3:.2f}**")}")
+        st.write(f"目標出場價：**TP1 {tp1:.2f} / TP2 {tp2:.2f} / TP3 {tp3:.2f}**"))
 
