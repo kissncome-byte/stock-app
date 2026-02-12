@@ -1,5 +1,6 @@
 streamlit
-FinMind
 pandas
 requests
-tqdm==4.67.1
+finmind
+altair
+numpy
