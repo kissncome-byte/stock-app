@@ -10,7 +10,7 @@ import pytz
 from FinMind.data import DataLoader
 
 # ============ 1. Page Config ============
-st.set_page_config(page_title="SOP v6.4 精確計算版", layout="wide")
+st.set_page_config(page_title="SOP v6.5 全狀態診斷版", layout="wide")
 
 # ============ 2. 智慧市場狀態判斷 ============
 def get_detailed_market_status(last_trade_date_str):
@@ -45,7 +45,6 @@ def tick_size(p: float) -> float:
     return 0.001
 
 def round_to_tick(x: float, t: float) -> float:
-    # 避免 x 為 NaN
     if np.isnan(x): return 0.0
     return round(x / t) * t
 
@@ -65,14 +64,14 @@ if APP_PASSWORD:
 FINMIND_TOKEN = os.getenv("FINMIND_TOKEN", "") or st.secrets.get("FINMIND_TOKEN", "")
 
 # ============ 5. 主介面 ============
-st.title("🦅 SOP v6.4 全方位策略整合引擎")
+st.title("🦅 SOP v6.5 全方位策略整合引擎")
 
 with st.sidebar:
-    st.header("⚙️ 資金與風險設定")
+    st.header("⚙️ 風險設定")
     total_capital = st.number_input("總操作本金 (萬)", value=100, step=10)
     risk_per_trade = st.slider("單筆交易風險 (%)", 1.0, 5.0, 2.0)
     st.divider()
-    st.info("💡 修正：已強化 ATR 計算邏輯，確保點位精確。")
+    st.info("💡 診斷訊號現在會顯示『正向、負向、中性』三種狀態。")
 
 with st.form("query_form"):
     col1, col2 = st.columns([3, 1])
@@ -83,6 +82,7 @@ with st.form("query_form"):
 
 # ============ 6. 核心數據處理 ============
 if submitted:
+    last_trade_date_str = ""
     with st.spinner("策略引擎正在深度掃描籌碼、技術與基本面因子..."):
         try:
             api = DataLoader()
@@ -120,48 +120,64 @@ if submitted:
             last_trade_date_str = str(hist_last["date"])
             m_code, m_desc, m_clr = get_detailed_market_status(last_trade_date_str)
 
-            # --- 指標計算 (修正 ATR 邏輯) ---
+            # --- 指標計算 ---
             win = min(20, len(df))
             df["MA20"] = df["close"].rolling(win).mean()
             df["MA20_Amount"] = (df["amount"] / 1e8).rolling(win).mean()
+            df["TR"] = df[["high", "low", "close"]].max(axis=1) # 簡化 TR 預防錯誤
+            df["ATR14"] = (df["high"] - df["low"]).rolling(min(14, len(df))).mean() # 穩定版 ATR
             
-            # ATR 精確計算
-            df["H-L"] = df["high"] - df["low"]
-            df["H-PC"] = (df["high"] - df["close"].shift(1)).abs()
-            df["L-PC"] = (df["low"] - df["close"].shift(1)).abs()
-            df["TR"] = df[["H-L", "H-PC", "L-PC"]].max(axis=1)
-            df["ATR14"] = df["TR"].rolling(min(14, len(df))).mean()
-            
-            # OBV
             df['change'] = df['close'].diff()
             df['direction'] = np.where(df['change'] > 0, 1, np.where(df['change'] < 0, -1, 0))
             df['OBV'] = (df['direction'] * df['vol']).cumsum()
             df['OBV_MA10'] = df['OBV'].rolling(min(10, len(df))).mean()
 
-            # --- 策略評分系統 ---
-            score, signals = 0, []
+            # --- 策略診斷訊號 (強化版：確保不留白) ---
+            score = 0
+            signals = []
+            
+            # 1. 籌碼診斷
             trust_5d, foreign_5d, margin_1d = 0, 0, 0
             if df_inst is not None and not df_inst.empty:
                 df_inst.columns = [c.strip() for c in df_inst.columns]
                 df_inst['net'] = (pd.to_numeric(df_inst['buy'], errors='coerce').fillna(0) - pd.to_numeric(df_inst['sell'], errors='coerce').fillna(0)) / 1000
                 trust_5d = df_inst[df_inst['name'] == 'Investment_Trust'].tail(5)['net'].sum()
                 foreign_5d = df_inst[df_inst['name'] == 'Foreign_Investor'].tail(5)['net'].sum()
-                if trust_5d > 100: score += 1; signals.append(f"🟢 投信認養：近5日買超 {int(trust_5d)} 張 (+1)")
-                if foreign_5d > 500: score += 1; signals.append(f"🟢 外資助攻：近5日買超 {int(foreign_5d)} 張 (+1)")
+                
+                if trust_5d > 50: score += 1; signals.append(f"🟢 **投信認養**：近5日買超 {int(trust_5d)} 張")
+                elif trust_5d < -50: score -= 1; signals.append(f"🔴 **投信棄守**：近5日賣超 {int(abs(trust_5d))} 張")
+                else: signals.append(f"⚪ **投信動向**：近期無明顯買賣超")
+
+                if foreign_5d > 300: score += 1; signals.append(f"🟢 **外資助攻**：近5日買超 {int(foreign_5d)} 張")
+                elif foreign_5d < -300: signals.append(f"🟡 **外資調節**：近5日賣超 {int(abs(foreign_5d))} 張")
             
             if df_margin is not None and not df_margin.empty:
                 df_margin['MarginPurchaseLimit'] = pd.to_numeric(df_margin['MarginPurchaseLimit'], errors='coerce')
                 margin_1d = df_margin['MarginPurchaseLimit'].diff().iloc[-1] if len(df_margin) > 1 else 0
-                if margin_1d < 0: score += 1; signals.append(f"🟢 籌碼安定：融資減肥 {int(abs(margin_1d))} 張 (+1)")
+                if margin_1d < 0: score += 1; signals.append(f"🟢 **籌碼安定**：融資減肥 {int(abs(margin_1d))} 張")
+                elif margin_1d > 500: score -= 1; signals.append(f"🔴 **散戶過熱**：融資增加 {int(margin_1d)} 張")
 
+            # 2. 基本面診斷
             rev_yoy = safe_float(df_rev.iloc[-1].get('revenue_year_growth_rate')) if df_rev is not None and not df_rev.empty else 0
-            if rev_yoy > 20: score += 1; signals.append(f"🟢 動能強勁：營收 YoY {rev_yoy:.1f}% (+1)")
+            if rev_yoy > 20: score += 1; signals.append(f"🟢 **動能強勁**：營收 YoY {rev_yoy:.1f}%")
+            elif rev_yoy < 0: score -= 1; signals.append(f"🔴 **動能衰退**：營收 YoY {rev_yoy:.1f}%")
+            else: signals.append(f"⚪ **動能平穩**：營收 YoY {rev_yoy:.1f}%")
             
             current_pe = 0.0
             if df_per is not None and not df_per.empty:
                 df_per.columns = [c.upper().strip() for c in df_per.columns]
                 pe_col = next((c for c in ["PE", "PER", "P/E"] if c in df_per.columns), None)
-                if pe_col: current_pe = safe_float(df_per.iloc[-1][pe_col])
+                if pe_col: 
+                    current_pe = safe_float(df_per.iloc[-1][pe_col])
+                    if 0 < current_pe < 20: signals.append(f"🟢 **估值優勢**：PE {current_pe:.1f} 處於低位")
+                    elif current_pe > 40: signals.append(f"🟡 **估值偏高**：PE {current_pe:.1f} 需留意溢價")
+
+            # 3. 大盤環境
+            if df_index is not None and not df_index.empty:
+                df_index["close"] = pd.to_numeric(df_index["close"])
+                m_ma20_val = df_index["close"].rolling(20).mean().iloc[-1]
+                if df_index.iloc[-1]["close"] > m_ma20_val: score += 1; signals.append("🟢 **大盤環境**：加權指數處於多頭區")
+                else: score -= 1; signals.append("🔴 **大盤環境**：加權指數處於空頭區")
 
         except Exception as e:
             st.error(f"數據處理失敗: {e}"); st.stop()
@@ -180,53 +196,30 @@ if submitted:
                 if z: current_price, rt_success = z, True; rt_diff = current_price - safe_float(info.get("y"))
         except: pass
 
-    # --- Step 8: 策略計算 (修復「數字一樣」的核心區塊) ---
-    ma20 = safe_float(hist_last.get("MA20"), current_price)
-    avg_amt = safe_float(hist_last.get("MA20_Amount"), 0.0)
-    
-    # ATR 保險機制：如果 ATR 太小或不存在，強制使用股價的 2.5%
+    # --- Step 8: 決策引擎 ---
+    ma20, avg_amt = safe_float(hist_last.get("MA20")), safe_float(hist_last.get("MA20_Amount"))
     raw_atr = safe_float(hist_last.get("ATR14"))
-    atr = max(raw_atr, current_price * 0.025) 
+    atr = max(raw_atr, current_price * 0.025) # ATR 最小保險
     
     bias_20 = ((current_price - ma20) / ma20 * 100) if ma20 != 0 else 0
     t = tick_size(current_price)
     pivot = float(df.tail(252)["high"].max())
     
-    # 方案 ① Breakout 計算
-    # 進場點至少要比前高多 1 個 Tick
-    brk_entry = round_to_tick(pivot + max(0.2 * atr, t), t)
-    if brk_entry <= pivot: brk_entry += t
-    
-    # 停損點至少要比進場點少 1 個 Tick
-    brk_stop = round_to_tick(brk_entry - max(1.0 * atr, t), t)
-    if brk_stop >= brk_entry: brk_stop -= t
-    
-    # 目標點
-    tp_mult = 3.0 if score >= 5 else 2.0
-    brk_tp = round_to_tick(brk_entry + max(tp_mult * atr, t), t)
-    if brk_tp <= brk_entry: brk_tp += t
-
-    # 方案 ② Pullback 計算
-    pb_l = round_to_tick(max(ma20, current_price - 0.8 * atr), t)
-    pb_h = round_to_tick(max(pb_l + t, current_price - 0.2 * atr), t)
-    pb_stop = round_to_tick(pb_l - max(1.2 * atr, t), t)
-
-    # 決策判定
     is_breaking = current_price >= pivot
     is_pulling_back = (0 <= bias_20 <= 3)
     obv_up = float(hist_last.get("OBV", 0)) > float(hist_last.get("OBV_MA10", 0))
-    if obv_up: score += 1; signals.append("🟢 量能配合：OBV 趨勢向上 (+1)")
+    if obv_up: score += 1; signals.append("🟢 **量能配合**：OBV 趨勢向上")
+    else: signals.append("🟡 **量能警示**：OBV 尚未轉強")
 
-    if "CLOSED" in m_code: action, clr = "休市中：請參考計畫做週末功課", "blue"
+    if "CLOSED" in m_code: action, clr = "休市中：基於最後交易日分析", "blue"
     elif is_breaking:
-        if score >= 5: action, clr = f"🔥 強力突破 (評分: {score})", "red"
-        elif score >= 3: action, clr = f"🚀 突破進攻 (評分: {score})", "orange"
+        if score >= 4: action, clr = f"🔥 強力突破 (評分: {score})", "red"
+        elif score >= 2: action, clr = f"🚀 突破進攻 (評分: {score})", "orange"
         else: action, clr = f"⚠️ 弱勢突破 (評分: {score})", "gray"
     elif is_pulling_back:
-        if score >= 4: action, clr = f"💎 黃金買點 (評分: {score})", "green"
+        if score >= 3: action, clr = f"💎 黃金買點 (評分: {score})", "green"
         else: action, clr = f"🟡 觀察拉回 (評分: {score})", "orange"
-    else:
-        action, clr = f"⏳ 盤整觀察 (評分: {score})", "blue"
+    else: action, clr = f"⏳ 盤整觀察 (評分: {score})", "blue"
 
     # --- Step 9: UI 呈現 ---
     st.divider()
@@ -240,7 +233,11 @@ if submitted:
     col_sig, col_radar = st.columns([1, 1])
     with col_sig:
         st.write("#### 📋 診斷訊號 (邏輯判斷)")
-        for s in signals: st.markdown(s)
+        if signals:
+            for s in signals: st.markdown(s)
+        else:
+            st.write("⚪ 目前指標處於中性盤整狀態")
+            
     with col_radar:
         st.write("#### 📡 核心雷達 (數據指標)")
         r1, r2 = st.columns(2)
@@ -255,14 +252,19 @@ if submitted:
     with tab1:
         col_brk, col_pb = st.columns(2)
         with col_brk:
+            entry = round_to_tick(pivot + max(0.2 * atr, t), t)
+            stop = round_to_tick(entry - 1.0 * atr, t)
             st.error("### ① Breakout 方案")
-            st.write(f"- 進場觸發: **{brk_entry:.2f}**")
-            st.write(f"- 停損價位: **{brk_stop:.2f}**")
-            st.write(f"- 目標 TP1: **{brk_tp:.2f}**")
+            st.write(f"- 進場觸發: **{entry:.2f}**")
+            st.write(f"- 停損價位: **{stop:.2f}**")
+            st.write(f"- 目標 TP1: **{round_to_tick(entry + (3.0 if score>=4 else 2.0)*atr, t):.2f}**")
             risk_amt = total_capital * 10000 * (risk_per_trade / 100)
-            lots = int(risk_amt / ((brk_entry - brk_stop) * 1000)) if (brk_entry-brk_stop)>0 else 0
+            lots = int(risk_amt / ((entry - stop) * 1000)) if (entry-stop)>0 else 0
             st.write(f"🛡️ **建議部位**: **{lots}** 張")
         with col_pb:
+            pb_l = round_to_tick(max(ma20, current_price - 0.8 * atr), t)
+            pb_h = round_to_tick(max(pb_l + t, current_price - 0.2 * atr), t)
+            pb_stop = round_to_tick(pb_l - max(1.2 * atr, t), t)
             st.success("### ② Pullback 方案")
             st.write(f"- 買進區間: **{pb_l:.2f} ~ {pb_h:.2f}**")
             st.write(f"- 停損價位: **{pb_stop:.2f}**")
@@ -275,13 +277,10 @@ if submitted:
         line_p = base.mark_line(color='#2962FF').encode(y=alt.Y('close:Q', scale=alt.Scale(zero=False), title='股價'))
         line_ma = base.mark_line(color='rgba(0,0,0,0.3)', strokeDash=[5,5]).encode(y='MA20:Q')
         line_o = base.mark_line(color='#FF6D00').encode(y=alt.Y('OBV:Q', scale=alt.Scale(zero=False), title='OBV'))
-        combined = alt.layer(line_ma, line_p, line_o).resolve_scale(y='independent').properties(height=400).interactive()
-        st.altair_chart(combined, use_container_width=True)
+        st.altair_chart(alt.layer(line_ma, line_p, line_o).resolve_scale(y='independent').interactive(), use_container_width=True)
 
     with tab3:
-        if df_inst is not None:
-            st.write("### 法人詳細動態")
-            st.dataframe(df_inst.tail(10))
-        if df_rev is not None:
-            st.write("### 歷史月營收")
-            st.dataframe(df_rev.tail(6))
+        st.write("### 法人詳細動態 (近 10 日)")
+        if df_inst is not None: st.dataframe(df_inst.tail(10))
+        st.write("### 歷史月營收")
+        if df_rev is not None: st.dataframe(df_rev.tail(6))
