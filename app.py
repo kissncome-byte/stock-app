@@ -10,7 +10,7 @@ from FinMind.data import DataLoader
 
 # ============ 1. Page Config & Setup ============
 st.set_page_config(
-    page_title="SOP v3.0 全方位操盤系統", 
+    page_title="SOP v3.1 全方位操盤系統", 
     layout="wide",
     initial_sidebar_state="collapsed"
 )
@@ -32,7 +32,6 @@ def safe_float(x, default=None):
     try:
         if x is None or str(x).strip() in ["-", ""]:
             return default
-        # 移除逗號 (例如 "1,000")
         return float(str(x).replace(",", ""))
     except:
         return default
@@ -71,7 +70,7 @@ if not FINMIND_TOKEN:
     st.stop()
 
 # ============ 4. 主介面 ============
-st.title("🦅 SOP v3.0 全方位操盤系統")
+st.title("🦅 SOP v3.1 全方位操盤系統")
 st.caption("大盤濾網 ｜ 籌碼過濾 ｜ 技術進攻 ｜ 基本面防禦")
 
 with st.form("query_form"):
@@ -90,21 +89,21 @@ if submitted:
         st.stop()
 
     start_date = (datetime.now() - timedelta(days=lookback_days)).strftime('%Y-%m-%d')
-    short_start_date = (datetime.now() - timedelta(days=120)).strftime('%Y-%m-%d') # 籌碼抓短一點
+    short_start_date = (datetime.now() - timedelta(days=120)).strftime('%Y-%m-%d') 
 
     # --- Step 1: 抓取數據 (FinMind) ---
-    with st.spinner("📡 正在建立戰情室數據 (大盤、個股、籌碼、營收)..."):
+    with st.spinner("📡 正在建立戰情室數據..."):
         try:
             api = DataLoader()
             api.login_by_token(FINMIND_TOKEN)
 
-            # 1.1 大盤指數 (TAIEX)
+            # 1.1 大盤指數
             df_index = api.taiwan_stock_daily(stock_id='TAIEX', start_date=start_date)
             
             # 1.2 個股價量
             df = api.taiwan_stock_daily(stock_id=stock_id, start_date=start_date)
             
-            # 1.3 三大法人 (修正後的正確函式名稱)
+            # 1.3 三大法人
             df_inst = api.taiwan_stock_institutional_investors(
                 stock_id=stock_id, 
                 start_date=short_start_date
@@ -130,15 +129,48 @@ if submitted:
             st.error(f"FinMind API 連線失敗: {e}")
             st.stop()
 
-    # --- Step 2: 數據前處理與指標計算 ---
+    # --- Step 2: 數據前處理 (修復 KeyError 的關鍵區塊) ---
     
+    # 2.0 欄位名稱標準化與檢查
+    # 移除欄位名稱前後空白
+    df.columns = [c.strip() for c in df.columns]
+    
+    # 檢查是否有成交金額欄位，若無則補 0 (避免 KeyError)
+    if "Trading_Money" not in df.columns:
+        df["Trading_Money"] = 0
+    
+    # 定義重新命名對照表
+    rename_map = {
+        "Trading_Volume": "vol",
+        "Trading_Money": "amount",
+        "close": "close",
+        "max": "high",
+        "min": "low"
+    }
+    
+    # 執行重新命名
+    df = df.rename(columns=rename_map)
+    
+    # 檢查關鍵欄位是否都存在
+    required_cols = ["close", "high", "low", "vol", "amount"]
+    missing_cols = [c for c in required_cols if c not in df.columns]
+    
+    if missing_cols:
+        st.error(f"❌ 資料異常，API 回傳缺少以下欄位: {missing_cols}")
+        st.write("目前可用欄位:", df.columns.tolist())
+        st.stop()
+        
+    # 確保數值格式正確
+    for c in required_cols:
+        df[c] = pd.to_numeric(df[c], errors='coerce')
+
     # 2.1 大盤指標
     market_trend = "未知"
     market_ma20 = 0
     index_5d_change = 0
     
     if df_index is not None and not df_index.empty:
-        df_index["close"] = pd.to_numeric(df_index["close"])
+        df_index["close"] = pd.to_numeric(df_index["close"], errors='coerce')
         df_index["MA20"] = df_index["close"].rolling(20).mean()
         last_idx = df_index.iloc[-1]
         market_ma20 = last_idx["MA20"]
@@ -150,11 +182,7 @@ if submitted:
             prev_idx = df_index.iloc[-6]["close"]
             index_5d_change = ((idx_price - prev_idx) / prev_idx) * 100
 
-    # 2.2 個股技術指標
-    df = df.rename(columns={"Trading_Volume": "vol", "Trading_Money": "amount", "close": "close", "max": "high", "min": "low"})
-    cols = ["close", "high", "low", "vol", "amount"]
-    for c in cols: df[c] = pd.to_numeric(df[c], errors='coerce')
-
+    # 2.2 個股技術指標計算
     df["MA20"] = df["close"].rolling(20).mean()
     df["MA60"] = df["close"].rolling(60).mean()
     
@@ -183,19 +211,17 @@ if submitted:
     high_52w = float(df.tail(252)["high"].max())
     avg_amount = float(hist_last["MA20_Amount"])
 
-    # 2.3 籌碼指標 (投信/融資)
+    # 2.3 籌碼指標
     trust_5d_net = 0
     margin_change_1d = 0
     
     if df_inst is not None and not df_inst.empty:
-        # 確保 buy/sell 是數值
         df_inst['buy'] = pd.to_numeric(df_inst['buy'], errors='coerce').fillna(0)
         df_inst['sell'] = pd.to_numeric(df_inst['sell'], errors='coerce').fillna(0)
         
-        # 篩選投信 (Investment_Trust)
         trust = df_inst[df_inst['name'] == 'Investment_Trust'].copy()
         if not trust.empty:
-            trust['net'] = (trust['buy'] - trust['sell']) / 1000 # 換算張數
+            trust['net'] = (trust['buy'] - trust['sell']) / 1000 
             trust_5d_net = trust.tail(5)['net'].sum()
             
     if df_margin is not None and not df_margin.empty:
@@ -203,13 +229,13 @@ if submitted:
         if len(df_margin) >= 2:
             margin_change_1d = df_margin['MarginPurchaseLimit'].diff().iloc[-1]
 
-    # 2.4 基本面指標 (營收)
+    # 2.4 基本面指標
     rev_yoy = 0
     if df_rev is not None and not df_rev.empty:
         last_rev = df_rev.iloc[-1]
         rev_yoy = safe_float(last_rev.get('revenue_year_growth_rate'), 0)
 
-    # --- Step 3: 即時報價 (MIS) 優先策略 ---
+    # --- Step 3: 即時報價 (MIS) ---
     rt_success = False
     current_price = ref_price
     current_vol = 0
@@ -239,8 +265,6 @@ if submitted:
         pass
 
     # --- Step 4: 綜合計算 ---
-    
-    # 動態 OBV
     if rt_success:
         if current_price > ref_price:
             final_obv = ref_obv + current_vol
@@ -251,10 +275,8 @@ if submitted:
     else:
         final_obv = ref_obv
 
-    # 乖離率
     bias_20 = ((current_price - ma20) / ma20) * 100
     
-    # 相對強度
     if len(df) > 6:
         prev_stock = float(df.iloc[-6]["close"])
         stock_5d_change = ((current_price - prev_stock) / prev_stock) * 100
@@ -263,7 +285,6 @@ if submitted:
         
     is_stronger = stock_5d_change > index_5d_change
 
-    # 關鍵價位
     t = tick_size(current_price)
     pivot = high_52w
     breakout_entry = round_to_tick(pivot + max(0.2 * atr, t), t)
@@ -271,7 +292,6 @@ if submitted:
     pb_high = round_to_tick(max(pb_low, current_price - 0.2 * atr), t)
     
     # --- Step 5: UI 儀表板 ---
-    
     st.markdown("### 📡 戰場環境 (Market Context)")
     m1, m2, m3, m4 = st.columns(4)
     
@@ -290,7 +310,6 @@ if submitted:
 
     st.subheader(f"📊 {stock_id} 綜合分析 (現價 {current_price})")
     
-    # 訊號判定
     signals = []
     
     chip_score = 0
@@ -315,7 +334,6 @@ if submitted:
     elif rev_yoy < -10:
         signals.append("❌ 營收衰退")
 
-    # 總結建議
     if market_trend == "空頭 (Bear)" and not is_stronger:
         final_action = "空手觀望 (大盤差 + 個股弱)"
         action_color = "gray"
@@ -344,7 +362,6 @@ if submitted:
     k3.metric("月營收 YoY", f"{rev_yoy:.1f}%", delta="基本面動能")
     k4.metric("OBV 狀態", "多頭" if obv_up else "空頭", delta=f"預估 {int(final_obv):,}")
 
-    # 圖表
     chart_df = df.tail(120).copy()
     chart_df["date"] = pd.to_datetime(chart_df["date"])
     
