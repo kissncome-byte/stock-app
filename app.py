@@ -147,6 +147,7 @@ if submitted:
             df["MA20"] = df["close"].rolling(20).mean()
 
             # ✅ 成交額（億）：close * vol(張) * 1000(股/張) / 1e8
+            # (依你需求保留公式，假設 FinMind vol 為張數)
             df["MA20_Amount"] = (df["close"] * df["vol"] * 1000 / 1e8).rolling(20).mean()
 
             direction = np.where(df["close"].diff() > 0, 1, np.where(df["close"].diff() < 0, -1, 0))
@@ -261,7 +262,7 @@ if submitted:
                         f"**Setup**: {'✅成立' if setup_ok else '❌不成立'}  |  "
                         f"**Liquidity**: {'✅' if liq_ok else '❌'}  |  "
                         f"**RR**: {rr:.2f} ({'✅' if rr_ok else '❌'} ≥{rr_gate})  |  "
-                        f"**Tradeable**: {'✅YES' if tradeable else '❌NO（預案）'}"
+                        f"**Tradeable**: {'✅YES' if tradeable else '❌NO'}"
                     )
 
                     # 方案永遠給（你要的）
