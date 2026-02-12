@@ -80,6 +80,41 @@ with st.form("query_form"):
     with col2:
         submitted = st.form_submit_button("啟動全方位診斷", type="primary")
 
+def render_plan(container, name, entry, stop, tp1, tp2, rr_gate, setup_ok, accent):
+    R = entry - stop
+    risk_per_share = abs(entry - stop) + slip
+
+    rr = ((tp1 - entry) / R) if R > 0 else 0.0
+    rr_ok = rr >= rr_gate
+
+    tradeable = liq_ok and rr_ok
+    total_lots = int(risk_amt / (risk_per_share * 1000)) if (tradeable and risk_per_share > 0) else 0
+
+    tp1_lots = total_lots // 2
+    runner_lots = total_lots - tp1_lots
+
+    with container:
+        st.markdown(f"### {accent} {name}")
+
+        st.write(
+            f"Setup {'✅' if setup_ok else '❌'} | "
+            f"Liquidity {'✅' if liq_ok else '❌'} | "
+            f"RR {rr:.2f} {'✅' if rr_ok else '❌'} | "
+            f"Tradeable {'✅YES' if tradeable else '❌NO'}"
+        )
+
+        st.write(f"🔹 進場 `{entry:.2f}`  |  🛑 停損 `{stop:.2f}`")
+        st.write(f"🎯 目標1 `{tp1:.2f}`")
+        st.write(f"🚀 目標2 `{tp2:.2f}`")
+
+        m1, m2, m3 = st.columns(3)
+        m1.metric("建議張數", f"{total_lots}")
+        m2.metric("TP1 賣出", f"{tp1_lots}")
+        m3.metric("Runner", f"{runner_lots}")
+
+        if not tradeable:
+            st.caption("⚠️ 目前為預案，未通過 Tradeable。")
+
 # ============ 6. 核心處理 ============
 if submitted:
     with st.spinner("正在執行工業級數據校準與背離偵測..."):
