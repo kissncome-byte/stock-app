@@ -205,9 +205,10 @@ if submitted:
                 st.write(f"Tick {t:g}｜Slip buffer {slip:g}")
                 st.write(f"單筆風險金額 {risk_amt:,.0f} 元")
 
-                        st.divider()
+            st.divider()
             st.subheader("⚔️ 多階層交易計畫")
             col_brk, col_pb = st.columns(2)
+
 
             def breakout_targets(entry: float):
                 tp1 = res_120 if res_120 > entry else res_252
