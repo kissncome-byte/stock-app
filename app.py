@@ -9,10 +9,10 @@ from datetime import datetime, timedelta
 import pytz
 from FinMind.data import DataLoader
 
-# ============ 1. Page Config ============
-st.set_page_config(page_title="SOP v5.5 數據全量版", layout="wide")
+# ============ 1. Page Config (必須在第一行) ============
+st.set_page_config(page_title="SOP v5.6 終極穩定版", layout="wide")
 
-# ============ 2. 智慧市場狀態判斷 ============
+# ============ 2. 智慧市場狀態判斷 (台北時區) ============
 def get_detailed_market_status(last_trade_date_str):
     tz = pytz.timezone('Asia/Taipei')
     now = datetime.now(tz)
@@ -22,12 +22,12 @@ def get_detailed_market_status(last_trade_date_str):
     start_time = datetime.strptime("09:00", "%H:%M").time()
     end_time = datetime.strptime("13:35", "%H:%M").time()
 
-    if weekday >= 5: return "CLOSED_WEEKEND", f"市場休市 (週末)", "gray"
+    if weekday >= 5: return "CLOSED_WEEKEND", "市場休市 (週末)", "gray"
     if today_str != last_trade_date_str and current_time > datetime.strptime("10:00", "%H:%M").time():
-        return "CLOSED_HOLIDAY", f"市場休市 (國定假日)", "gray"
-    if current_time < start_time: return "PRE_MARKET", f"盤前準備中", "blue"
+        return "CLOSED_HOLIDAY", "市場休市 (國定假日)", "gray"
+    if current_time < start_time: return "PRE_MARKET", "盤前準備中", "blue"
     elif start_time <= current_time <= end_time: return "OPEN", "市場交易中", "red"
-    else: return "POST_MARKET", f"今日已收盤", "green"
+    else: return "POST_MARKET", "今日已收盤", "green"
 
 # ============ 3. 輔助函式 ============
 def safe_float(x, default=0.0):
@@ -63,7 +63,7 @@ if APP_PASSWORD:
 FINMIND_TOKEN = os.getenv("FINMIND_TOKEN", "") or st.secrets.get("FINMIND_TOKEN", "")
 
 # ============ 5. 主介面 ============
-st.title("🦅 SOP v5.5 全方位專業操盤系統")
+st.title("🦅 SOP v5.6 全方位專業操盤系統")
 
 with st.sidebar:
     st.header("⚙️ 風險管理設定")
@@ -124,14 +124,13 @@ if submitted:
             win = min(20, len(df))
             df["MA20"] = df["close"].rolling(win).mean()
             df["MA20_Amount"] = (df["amount"] / 1e8).rolling(win).mean()
-            
             df["H-L"] = df["high"] - df["low"]
             df["H-PC"] = (df["high"] - df["close"].shift(1)).abs()
             df["L-PC"] = (df["low"] - df["close"].shift(1)).abs()
             df["TR"] = df[["H-L", "H-PC", "L-PC"]].max(axis=1)
             df["ATR14"] = df["TR"].rolling(min(14, len(df))).mean()
 
-            # --- 籌碼計算 (外資+投信+融資) ---
+            # --- 籌碼計算 ---
             trust_5d, foreign_5d, margin_1d = 0, 0, 0
             if df_inst is not None and not df_inst.empty:
                 df_inst.columns = [c.strip() for c in df_inst.columns]
@@ -151,6 +150,17 @@ if submitted:
                 pe_col = next((c for c in ["PE", "PER", "P/E"] if c in df_per.columns), None)
                 if pe_col: current_pe = safe_float(df_per.iloc[-1][pe_col])
 
+            # --- 大盤指標 ---
+            idx_5d, m_trend, m_ma20 = 0, "未知", 0
+            if df_index is not None and not df_index.empty:
+                df_index["close"] = pd.to_numeric(df_index["close"], errors='coerce')
+                m_ma20 = df_index["close"].rolling(20).mean().iloc[-1]
+                idx_l = df_index.iloc[-1]
+                m_trend = "多頭" if idx_l["close"] > m_ma20 else "空頭"
+                if len(df_index) > 5:
+                    p_idx = df_index.iloc[-6]["close"]
+                    idx_5d = ((idx_l["close"] - p_idx) / p_idx) * 100
+
         except Exception as e:
             st.error(f"數據處理失敗: {e}"); st.stop()
 
@@ -166,8 +176,7 @@ if submitted:
                 info = res[0]
                 z = safe_float(info.get("z")) or safe_float(info.get("y"))
                 if z:
-                    current_price = z
-                    rt_success = True
+                    current_price, rt_success = z, True
                     rt_diff = current_price - safe_float(info.get("y"))
         except: pass
 
@@ -195,7 +204,7 @@ if submitted:
     with top2: st.metric("目前現價", f"{current_price}", delta=f"{rt_diff:.2f}" if rt_success else "昨日收盤")
     with top3: st.subheader(f":{m_clr}[{m_desc}]")
 
-    # 9.1 全量數據列 (把漏掉的都補回來)
+    # 9.1 關鍵數據列
     st.markdown("### 📊 關鍵數據指標")
     d1, d2, d3, d4 = st.columns(4)
     d1.metric("乖離位階", f"{bias_20:.1f}%", delta="黃金買區" if 0 <= bias_20 <= 3 else "觀察")
@@ -210,7 +219,7 @@ if submitted:
     d7.metric("日均成交額", f"{avg_amt:.2f} 億")
     d8.metric("ATR 波動", f"{atr:.2f}")
 
-    # 9.2 綜合診斷訊號
+    # 9.2 系統診斷
     st.markdown("### 🧬 系統診斷")
     sig_a, sig_b, sig_c = st.columns(3)
     if trust_5d > 500 and margin_1d < 0: sig_a.success("🌟 籌碼：投信鎖碼 + 散戶退場")
@@ -257,4 +266,11 @@ if submitted:
         st.altair_chart(alt.layer(line_p, line_ma).interactive(), use_container_width=True)
 
     with tab3:
-        if df_inst is not None: st.write("### 法人詳細動態"), st.dataframe(df_inst.tail(10))
+        # 🛠️ 修正 AttributeError：將 st.write 與 st.dataframe 分開獨立行
+        if df_inst is not None:
+            st.write("### 法人詳細動態 (近 10 日)")
+            st.dataframe(df_inst.tail(10))
+        
+        if df_rev is not None:
+            st.write("### 歷史月營收趨勢")
+            st.dataframe(df_rev.tail(6))
