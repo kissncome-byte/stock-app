@@ -10,7 +10,7 @@ import pytz
 from FinMind.data import DataLoader
 
 # ============ 1. Page Config ============
-st.set_page_config(page_title="SOP v4.0 專業機構版", layout="wide")
+st.set_page_config(page_title="SOP v4.1 穩定專業版", layout="wide")
 
 # ============ 2. 智慧市場狀態判斷 ============
 def get_detailed_market_status(last_trade_date_str):
@@ -32,7 +32,7 @@ def get_detailed_market_status(last_trade_date_str):
 # ============ 3. 輔助函式 ============
 def safe_float(x, default=0.0):
     try:
-        if x is None or str(x).strip() in ["-", ""]: return default
+        if x is None or str(x).strip() in ["-", "", "None"]: return default
         return float(str(x).replace(",", ""))
     except: return default
 
@@ -63,13 +63,13 @@ if APP_PASSWORD:
 FINMIND_TOKEN = os.getenv("FINMIND_TOKEN", "") or st.secrets.get("FINMIND_TOKEN", "")
 
 # ============ 5. 主介面 ============
-st.title("🦅 SOP v4.0 全方位專業操盤系統")
+st.title("🦅 SOP v4.1 全方位專業操盤系統")
 
 with st.sidebar:
     st.header("⚙️ 風險設定")
     total_capital = st.number_input("總操作本金 (萬)", value=100, step=10)
     risk_per_trade = st.slider("單筆交易風險 (%)", 1.0, 5.0, 2.0)
-    st.caption("註：建議單筆風險不超過 2%，即停損時損失本金的 2%。")
+    st.caption("註：單筆風險 2% 代表停損時僅損失本金的 2%。")
 
 with st.form("query_form"):
     col1, col2 = st.columns([3, 1])
@@ -99,13 +99,12 @@ if submitted:
             if df_raw is None or df_raw.empty:
                 st.error("❌ 無法取得歷史資料"); st.stop()
 
-            # --- 數據清洗 ---
+            # --- 數據清洗 (個股) ---
             df = df_raw.copy()
             df.columns = [c.strip() for c in df.columns]
             mapping = {"Trading_Volume": "vol", "Trading_Money": "amount", "max": "high", "min": "low", "close": "close", "date": "date"}
             for old, new in mapping.items():
                 if old in df.columns: df = df.rename(columns={old: new})
-            
             if "amount" not in df.columns: df["amount"] = df["close"] * df["vol"] * 1000
             for c in ["close", "high", "low", "vol", "amount"]:
                 df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0)
@@ -119,12 +118,10 @@ if submitted:
             # --- 指標計算 ---
             df["MA20"] = df["close"].rolling(20).mean()
             df["MA20_Amount"] = (df["amount"] / 1e8).rolling(20).mean()
-            
             df['change'] = df['close'].diff()
             df['direction'] = np.where(df['change'] > 0, 1, np.where(df['change'] < 0, -1, 0))
             df['OBV'] = (df['direction'] * df['vol']).cumsum()
             df['OBV_MA10'] = df['OBV'].rolling(10).mean()
-            
             df["H-L"] = df["high"] - df["low"]
             df["H-PC"] = (df["high"] - df["close"].shift(1)).abs()
             df["L-PC"] = (df["low"] - df["close"].shift(1)).abs()
@@ -134,14 +131,21 @@ if submitted:
             # --- 籌碼計算 (外資+投信) ---
             trust_5d, foreign_5d = 0, 0
             if df_inst is not None and not df_inst.empty:
+                df_inst.columns = [c.strip() for c in df_inst.columns]
                 df_inst['buy'] = pd.to_numeric(df_inst['buy'], errors='coerce').fillna(0)
                 df_inst['sell'] = pd.to_numeric(df_inst['sell'], errors='coerce').fillna(0)
                 df_inst['net'] = (df_inst['buy'] - df_inst['sell']) / 1000
                 trust_5d = df_inst[df_inst['name'] == 'Investment_Trust'].tail(5)['net'].sum()
                 foreign_5d = df_inst[df_inst['name'] == 'Foreign_Investor'].tail(5)['net'].sum()
             
-            # --- 估值計算 ---
-            current_pe = safe_float(df_per.iloc[-1]['PE']) if df_per is not None and not df_per.empty else 0
+            # --- 🛠️ 估值計算 (修復 PE KeyError) ---
+            current_pe = 0.0
+            if df_per is not None and not df_per.empty:
+                # 自動搜尋可能的 PE 欄位名稱
+                df_per.columns = [c.upper().strip() for c in df_per.columns]
+                pe_col = next((c for c in ["PE", "PER", "P/E"] if c in df_per.columns), None)
+                if pe_col:
+                    current_pe = safe_float(df_per.iloc[-1][pe_col])
 
         except Exception as e:
             st.error(f"數據處理失敗: {e}"); st.stop()
@@ -167,28 +171,23 @@ if submitted:
     high_52w = float(df.tail(252)["high"].max())
     t = tick_size(current_price)
     
-    # 計畫計算
     pivot = high_52w
     brk_entry = round_to_tick(pivot + max(0.2 * atr, t), t)
     brk_stop = round_to_tick(brk_entry - 1.0 * atr, t)
     
-    # 風控計算 (核心缺失補齊)
+    # 風控計算
     risk_amount = total_capital * 10000 * (risk_per_trade / 100)
     stop_distance = brk_entry - brk_stop
-    if stop_distance > 0:
-        suggested_lots = int(risk_amount / (stop_distance * 1000))
-    else:
-        suggested_lots = 0
+    suggested_lots = int(risk_amount / (stop_distance * 1000)) if stop_distance > 0 else 0
 
     # --- Step 9: UI 呈現 ---
     st.divider()
     m1, m2, m3, m4 = st.columns(4)
-    m1.metric("大盤趨勢", "多頭" if current_price > ma20 else "空頭", delta=f"PE: {current_pe:.1f}")
+    m1.metric("估值位階", f"PE: {current_pe if current_pe > 0 else 'N/A'}", delta="基本面" if current_pe < 25 else "偏高")
     m2.metric("乖離率 (Bias)", f"{((current_price-ma20)/ma20*100):.1f}%", delta="過熱" if (current_price-ma20)/ma20*100 > 15 else "正常", delta_color="inverse")
     m3.metric("投信 5D", f"{int(trust_5d)} 張")
     m4.metric("外資 5D", f"{int(foreign_5d)} 張")
 
-    # 系統診斷
     f_obv = float(hist_last["OBV"]) + (current_vol if current_price > float(hist_last["close"]) else -current_vol if current_price < float(hist_last["close"]) else 0)
     obv_up = f_obv > float(hist_last["OBV_MA10"])
     
@@ -198,9 +197,7 @@ if submitted:
 
     st.info(f"### 系統診斷：{current_price} (來源: {data_source}) -> :{clr}[**{msg}**]")
 
-    # 交易計畫書
     tab1, tab2, tab3 = st.tabs(["⚔️ 專業交易計畫", "📈 趨勢觀測", "📊 詳細數據"])
-    
     with tab1:
         col_plan, col_risk = st.columns([2, 1])
         with col_plan:
@@ -216,7 +213,7 @@ if submitted:
             st.warning("### 🛡️ 風控建議")
             st.write(f"單筆承擔風險: `${int(risk_amount):,}`")
             st.write(f"建議最大部位: **{suggested_lots}** 張")
-            st.caption("註：這是根據你的本金與停損空間計算出的「科學張數」。")
+            st.caption("註：停損時僅損失設定的風險金額。")
 
     with tab2:
         chart_df = df.tail(100).copy()
