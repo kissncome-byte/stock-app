@@ -10,7 +10,7 @@ import pytz
 from FinMind.data import DataLoader
 
 # ============ 1. Page Config ============
-st.set_page_config(page_title="SOP v6.2 終極穩定版", layout="wide")
+st.set_page_config(page_title="SOP v6.3 視覺修正版", layout="wide")
 
 # ============ 2. 智慧市場狀態判斷 ============
 def get_detailed_market_status(last_trade_date_str):
@@ -63,14 +63,14 @@ if APP_PASSWORD:
 FINMIND_TOKEN = os.getenv("FINMIND_TOKEN", "") or st.secrets.get("FINMIND_TOKEN", "")
 
 # ============ 5. 主介面 ============
-st.title("🦅 SOP v6.2 全方位策略整合引擎")
+st.title("🦅 SOP v6.3 全方位策略整合引擎")
 
 with st.sidebar:
     st.header("⚙️ 資金與風險設定")
     total_capital = st.number_input("總操作本金 (萬)", value=100, step=10)
-    risk_per_trade = st.slider("單筆交易風險 (%)", 1.0, 20.0, 2.0)
+    risk_per_trade = st.slider("單筆交易風險 (%)", 1.0, 5.0, 2.0)
     st.divider()
-    st.info("💡 診斷結論已全面整合籌碼、外資與技術面權重。")
+    st.info("💡 藍線=股價，橘線=OBV，灰色虛線=MA20。")
 
 with st.form("query_form"):
     col1, col2 = st.columns([3, 1])
@@ -81,9 +81,7 @@ with st.form("query_form"):
 
 # ============ 6. 核心數據處理 ============
 if submitted:
-    # 初始化關鍵變數
     last_trade_date_str = ""
-    
     with st.spinner("策略引擎正在深度掃描籌碼、技術與基本面因子..."):
         try:
             api = DataLoader()
@@ -112,13 +110,11 @@ if submitted:
             mapping = {"Trading_Volume": "vol", "Trading_Money": "amount", "max": "high", "min": "low", "close": "close", "date": "date"}
             for old, new in mapping.items():
                 if old in df.columns: df = df.rename(columns={old: new})
-            
             if "amount" not in df.columns: df["amount"] = df["close"] * df["vol"] * 1000
             for c in ["close", "high", "low", "vol", "amount"]:
                 df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0)
             df = df[df['vol'] > 0].copy()
 
-            # 【修復重點】在這裡立即定義 last_trade_date_str
             hist_last = df.iloc[-1]
             last_trade_date_str = str(hist_last["date"])
             m_code, m_desc, m_clr = get_detailed_market_status(last_trade_date_str)
@@ -138,17 +134,12 @@ if submitted:
             df['OBV'] = (df['direction'] * df['vol']).cumsum()
             df['OBV_MA10'] = df['OBV'].rolling(min(10, len(df))).mean()
 
-            # --- 策略評分系統 ---
-            score = 0
-            signals = []
-            
-            # 1. 籌碼因子
+            # --- 策略評分 ---
+            score, signals = 0, []
             trust_5d, foreign_5d, margin_1d = 0, 0, 0
             if df_inst is not None and not df_inst.empty:
                 df_inst.columns = [c.strip() for c in df_inst.columns]
-                df_inst['buy'] = pd.to_numeric(df_inst['buy'], errors='coerce').fillna(0)
-                df_inst['sell'] = pd.to_numeric(df_inst['sell'], errors='coerce').fillna(0)
-                df_inst['net'] = (df_inst['buy'] - df_inst['sell']) / 1000
+                df_inst['net'] = (pd.to_numeric(df_inst['buy']) - pd.to_numeric(df_inst['sell'])) / 1000
                 trust_5d = df_inst[df_inst['name'] == 'Investment_Trust'].tail(5)['net'].sum()
                 foreign_5d = df_inst[df_inst['name'] == 'Foreign_Investor'].tail(5)['net'].sum()
                 if trust_5d > 100: score += 1; signals.append(f"🟢 投信認養：近5日買超 {int(trust_5d)} 張 (+1)")
@@ -160,7 +151,6 @@ if submitted:
                 if margin_1d < 0: score += 1; signals.append(f"🟢 籌碼安定：融資減肥 {int(abs(margin_1d))} 張 (+1)")
                 elif margin_1d > 1000: score -= 1; signals.append(f"🔴 散戶過熱：融資暴增 {int(margin_1d)} 張 (-1)")
 
-            # 2. 基本面因子
             rev_yoy = safe_float(df_rev.iloc[-1].get('revenue_year_growth_rate')) if df_rev is not None and not df_rev.empty else 0
             if rev_yoy > 20: score += 1; signals.append(f"🟢 動能強勁：營收 YoY {rev_yoy:.1f}% (+1)")
             
@@ -172,7 +162,6 @@ if submitted:
                     current_pe = safe_float(df_per.iloc[-1][pe_col])
                     if 0 < current_pe < 25: score += 1; signals.append(f"🟢 估值合理：PE {current_pe:.1f} (+1)")
 
-            # 3. 大盤與技術面
             if df_index is not None and not df_index.empty:
                 df_index["close"] = pd.to_numeric(df_index["close"])
                 m_ma20_val = df_index["close"].rolling(20).mean().iloc[-1]
@@ -239,7 +228,7 @@ if submitted:
         r2.metric("日均成交額", f"{avg_amt:.2f} 億")
 
     st.divider()
-    tab1, tab2, tab3 = st.tabs(["⚔️ 交易計畫書", "📈 趨勢觀測", "📋 詳細數據表"])
+    tab1, tab2, tab3 = st.tabs(["⚔️ 交易計畫書", "📈 趨勢觀測 (藍線:價 / 橘線:量)", "📋 詳細數據表"])
     
     with tab1:
         col_brk, col_pb = st.columns(2)
@@ -258,17 +247,46 @@ if submitted:
             pb_l = round_to_tick(max(ma20, current_price - 0.8 * atr), t)
             pb_h = round_to_tick(max(pb_l, current_price - 0.2 * atr), t)
             st.success("### ② Pullback 方案")
-            st.write(f"- 黃金買區: `{pb_l:.2f}` ~ `{pb_h:.2f}`")
+            st.write(f"- 買進區間: `{pb_l:.2f}` ~ `{pb_h:.2f}`")
             st.write(f"- 停損價位: `{round_to_tick(pb_l - 1.2 * atr, t):.2f}`")
             st.write(f"- 目標價位: `{pivot:.2f}`")
 
     with tab2:
+        # 【修正重點：雙 Y 軸互動圖表】
         chart_df = df.tail(120).copy()
         chart_df["date"] = pd.to_datetime(chart_df["date"])
-        base = alt.Chart(chart_df).encode(x='date:T')
-        line_p = base.mark_line(color='#2962FF').encode(y=alt.Y('close:Q', scale=alt.Scale(zero=False)))
-        line_ma = base.mark_line(color='rgba(0,0,0,0.3)', strokeDash=[5,5]).encode(y='MA20:Q')
-        st.altair_chart(alt.layer(line_p, line_ma).interactive(), use_container_width=True)
+        
+        # 基礎圖表設定
+        base = alt.Chart(chart_df).encode(x=alt.X('date:T', title='日期'))
+        
+        # 1. 股價線 (左軸 - 藍色)
+        line_p = base.mark_line(color='#2962FF', strokeWidth=2).encode(
+            y=alt.Y('close:Q', scale=alt.Scale(zero=False), title='股價 (藍線)'),
+            tooltip=['date', 'close']
+        )
+        
+        # 2. MA20虛線 (左軸 - 灰色)
+        line_ma = base.mark_line(color='rgba(0,0,0,0.3)', strokeDash=[5,5]).encode(
+            y=alt.Y('MA20:Q', scale=alt.Scale(zero=False))
+        )
+        
+        # 3. OBV線 (右軸 - 橘色)
+        line_o = base.mark_line(color='#FF6D00', strokeWidth=2).encode(
+            y=alt.Y('OBV:Q', scale=alt.Scale(zero=False), title='OBV 能量潮 (橘線)'),
+            tooltip=['date', 'OBV']
+        )
+        
+        # 合併並設定 Y 軸獨立 (resolve_scale)
+        combined_chart = alt.layer(
+            line_ma, line_p, line_o
+        ).resolve_scale(
+            y='independent'
+        ).properties(
+            height=400
+        ).interactive()
+        
+        st.altair_chart(combined_chart, use_container_width=True)
+        st.caption("💡 提示：左軸為藍色股價，右軸為橘色 OBV。可使用滑鼠滾輪縮放。")
 
     with tab3:
         if df_inst is not None:
