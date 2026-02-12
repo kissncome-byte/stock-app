@@ -10,9 +10,9 @@ import pytz
 from FinMind.data import DataLoader
 
 # ============ 1. Page Config ============
-st.set_page_config(page_title="SOP v6.1 診斷透明版", layout="wide")
+st.set_page_config(page_title="SOP v6.2 終極穩定版", layout="wide")
 
-# ============ 2. 市場狀態判斷 (台北時區) ============
+# ============ 2. 智慧市場狀態判斷 ============
 def get_detailed_market_status(last_trade_date_str):
     tz = pytz.timezone('Asia/Taipei')
     now = datetime.now(tz)
@@ -63,14 +63,14 @@ if APP_PASSWORD:
 FINMIND_TOKEN = os.getenv("FINMIND_TOKEN", "") or st.secrets.get("FINMIND_TOKEN", "")
 
 # ============ 5. 主介面 ============
-st.title("🦅 SOP v6.1 全方位策略診斷系統")
+st.title("🦅 SOP v6.2 全方位策略整合引擎")
 
 with st.sidebar:
     st.header("⚙️ 資金與風險設定")
     total_capital = st.number_input("總操作本金 (萬)", value=100, step=10)
-    risk_per_trade = st.slider("單筆交易風險 (%)", 1.0, 20.0, 2.0)
+    risk_per_trade = st.slider("單筆交易風險 (%)", 1.0, 5.0, 2.0)
     st.divider()
-    st.info("💡 數據雷達看『數值』，診斷訊號看『邏輯』。")
+    st.info("💡 診斷結論已全面整合籌碼、外資與技術面權重。")
 
 with st.form("query_form"):
     col1, col2 = st.columns([3, 1])
@@ -81,12 +81,15 @@ with st.form("query_form"):
 
 # ============ 6. 核心數據處理 ============
 if submitted:
+    # 初始化關鍵變數
+    last_trade_date_str = ""
+    
     with st.spinner("策略引擎正在深度掃描籌碼、技術與基本面因子..."):
         try:
             api = DataLoader()
             api.login_by_token(FINMIND_TOKEN)
             
-            # 1. 抓取所有維度數據
+            # 1. 抓取數據
             start_date = (datetime.now() - timedelta(days=365)).strftime('%Y-%m-%d')
             short_start = (datetime.now() - timedelta(days=60)).strftime('%Y-%m-%d')
             
@@ -100,19 +103,24 @@ if submitted:
             df_info = api.taiwan_stock_info()
             stock_name = df_info[df_info['stock_id'] == stock_id]['stock_name'].values[0] if not df_info[df_info['stock_id'] == stock_id].empty else "未知股票"
 
+            if df_raw is None or df_raw.empty:
+                st.error("❌ 無法取得歷史資料"); st.stop()
+
             # --- 數據清洗 ---
             df = df_raw.copy()
             df.columns = [c.strip() for c in df.columns]
             mapping = {"Trading_Volume": "vol", "Trading_Money": "amount", "max": "high", "min": "low", "close": "close", "date": "date"}
             for old, new in mapping.items():
                 if old in df.columns: df = df.rename(columns={old: new})
+            
             if "amount" not in df.columns: df["amount"] = df["close"] * df["vol"] * 1000
             for c in ["close", "high", "low", "vol", "amount"]:
                 df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0)
             df = df[df['vol'] > 0].copy()
 
+            # 【修復重點】在這裡立即定義 last_trade_date_str
             hist_last = df.iloc[-1]
-            last_date_str = str(hist_last["date"])
+            last_trade_date_str = str(hist_last["date"])
             m_code, m_desc, m_clr = get_detailed_market_status(last_trade_date_str)
 
             # --- 指標計算 ---
@@ -130,7 +138,7 @@ if submitted:
             df['OBV'] = (df['direction'] * df['vol']).cumsum()
             df['OBV_MA10'] = df['OBV'].rolling(min(10, len(df))).mean()
 
-            # --- 策略診斷邏輯 (透明化) ---
+            # --- 策略評分系統 ---
             score = 0
             signals = []
             
@@ -138,7 +146,9 @@ if submitted:
             trust_5d, foreign_5d, margin_1d = 0, 0, 0
             if df_inst is not None and not df_inst.empty:
                 df_inst.columns = [c.strip() for c in df_inst.columns]
-                df_inst['net'] = (pd.to_numeric(df_inst['buy']) - pd.to_numeric(df_inst['sell'])) / 1000
+                df_inst['buy'] = pd.to_numeric(df_inst['buy'], errors='coerce').fillna(0)
+                df_inst['sell'] = pd.to_numeric(df_inst['sell'], errors='coerce').fillna(0)
+                df_inst['net'] = (df_inst['buy'] - df_inst['sell']) / 1000
                 trust_5d = df_inst[df_inst['name'] == 'Investment_Trust'].tail(5)['net'].sum()
                 foreign_5d = df_inst[df_inst['name'] == 'Foreign_Investor'].tail(5)['net'].sum()
                 if trust_5d > 100: score += 1; signals.append(f"🟢 投信認養：近5日買超 {int(trust_5d)} 張 (+1)")
@@ -160,18 +170,13 @@ if submitted:
                 pe_col = next((c for c in ["PE", "PER", "P/E"] if c in df_per.columns), None)
                 if pe_col: 
                     current_pe = safe_float(df_per.iloc[-1][pe_col])
-                    if 0 < current_pe < 25: score += 1; signals.append(f"🟢 估值合理：PE {current_pe:.1f} 處於安全區 (+1)")
+                    if 0 < current_pe < 25: score += 1; signals.append(f"🟢 估值合理：PE {current_pe:.1f} (+1)")
 
-            # 3. 技術面與大盤
-            ma20, avg_amt, atr = safe_float(hist_last.get("MA20")), safe_float(hist_last.get("MA20_Amount")), safe_float(hist_last.get("ATR14"))
-            obv_up = float(hist_last.get("OBV", 0)) > float(hist_last.get("OBV_MA10", 0))
-            if obv_up: score += 1; signals.append("🟢 量能配合：OBV 趨勢向上 (+1)")
-            
+            # 3. 大盤與技術面
             if df_index is not None and not df_index.empty:
                 df_index["close"] = pd.to_numeric(df_index["close"])
-                m_ma20 = df_index["close"].rolling(20).mean().iloc[-1]
-                idx_l = df_index.iloc[-1]["close"]
-                if idx_l > m_ma20: score += 1; signals.append("🟢 市場環境：大盤處於多頭區 (+1)")
+                m_ma20_val = df_index["close"].rolling(20).mean().iloc[-1]
+                if df_index.iloc[-1]["close"] > m_ma20_val: score += 1; signals.append("🟢 市場環境：大盤多頭區 (+1)")
 
         except Exception as e:
             st.error(f"數據處理失敗: {e}"); st.stop()
@@ -187,20 +192,22 @@ if submitted:
             if res:
                 info = res[0]
                 z = safe_float(info.get("z")) or safe_float(info.get("y"))
-                if z:
-                    current_price, rt_success = z, True
-                    rt_diff = current_price - safe_float(info.get("y"))
+                if z: current_price, rt_success = z, True; rt_diff = current_price - safe_float(info.get("y"))
         except: pass
 
-    # --- Step 8: 決策邏輯 ---
+    # --- Step 8: 決策引擎 ---
+    ma20, avg_amt, atr = safe_float(hist_last.get("MA20")), safe_float(hist_last.get("MA20_Amount")), safe_float(hist_last.get("ATR14"))
     bias_20 = ((current_price - ma20) / ma20 * 100) if ma20 != 0 else 0
     t = tick_size(current_price)
     pivot = float(df.tail(252)["high"].max())
     
     is_breaking = current_price >= pivot
     is_pulling_back = (0 <= bias_20 <= 3)
+    obv_up = float(hist_last.get("OBV", 0)) > float(hist_last.get("OBV_MA10", 0))
+    if obv_up: score += 1; signals.append("🟢 量能配合：OBV 趨勢向上 (+1)")
 
-    if is_breaking:
+    if "CLOSED" in m_code: action, clr = "休市中：請參考計畫做週末功課", "blue"
+    elif is_breaking:
         if score >= 5: action, clr = f"🔥 強力突破 (評分: {score})", "red"
         elif score >= 3: action, clr = f"🚀 突破進攻 (評分: {score})", "orange"
         else: action, clr = f"⚠️ 弱勢突破 (評分: {score})", "gray"
@@ -212,34 +219,27 @@ if submitted:
 
     # --- Step 9: UI 呈現 ---
     st.divider()
-    
-    # 9.1 置頂儀表板
     top1, top2, top3 = st.columns([2, 1, 1])
     with top1: st.header(f"{stock_name} ({stock_id})")
     with top2: st.metric("目前現價", f"{current_price}", delta=f"{rt_diff:.2f}" if rt_success else "昨日收盤")
     with top3: st.subheader(f":{m_clr}[{m_desc}]")
 
-    # 9.2 診斷報告 (核心升級：將數據與邏輯結合)
-    st.info(f"### 🎯 綜合決策結論 -> :{clr}[**{action}**]")
+    st.info(f"### 🎯 策略整合結論 -> :{clr}[**{action}**]")
     
     col_sig, col_radar = st.columns([1, 1])
     with col_sig:
         st.write("#### 📋 診斷訊號 (邏輯判斷)")
         for s in signals: st.markdown(s)
     with col_radar:
-        st.write("#### 📡 核心雷達 (原始數據)")
+        st.write("#### 📡 核心雷達 (數據指標)")
         r1, r2 = st.columns(2)
         r1.metric("投信 5D", f"{int(trust_5d)} 張")
         r1.metric("外資 5D", f"{int(foreign_5d)} 張")
         r2.metric("營收 YoY", f"{rev_yoy:.1f}%")
         r2.metric("日均成交額", f"{avg_amt:.2f} 億")
 
-    # 9.3 交易計畫
     st.divider()
     tab1, tab2, tab3 = st.tabs(["⚔️ 交易計畫書", "📈 趨勢觀測", "📋 詳細數據表"])
-    
-    # 根據評分調整目標
-    tp_mult = 3.0 if score >= 5 else 2.0
     
     with tab1:
         col_brk, col_pb = st.columns(2)
@@ -249,8 +249,7 @@ if submitted:
             st.error("### ① Breakout 方案")
             st.write(f"- 進場觸發: `{entry:.2f}`")
             st.write(f"- 停損價位: `{stop:.2f}`")
-            st.write(f"- 目標價位: `{round_to_tick(entry + tp_mult*atr, t):.2f}`")
-            
+            st.write(f"- 目標 TP1: `{round_to_tick(entry + (3.0 if score>=5 else 2.0)*atr, t):.2f}`")
             risk_amt = total_capital * 10000 * (risk_per_trade / 100)
             lots = int(risk_amt / ((entry - stop) * 1000)) if (entry-stop)>0 else 0
             st.write(f"🛡️ **建議部位**: **{lots}** 張")
@@ -259,7 +258,7 @@ if submitted:
             pb_l = round_to_tick(max(ma20, current_price - 0.8 * atr), t)
             pb_h = round_to_tick(max(pb_l, current_price - 0.2 * atr), t)
             st.success("### ② Pullback 方案")
-            st.write(f"- 買進區間: `{pb_l:.2f}` ~ `{pb_h:.2f}`")
+            st.write(f"- 黃金買區: `{pb_l:.2f}` ~ `{pb_h:.2f}`")
             st.write(f"- 停損價位: `{round_to_tick(pb_l - 1.2 * atr, t):.2f}`")
             st.write(f"- 目標價位: `{pivot:.2f}`")
 
@@ -267,12 +266,14 @@ if submitted:
         chart_df = df.tail(120).copy()
         chart_df["date"] = pd.to_datetime(chart_df["date"])
         base = alt.Chart(chart_df).encode(x='date:T')
-        line_p = base.mark_line(color='#2962FF').encode(y=alt.Y('close:Q', scale=alt.Scale(zero=False), title='股價'))
+        line_p = base.mark_line(color='#2962FF').encode(y=alt.Y('close:Q', scale=alt.Scale(zero=False)))
         line_ma = base.mark_line(color='rgba(0,0,0,0.3)', strokeDash=[5,5]).encode(y='MA20:Q')
         st.altair_chart(alt.layer(line_p, line_ma).interactive(), use_container_width=True)
 
     with tab3:
-        st.write("### 歷史營收")
-        if df_rev is not None: st.dataframe(df_rev.tail(6))
-        st.write("### 融資動態")
-        if df_margin is not None: st.dataframe(df_margin.tail(10))
+        if df_inst is not None:
+            st.write("### 法人詳細動態 (近 10 日)")
+            st.dataframe(df_inst.tail(10))
+        if df_rev is not None:
+            st.write("### 歷史月營收趨勢")
+            st.dataframe(df_rev.tail(6))
