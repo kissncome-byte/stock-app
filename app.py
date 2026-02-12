@@ -68,7 +68,7 @@ st.title("🦅 SOP v6.2 全方位策略整合引擎")
 with st.sidebar:
     st.header("⚙️ 資金與風險設定")
     total_capital = st.number_input("總操作本金 (萬)", value=100, step=10)
-    risk_per_trade = st.slider("單筆交易風險 (%)", 1.0, 5.0, 2.0)
+    risk_per_trade = st.slider("單筆交易風險 (%)", 1.0, 20.0, 2.0)
     st.divider()
     st.info("💡 診斷結論已全面整合籌碼、外資與技術面權重。")
 
