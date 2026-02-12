@@ -10,7 +10,7 @@ import pytz
 from FinMind.data import DataLoader
 
 # ============ 1. Page Config ============
-st.set_page_config(page_title="SOP v3.4 全方位自動化系統", layout="wide")
+st.set_page_config(page_title="SOP v3.5 全方位自動化系統", layout="wide")
 
 # ============ 2. 市場狀態判斷 (台北時區) ============
 def get_market_status():
@@ -66,7 +66,7 @@ FINMIND_TOKEN = os.getenv("FINMIND_TOKEN", "") or st.secrets.get("FINMIND_TOKEN"
 
 # ============ 5. 主介面 ============
 market_code, market_desc, market_color = get_market_status()
-st.title("🦅 SOP v3.4 全方位操盤系統")
+st.title("🦅 SOP v3.5 全方位操盤系統")
 st.subheader(f"市場狀態：:{market_color}[{market_desc}]")
 
 with st.form("query_form"):
@@ -90,49 +90,31 @@ if submitted:
             # 1. 抓取歷史資料
             start_date = (datetime.now() - timedelta(days=365)).strftime('%Y-%m-%d')
             df_raw = api.taiwan_stock_daily(stock_id=stock_id, start_date=start_date)
-            df_index = api.taiwan_stock_daily(stock_id='TAIEX', start_date=start_date)
             
             if df_raw is None or df_raw.empty:
                 st.error("❌ 無法取得個股歷史資料，請確認代號是否正確。")
                 st.stop()
 
-            # --- 🛠️ 強化版數據清洗 (解決 'amount' 錯誤) ---
+            # --- 數據清洗 ---
             df = df_raw.copy()
-            df.columns = [c.strip() for c in df.columns] # 去除欄位空白
+            df.columns = [c.strip() for c in df.columns]
             
-            # 建立欄位對照表 (FinMind 原始名稱 -> 程式內部名稱)
             mapping = {
-                "Trading_Volume": "vol",
-                "Trading_Money": "amount",
-                "max": "high",
-                "min": "low",
-                "close": "close",
-                "open": "open",
-                "date": "date"
+                "Trading_Volume": "vol", "Trading_Money": "amount",
+                "max": "high", "min": "low", "close": "close", "date": "date"
             }
+            for old, new in mapping.items():
+                if old in df.columns: df = df.rename(columns={old: new})
             
-            # 逐一檢查並重新命名
-            for old_col, new_col in mapping.items():
-                if old_col in df.columns:
-                    df = df.rename(columns={old_col: new_col})
+            if "amount" not in df.columns: df["amount"] = df["close"] * df["vol"] * 1000
             
-            # 防呆：如果還是沒有 amount，用 (收盤價 * 成交量 * 1000) 估算
-            if "amount" not in df.columns:
-                df["amount"] = df["close"] * df["vol"] * 1000
-            
-            # 確保關鍵數值欄位為 float
             num_cols = ["close", "high", "low", "vol", "amount"]
             for c in num_cols:
                 df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0)
 
-            # 過濾掉無成交量的日子 (假日)
             df = df[df['vol'] > 0].copy()
 
-            if len(df) < 60:
-                st.error("❌ 有效交易日數據不足 60 筆。")
-                st.stop()
-
-            # --- 指標計算 ---
+            # 指標計算
             df["MA20"] = df["close"].rolling(20).mean()
             df["Amount_Yi"] = df["amount"] / 1e8
             df["MA20_Amount"] = df["Amount_Yi"].rolling(20).mean()
@@ -142,17 +124,13 @@ if submitted:
             df['OBV'] = (df['direction'] * df['vol']).cumsum()
             df['OBV_MA10'] = df['OBV'].rolling(10).mean()
             
-            df["H-L"] = df["high"] - df["low"]
-            df["H-PC"] = (df["high"] - df["close"].shift(1)).abs()
-            df["L-PC"] = (df["low"] - df["close"].shift(1)).abs()
+            df["H-L"] = df["high"] - df["low"], df["H-PC"] = (df["high"] - df["close"].shift(1)).abs(), df["L-PC"] = (df["low"] - df["close"].shift(1)).abs()
             df["TR"] = df[["H-L", "H-PC", "L-PC"]].max(axis=1)
             df["ATR14"] = df["TR"].rolling(14).mean()
 
             hist_last = df.iloc[-1]
             
-            # 2. 抓取籌碼與基本面 (放在後面，避免影響主流程)
-            short_start = (datetime.now() - timedelta(days=60)).strftime('%Y-%m-%d')
-            df_inst = api.taiwan_stock_institutional_investors(stock_id=stock_id, start_date=short_start)
+            # 2. 抓取營收
             df_rev = api.taiwan_stock_month_revenue(stock_id=stock_id, start_date=(datetime.now() - timedelta(days=200)).strftime('%Y-%m-%d'))
 
         except Exception as e:
@@ -160,9 +138,7 @@ if submitted:
             st.stop()
 
     # --- Step 7: 自動判斷數據源 ---
-    rt_success = False
-    current_price = float(hist_last["close"])
-    current_vol = 0
+    rt_success, current_price, current_vol = False, float(hist_last["close"]), 0
     data_source_label = "歷史收盤數據"
 
     if market_code != "WEEKEND":
@@ -170,38 +146,28 @@ if submitted:
             ts = int(time.time() * 1000)
             url = f"https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=tse_{stock_id}.tw|otc_{stock_id}.tw&json=1&delay=0&_={ts}"
             r = requests.get(url, timeout=3)
-            res_data = r.json().get("msgArray", [])
-            if res_data:
-                info = res_data[0]
+            res = r.json().get("msgArray", [])
+            if res:
+                info = res[0]
                 z = safe_float(info.get("z")) or safe_float(info.get("y"))
                 v = safe_float(info.get("v"))
                 if z:
-                    current_price = z
-                    current_vol = v or 0
-                    rt_success = True
+                    current_price, current_vol, rt_success = z, v or 0, True
                     data_source_label = "即時報價系統"
-        except:
-            pass
+        except: pass
 
     # --- Step 8: 數據融合 ---
     if not rt_success or current_vol == 0:
-        final_vol = float(hist_last["vol"])
-        final_amount_yi = float(hist_last["Amount_Yi"])
-        final_obv = float(hist_last["OBV"])
+        final_vol, final_amount_yi, final_obv = float(hist_last["vol"]), float(hist_last["Amount_Yi"]), float(hist_last["OBV"])
     else:
         final_vol = current_vol
         final_amount_yi = (current_price * current_vol * 1000) / 1e8
-        if current_price > float(hist_last["close"]):
-            final_obv = float(hist_last["OBV"]) + current_vol
-        elif current_price < float(hist_last["close"]):
-            final_obv = float(hist_last["OBV"]) - current_vol
-        else:
-            final_obv = float(hist_last["OBV"])
+        if current_price > float(hist_last["close"]): final_obv = float(hist_last["OBV"]) + current_vol
+        elif current_price < float(hist_last["close"]): final_obv = float(hist_last["OBV"]) - current_vol
+        else: final_obv = float(hist_last["OBV"])
 
     # --- Step 9: 指標判定與 UI ---
-    ma20 = float(hist_last["MA20"])
-    avg_amount_20 = float(hist_last["MA20_Amount"])
-    atr = float(hist_last["ATR14"])
+    ma20, avg_amount_20, atr = float(hist_last["MA20"]), float(hist_last["MA20_Amount"]), float(hist_last["ATR14"])
     high_52w = float(df.tail(252)["high"].max())
     bias_20 = ((current_price - ma20) / ma20) * 100
     
@@ -218,17 +184,12 @@ if submitted:
     c4.metric("乖離率 (Bias)", f"{bias_20:.1f}%")
 
     obv_up = final_obv > float(hist_last["OBV_MA10"])
-    
-    if market_code == "WEEKEND":
-        status_msg, status_color = "市場休市：顯示最後交易日結果", "blue"
-    elif current_price >= breakout_entry and obv_up:
-        status_msg, status_color = "🔥 強勢突破訊號", "red"
-    elif pb_low <= current_price <= pb_high:
-        status_msg, status_color = "🟢 處於 Pullback 買進區", "green"
-    else:
-        status_msg, status_color = "🟡 盤整觀察中", "orange"
+    if market_code == "WEEKEND": msg, clr = "市場休市：顯示最後交易日結果", "blue"
+    elif current_price >= breakout_entry and obv_up: msg, clr = "🔥 強勢突破訊號", "red"
+    elif pb_low <= current_price <= pb_high: msg, clr = "🟢 處於 Pullback 買進區", "green"
+    else: msg, clr = "🟡 盤整觀察中", "orange"
 
-    st.info(f"### 系統診斷：:{status_color}[**{status_msg}**]")
+    st.info(f"### 系統診斷：:{clr}[**{msg}**]")
 
     # 圖表
     chart_df = df.tail(100).copy()
@@ -238,10 +199,18 @@ if submitted:
     line_o = base.mark_line(color='#FF6D00').encode(y=alt.Y('OBV:Q', scale=alt.Scale(zero=False), title='OBV'))
     st.altair_chart(alt.layer(line_p, line_o).resolve_scale(y='independent').interactive(), use_container_width=True)
 
-    t1, t2 = st.tabs(["⚔️ 交易計畫", "📊 營收數據"])
-    with t1:
+    # 交易計畫 Tab
+    tab1, tab2 = st.tabs(["⚔️ 交易計畫", "📊 營收數據"])
+    with tab1:
         col_a, col_b = st.columns(2)
         with col_a: st.success(f"**拉回買進區**: {pb_low} ~ {pb_high}")
         with col_b: st.error(f"**突破進場點**: {breakout_entry}")
-    with t2:
+    
+    with tab2:
+        # 🛠️ 修正 AttributeError 的關鍵位置：拆分指令
+        if df_rev is not None and not df_rev.empty:
+            st.write("### 最近月營收趨勢")
+            st.dataframe(df_rev.tail(6))
+        else:
+            st.warning("暫無營收數據")
         if df_rev is not None: st.write("最近月營收趨勢"), st.dataframe(df_rev.tail(5))
