@@ -205,7 +205,7 @@ if submitted:
                 st.write(f"Tick {t:g}｜Slip buffer {slip:g}")
                 st.write(f"單筆風險金額 {risk_amt:,.0f} 元")
 
-            st.divider()
+                        st.divider()
             st.subheader("⚔️ 多階層交易計畫")
             col_brk, col_pb = st.columns(2)
 
@@ -219,31 +219,44 @@ if submitted:
                 tp2 = res_120 if res_120 > tp1 else res_252
                 return tp1, tp2
 
-with col_brk:
-    box1 = st.container(border=True)
-    render_plan(
-        box1,
-        "突破方案",
-        entry_brk, stop_brk,
-        round_to_tick(tp1_brk, t),
-        round_to_tick(tp2_brk, t),
-        2.0,
-        breakout_setup,
-        "🚀"
-    )
+            # 先算兩套方案的 entry/stop/targets（避免變數未定義）
+            entry_brk = round_to_tick(pivot + t, t)
+            stop_brk  = round_to_tick(entry_brk - 1.5 * atr - slip, t)
+            tp1_brk, tp2_brk = breakout_targets(entry_brk)
+            tp1_brk = round_to_tick(tp1_brk, t)
+            tp2_brk = round_to_tick(tp2_brk, t)
 
-with col_pb:
-    box2 = st.container(border=True)
-    render_plan(
-        box2,
-        "拉回方案",
-        entry_pb, stop_pb,
-        round_to_tick(tp1_pb, t),
-        round_to_tick(tp2_pb, t),
-        3.0,
-        pullback_setup,
-        "💎"
-    )
+            entry_pb = round_to_tick(ma20_val + 0.2 * atr, t)
+            stop_pb  = round_to_tick(entry_pb - 1.2 * atr - slip, t)
+            tp1_pb, tp2_pb = pullback_targets(entry_pb)
+            tp1_pb = round_to_tick(tp1_pb, t)
+            tp2_pb = round_to_tick(tp2_pb, t)
+
+            # ✅ 這兩個 with 必須縮排在 try 區塊內，而且在 columns 之下
+            with col_brk:
+                box1 = st.container(border=True)
+                render_plan(
+                    box1,
+                    "突破方案",
+                    entry_brk, stop_brk,
+                    tp1_brk, tp2_brk,
+                    2.0,
+                    breakout_setup,
+                    "🚀"
+                )
+
+            with col_pb:
+                box2 = st.container(border=True)
+                render_plan(
+                    box2,
+                    "拉回方案",
+                    entry_pb, stop_pb,
+                    tp1_pb, tp2_pb,
+                    3.0,
+                    pullback_setup,
+                    "💎"
+                )
+
 
 
             st.divider()
