@@ -219,52 +219,32 @@ if submitted:
                 tp2 = res_120 if res_120 > tp1 else res_252
                 return tp1, tp2
 
-            def render_plan(name, entry, stop, tp1, tp2, rr_gate, setup_ok, color_hex):
-                R = (entry - stop)
-                risk_per_share = abs(entry - stop) + slip
-                rr = ((tp1 - entry) / R) if R > 0 else 0.0
-                rr_ok = rr >= rr_gate
-                tradeable = liq_ok and rr_ok
-                total_lots = int(risk_amt / (risk_per_share * 1000)) if (tradeable and risk_per_share > 0) else 0
-                tp1_lots = total_lots // 2
-                runner_lots = total_lots - tp1_lots
+with col_brk:
+    box1 = st.container(border=True)
+    render_plan(
+        box1,
+        "突破方案",
+        entry_brk, stop_brk,
+        round_to_tick(tp1_brk, t),
+        round_to_tick(tp2_brk, t),
+        2.0,
+        breakout_setup,
+        "🚀"
+    )
 
-                with st.container():
-                    st.markdown(f"<div style='border:2px solid {color_hex}; padding:15px; border-radius:10px;'>", unsafe_allow_html=True)
-                    st.markdown(f"<h3 style='color:{color_hex};'>{name}</h3>", unsafe_allow_html=True)
+with col_pb:
+    box2 = st.container(border=True)
+    render_plan(
+        box2,
+        "拉回方案",
+        entry_pb, stop_pb,
+        round_to_tick(tp1_pb, t),
+        round_to_tick(tp2_pb, t),
+        3.0,
+        pullback_setup,
+        "💎"
+    )
 
-                    st.write(
-                        f"Setup {'✅' if setup_ok else '❌'}  |  "
-                        f"Liquidity {'✅' if liq_ok else '❌'}  |  "
-                        f"RR {rr:.2f} {'✅' if rr_ok else '❌'}  |  "
-                        f"Tradeable {'✅YES' if tradeable else '❌NO'}"
-                    )
-
-                    st.write(f"🔹 進場 `{entry:.2f}`  |  停損 `{stop:.2f}`")
-                    st.write(f"🎯 目標1 `{tp1:.2f}`")
-                    st.write(f"🚀 目標2 `{tp2:.2f}`")
-
-                    m1, m2, m3 = st.columns(3)
-                    m1.metric("建議張數", f"{total_lots}")
-                    m2.metric("TP1 賣出", f"{tp1_lots}")
-                    m3.metric("Runner", f"{runner_lots}")
-
-                    if not tradeable:
-                        st.caption("⚠️ 目前為預案，未通過 Tradeable。")
-
-                    st.markdown("</div>", unsafe_allow_html=True)
-
-            with col_brk:
-                entry_brk = round_to_tick(pivot + t, t)
-                stop_brk = round_to_tick(entry_brk - 1.5 * atr - slip, t)
-                tp1_brk, tp2_brk = breakout_targets(entry_brk)
-                render_plan("突破方案", entry_brk, stop_brk, round_to_tick(tp1_brk, t), round_to_tick(tp2_brk, t), 2.0, breakout_setup, "#ff4b4b")
-
-            with col_pb:
-                entry_pb = round_to_tick(ma20_val + 0.2 * atr, t)
-                stop_pb = round_to_tick(entry_pb - 1.2 * atr - slip, t)
-                tp1_pb, tp2_pb = pullback_targets(entry_pb)
-                render_plan("拉回方案", entry_pb, stop_pb, round_to_tick(tp1_pb, t), round_to_tick(tp2_pb, t), 3.0, pullback_setup, "#00c853")
 
             st.divider()
             chart_df = df.tail(120).copy()
