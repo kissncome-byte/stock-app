@@ -4,3 +4,4 @@ requests
 finmind
 altair
 numpy
+pytz
