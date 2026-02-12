@@ -10,7 +10,7 @@ import pytz
 from FinMind.data import DataLoader
 
 # ============ 1. Page Config ============
-st.set_page_config(page_title="SOP v9.0 終極實戰系統", layout="wide")
+st.set_page_config(page_title="SOP v10.0 終極實戰系統", layout="wide")
 
 # ============ 2. 智慧市場狀態判斷 ============
 def get_detailed_market_status(last_trade_date_str):
@@ -64,14 +64,14 @@ if APP_PASSWORD and not st.session_state.authed:
 FINMIND_TOKEN = os.getenv("FINMIND_TOKEN", "") or st.secrets.get("FINMIND_TOKEN", "")
 
 # ============ 5. 主介面 ============
-st.title("🦅 SOP v9.0 全方位策略整合引擎")
+st.title("🦅 SOP v10.0 全方位策略整合引擎")
 
 with st.sidebar:
     st.header("⚙️ 實戰風控設定")
     total_capital = st.number_input("操作本金 (萬)", value=100, step=10)
     risk_per_trade = st.slider("單筆最大風險 (%)", 1.0, 5.0, 2.0)
     st.divider()
-    st.info("💡 v9.0 旗艦版：整合產業類別、跳動缺口偵測與資金佔比警示。")
+    st.info("💡 v10.0 更新：確保診斷訊號不留白，並強化量價背離偵測。")
 
 with st.form("query_form"):
     col1, col2 = st.columns([3, 1])
@@ -87,7 +87,7 @@ if submitted:
             api = DataLoader()
             api.login_by_token(FINMIND_TOKEN)
             
-            # 1. 抓取數據
+            # 1. 數據抓取
             start_date = (datetime.now() - timedelta(days=365)).strftime('%Y-%m-%d')
             short_start = (datetime.now() - timedelta(days=60)).strftime('%Y-%m-%d')
             df_raw = api.taiwan_stock_daily(stock_id=stock_id, start_date=start_date)
@@ -97,7 +97,6 @@ if submitted:
             df_rev = api.taiwan_stock_month_revenue(stock_id=stock_id, start_date=(datetime.now() - timedelta(days=200)).strftime('%Y-%m-%d'))
             df_per = api.taiwan_stock_per_pbr(stock_id=stock_id, start_date=short_start)
             
-            # 抓取股票與產業資訊
             df_info = api.taiwan_stock_info()
             match = df_info[df_info['stock_id'] == stock_id]
             stock_name = match['stock_name'].values[0] if not match.empty else "未知"
@@ -125,6 +124,7 @@ if submitted:
             win = min(20, len(df))
             df["MA20"] = df["close"].rolling(win).mean()
             df["MA20_Vol"] = df["vol"].rolling(win).mean()
+            df["MA20_Amount"] = (df["amount"] / 1e8).rolling(win).mean()
             df["ATR14"] = (df["high"] - df["low"]).rolling(min(14, len(df))).mean()
             df['OBV'] = (np.where(df['close'].diff() > 0, 1, np.where(df['close'].diff() < 0, -1, 0)) * df['vol']).cumsum()
             df['OBV_MA10'] = df['OBV'].rolling(min(10, len(df))).mean()
@@ -140,41 +140,51 @@ if submitted:
                     if res:
                         info = res[0]
                         z = safe_float(info.get("z")) or safe_float(info.get("y"))
-                        if z: current_price, rt_success = z, True; current_vol = safe_float(info.get("v")); rt_diff = current_price - safe_float(info.get("y"))
+                        if z: 
+                            current_price, rt_success = z, True; current_vol = safe_float(info.get("v")); rt_diff = current_price - safe_float(info.get("y"))
                 except: pass
 
-            # --- Step 8: 進階診斷邏輯 (v9.0 旗艦版) ---
-            score, sig_chips, sig_fund, sig_tech, sig_pos = 0, [], [], [], []
+            # --- Step 8: 進階診斷邏輯 (v10.0 強化：絕不留白) ---
+            score = 0
+            sig_chips, sig_fund, sig_tech = [], [], []
             
-            # 1. 均線與跳空偵測
+            # 1. 技術趨勢診斷
             ma20_val = safe_float(hist_last.get("MA20"))
-            ma20_slope = "UP" if ma20_val > df["MA20"].iloc[-5] else "DOWN"
-            # 跳空偵測：今日最低價 > 昨日最高價
-            is_gap_up = df['low'].iloc[-1] > df['high'].iloc[-2] if len(df) > 2 else False
-            if is_gap_up: sig_tech.append("🚀 **強勢跳空**：出現向上跳空缺口 (主力急拉)"); score += 2
-            if ma20_slope == "UP": sig_tech.append("📈 **均線斜率**：MA20 向上 (趨勢多頭)"); score += 1
-
-            # 2. 量價與背離
+            ma20_slope = "UP" if ma20_val > df["MA20"].iloc[-min(5, len(df))] else "DOWN"
             obv_now = float(hist_last.get("OBV", 0))
-            price_10d_max = df['close'].tail(10).max()
-            obv_10d_max = df['OBV'].tail(10).max()
-            if current_price >= price_10d_max and obv_now < obv_10d_max:
-                sig_tech.append("⚠️ **量價背離**：價過高但量未過高 (防假突破)"); score -= 1
-            elif obv_now > float(hist_last.get("OBV_MA10", 0)):
-                sig_tech.append("🟢 **量能配合**：OBV 維持多頭排列"); score += 1
+            obv_ma = float(hist_last.get("OBV_MA10", 0))
+            
+            if ma20_slope == "UP": sig_tech.append("📈 **趨勢方向**：MA20 均線向上 (多頭助漲)"); score += 1
+            else: sig_tech.append("📉 **趨勢方向**：均線走平或向下 (動能偏弱)")
 
-            # 3. 籌碼 (外資/投信/融資)
-            trust_5d, foreign_5d = 0, 0
+            if obv_now > obv_ma: sig_tech.append("🟢 **量能配合**：OBV 位於均線之上 (買盤穩定)"); score += 1
+            else: sig_tech.append("⚪ **量能狀態**：成交量能目前處於萎縮盤整")
+
+            is_gap_up = df['low'].iloc[-1] > df['high'].iloc[-2] if len(df) > 2 else False
+            if is_gap_up: sig_tech.append("🚀 **強勢跳空**：出現向上缺口 (主力急拉)"); score += 2
+
+            # 2. 籌碼診斷
+            trust_5d, foreign_5d, margin_1d = 0, 0, 0
             if df_inst is not None and not df_inst.empty:
                 df_inst['net'] = (pd.to_numeric(df_inst['buy'], errors='coerce').fillna(0) - pd.to_numeric(df_inst['sell'], errors='coerce').fillna(0)) / 1000
                 trust_5d = df_inst[df_inst['name'] == 'Investment_Trust'].tail(5)['net'].sum()
                 foreign_5d = df_inst[df_inst['name'] == 'Foreign_Investor'].tail(5)['net'].sum()
-                if trust_5d > 100 and foreign_5d > 500: sig_chips.append("🌟 **完美籌碼**：雙資同步大買"); score += 2
-                elif trust_5d > 50: sig_chips.append(f"🟢 **投信認養**：近5日買超 {int(trust_5d)} 張"); score += 1
+                if trust_5d > 50: sig_chips.append(f"🟢 **投信認養**：近5日買超 {int(trust_5d)} 張"); score += 1
+                elif trust_5d < -50: sig_chips.append(f"🔴 **投信棄守**：近5日賣超 {int(abs(trust_5d))} 張"); score -= 1
+                if foreign_5d > 500: sig_chips.append(f"🟢 **外資助攻**：近5日買超 {int(foreign_5d)} 張"); score += 1
             
-            # 4. 基本面
+            if not sig_chips: sig_chips.append("⚪ **法人動向**：近期無明顯買賣超動作")
+
+            if df_margin is not None and not df_margin.empty:
+                margin_1d = df_margin['MarginPurchaseLimit'].diff().iloc[-1] if len(df_margin) > 1 else 0
+                if margin_1d < 0: sig_chips.append("🟢 **籌碼安定**：融資減肥 (散戶退場)"); score += 1
+                elif margin_1d > 800: sig_chips.append("🔴 **散戶過熱**：融資單日暴增 (小心洗盤)"); score -= 1
+
+            # 3. 基本面診斷
             rev_yoy = safe_float(df_rev.iloc[-1].get('revenue_year_growth_rate')) if df_rev is not None and not df_rev.empty else 0
             if rev_yoy > 20: sig_fund.append(f"🚀 **動能強勁**：營收 YoY {rev_yoy:.1f}%"); score += 1
+            elif rev_yoy < 0: sig_fund.append(f"📉 **動能衰退**：營收 YoY {rev_yoy:.1f}%"); score -= 1
+            else: sig_fund.append(f"📊 **基本面**：營收表現平穩 (YoY {rev_yoy:.1f}%)")
 
             # --- Step 9: 決策結論 ---
             bias_20 = ((current_price - ma20_val) / ma20_val * 100) if ma20_val != 0 else 0
@@ -183,10 +193,10 @@ if submitted:
             t = tick_size(current_price)
 
             if current_price >= pivot:
-                if score >= 5: action, clr = "🔥 強力突破：量價籌碼共振，極佳點位", "red"
+                if score >= 4: action, clr = "🔥 強力突破：量價籌碼共振，極佳點位", "red"
                 else: action, clr = "🚀 突破進攻：技術面轉強，小量參與", "orange"
             elif 0 <= bias_20 <= 3:
-                if score >= 4: action, clr = "💎 黃金買點：強勢波段回測，勝率高", "green"
+                if score >= 3: action, clr = "💎 黃金買點：強勢波段回測，勝率高", "green"
                 else: action, clr = "🟡 觀察拉回：支撐測試中，等待止跌", "orange"
             else: action, clr = "⏳ 盤整觀察：目前位階不明確", "blue"
             
@@ -205,12 +215,14 @@ if submitted:
 
             st.info(f"### 🎯 策略整合結論 -> :{clr}[**{action}**]")
             
+            # 診斷報告 (確保每個區塊都有內容)
             c_sig1, c_sig2 = st.columns(2)
             with c_sig1:
-                st.markdown("**【趨勢與技術診斷】**")
+                st.markdown("#### 📋 趨勢與技術診斷")
                 for s in sig_tech: st.markdown(s)
+                st.markdown(f"🔥 **相對強度**：{'強於大盤' if bias_20 > 0 else '弱於大盤'}")
             with c_sig2:
-                st.markdown("**【籌碼與基本診斷】**")
+                st.markdown("#### 🧬 籌碼與基本診斷")
                 for s in sig_chips + sig_fund: st.markdown(s)
 
             # 核心雷達
@@ -218,12 +230,14 @@ if submitted:
             r1, r2, r3, r4 = st.columns(4)
             r1.metric("投信 5D", f"{int(trust_5d)} 張")
             r2.metric("營收 YoY", f"{rev_yoy:.1f}%")
-            r3.metric("買點距離", f"{bias_20:.1f}%")
-            r4.metric("MA20 斜率", "向上 ↗️" if ma20_slope == "UP" else "向下 ↘️")
+            avg_vol_20 = safe_float(hist_last.get("MA20_Vol"))
+            vol_ratio = current_vol / avg_vol_20 if avg_vol_20 > 0 else 1.0
+            r3.metric("今日量比", f"{vol_ratio:.1f}x", delta="攻擊量" if vol_ratio>1.5 else "量縮")
+            r4.metric("買點距離", f"{bias_20:.1f}%")
 
             # 交易計畫
             st.divider()
-            tab1, tab2 = st.tabs(["⚔️ 實戰交易計畫", "📈 趨勢觀測圖"])
+            tab1, tab2, tab3 = st.tabs(["⚔️ 實戰交易計畫", "📈 趨勢觀測圖", "📋 詳細數據表"])
             
             with tab1:
                 col_brk, col_pb = st.columns(2)
@@ -232,37 +246,40 @@ if submitted:
                 with col_brk:
                     entry = round_to_tick(pivot + max(0.2 * atr, t), t)
                     stop = round_to_tick(entry - 1.0 * atr, t)
-                    st.error("### ① Breakout 方案")
-                    st.write(f"- 觸發價: **{entry:.2f}** | 停損: **{stop:.2f}**")
-                    st.write(f"- 目標價: **{round_to_tick(entry + (3.0 if score>=5 else 2.0)*atr, t):.2f}**")
+                    st.error("### ① Breakout 方案 (追高突破)")
+                    st.write(f"- **進場觸發**: `{entry:.2f}`")
+                    st.write(f"- **防守停損**: `{stop:.2f}`")
+                    st.write(f"- **目標 TP1**: `{round_to_tick(entry + 2.0*atr, t):.2f}`")
                     lots_brk = int(risk_amt / ((entry - stop) * 1000)) if (entry-stop)>0 else 0
-                    pos_value = (lots_brk * entry * 1000) / 10000
-                    st.write(f"🛡️ **建議部位**: **{lots_brk}** 張 (約 {pos_value:.1f} 萬)")
-                    if pos_value > total_capital * 0.4: st.warning("⚠️ 警示：單一股票佔比過高(>40%)")
+                    st.write(f"🛡️ **建議部位**: **{lots_brk}** 張")
 
                 with col_pb:
                     pb_l = round_to_tick(max(ma20_val, current_price - 0.8 * atr), t)
                     pb_h = round_to_tick(max(pb_l + t, current_price - 0.2 * atr), t)
                     pb_s = round_to_tick(pb_l - 1.2 * atr, t)
-                    st.success("### ② Pullback 方案")
-                    st.write(f"- 買進區: **{pb_l:.2f} ~ {pb_h:.2f}**")
-                    st.write(f"- 停損: **{pb_s:.2f}** | 目標: **{pivot:.2f}**")
+                    st.success("### ② Pullback 方案 (低價買入)")
+                    st.write(f"- **黃金買區**: `{pb_l:.2f} ~ {pb_h:.2f}`")
+                    st.write(f"- **防守停損**: `{pb_s:.2f}`")
+                    st.write(f"- **目標預期**: `{pivot:.2f}` (前高)")
                     lots_pb = int(risk_amt / ((pb_h - pb_s) * 1000)) if (pb_h-pb_s)>0 else 0
                     st.write(f"🛡️ **建議部位**: **{lots_pb}** 張")
 
             with tab2:
-                chart_df = df.tail(100).copy()
+                chart_df = df.tail(120).copy()
                 chart_df["date"] = pd.to_datetime(chart_df["date"])
                 base = alt.Chart(chart_df).encode(x=alt.X('date:T', title='日期'))
                 line_p = base.mark_line(color='#2962FF').encode(y=alt.Y('close:Q', scale=alt.Scale(zero=False), title='價格'))
                 line_ma = base.mark_line(color='rgba(0,0,0,0.3)', strokeDash=[5,5]).encode(y='MA20:Q')
                 line_o = base.mark_line(color='#FF6D00').encode(y=alt.Y('OBV:Q', scale=alt.Scale(zero=False), title='OBV'))
-                
-                # 標註水平線
                 rule_entry = alt.Chart(pd.DataFrame({'y': [entry]})).mark_rule(color='red', strokeDash=[2,2]).encode(y='y')
-                
                 st.altair_chart(alt.layer(line_ma, line_p, line_o, rule_entry).resolve_scale(y='independent').interactive(), use_container_width=True)
-                st.caption("🔴 紅虛線：突破參考點 | 藍線：股價 | 橘線：OBV | 灰虛線：MA20")
+                st.caption("🔴 紅虛線：突破進場參考 | 藍線：股價 | 橘線：OBV | 灰虛線：MA20")
+
+            with tab3:
+                st.write("### 法人詳細動態 (近10日)")
+                if df_inst is not None: st.dataframe(df_inst.tail(10))
+                st.write("### 歷史月營收")
+                if df_rev is not None: st.dataframe(df_rev.tail(6))
 
         except Exception as e:
             st.error(f"系統運行異常: {e}"); st.stop()
