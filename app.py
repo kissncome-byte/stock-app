@@ -394,3 +394,4 @@ if submitted:
         st.dataframe(df.tail(5)[['date', 'close', 'vol', 'amount', 'MA20', 'OBV', 'ATR14']])
         st.write("最新籌碼數據")
         if df_inst is not None: st.dataframe(df_inst.tail(3))
+
