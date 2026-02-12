@@ -64,7 +64,7 @@ st.title("🦅 SOP v11.3.2 全方位策略整合引擎")
 with st.sidebar:
     st.header("⚙️ 實戰風控設定")
     total_capital = st.number_input("操作本金 (萬)", value=100, step=10)
-    risk_per_trade = st.slider("單筆最大風險 (%)", 1.0, 5.0, 2.0)
+    risk_per_trade = st.slider("單筆最大風險 (%)", 1.0, 20.0, 2.0)
     st.divider()
 
     st.header("🛡️ 硬性門檻")
