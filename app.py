@@ -313,29 +313,29 @@ if submitted:
             space_ok_pb = space_to_res_pb >= (float(space_atr_mult) * atr + space_buf)
             
             # 這兩個 with 必須在 try 區塊內、且與上方同層縮排
-            with col_brk:
-    render_plan(
-        st.container(border=True),
-        "Breakout 突破方案",
-        entry_brk, stop_brk,
-        tp1_brk, tp2_brk,
-        2.0, breakout_setup, "🚀",
-        liq_ok, risk_amt, slip,
-        space_ok_brk,
-        rr2_gate_bonus=1.0
-    )
+                       with col_brk:
+                render_plan(
+                    st.container(border=True),
+                    "Breakout 突破方案",
+                    entry_brk, stop_brk,
+                    tp1_brk, tp2_brk,
+                    2.0, breakout_setup, "🚀",
+                    liq_ok, risk_amt, slip,
+                    space_ok_brk,
+                    rr2_gate_bonus=1.0
+                )
 
-    with col_pb:
-    render_plan(
-        st.container(border=True),
-        "Pullback 拉回方案",
-        entry_pb, stop_pb,
-        tp1_pb, tp2_pb,
-        3.0, pullback_setup, "💎",
-        liq_ok, risk_amt, slip,
-        space_ok_pb,
-        rr2_gate_bonus=1.0
-    )
+            with col_pb:
+                render_plan(
+                    st.container(border=True),
+                    "Pullback 拉回方案",
+                    entry_pb, stop_pb,
+                    tp1_pb, tp2_pb,
+                    3.0, pullback_setup, "💎",
+                    liq_ok, risk_amt, slip,
+                    space_ok_pb,
+                    rr2_gate_bonus=1.0
+                )
           
             st.divider()
             st.markdown("### 📈 趨勢觀測 (藍線:價 / 橘線:OBV)")
