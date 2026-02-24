@@ -82,7 +82,7 @@ if APP_PASSWORD and not st.session_state.authed:
 FINMIND_TOKEN = os.getenv("FINMIND_TOKEN", "") or st.secrets.get("FINMIND_TOKEN", "")
 
 # ============ 5. 主介面 ============
-st.title("🦅 SOP v11.4.2 旗艦整合系統")
+st.title("🦅 SOP v11.5 旗艦整合系統")
 
 with st.sidebar:
     st.header("⚙️ 實戰風控設定")
@@ -93,7 +93,10 @@ with st.sidebar:
     liq_gate = st.number_input("流動性：MA20成交額(億) ≥", value=2.0, step=0.5)
     slip_ticks = st.number_input("滑價 Buffer (ticks)", value=3, step=1, min_value=0)
     st.info("💡 v11.4.2 終極完全體：100% 回歸 v11.4 所有分析功能，並修復 With Object 報錯。")
-
+    st.header("🧠 v11.5 空間優勢濾網")
+space_atr_mult = st.number_input("Space Gate：到下一壓力至少 ≥ ATR ×", value=2.0, step=0.5, min_value=0.0)
+space_tick_buffer = st.number_input("壓力位 Tick Buffer", value=2, step=1, min_value=0)
+st.caption("v11.5：自動剔除『壓力太近』導致 RR 偏低的交易情境。")
 with st.form("query_form"):
     col1, col2 = st.columns([3, 1])
     with col1: 
@@ -101,29 +104,45 @@ with st.form("query_form"):
     with col2: 
         submitted = st.form_submit_button("啟動旗艦診斷", type="primary")
 
-def render_plan(container, name, entry, stop, tp1, tp2, rr_gate, setup_ok, accent, liq_ok, risk_amt, slip):
+def render_plan(container, name, entry, stop, tp1, tp2, rr_gate, setup_ok, accent,
+                liq_ok, risk_amt, slip, space_ok,
+                rr2_gate_bonus=1.0):
     R = entry - stop
     risk_per_share = abs(entry - stop) + slip
-    rr = ((tp1 - entry) / R) if R > 0 else 0.0
-    rr_ok = rr >= rr_gate
-    tradeable = liq_ok and rr_ok
+
+    rr1 = ((tp1 - entry) / R) if R > 0 else 0.0
+    rr2 = ((tp2 - entry) / R) if R > 0 else 0.0
+
+    rr1_ok = rr1 >= rr_gate
+    rr2_ok = rr2 >= (rr_gate + rr2_gate_bonus)
+
+    # v11.5：Tradeable = 流動性 + Space Gate + RR1（硬門檻）
+    tradeable = liq_ok and space_ok and rr1_ok
+
     total_lots = int(risk_amt / (risk_per_share * 1000)) if (tradeable and risk_per_share > 0) else 0
     tp1_lots = total_lots // 2
     runner_lots = total_lots - tp1_lots
 
     with container:
         st.markdown(f"### {accent} {name}")
-        st.write(f"Setup {'✅' if setup_ok else '❌'} | Liquidity {'✅' if liq_ok else '❌'} | RR {rr:.2f} {'✅' if rr_ok else '❌'}")
+        st.write(
+            f"Setup {'✅' if setup_ok else '❌'} | "
+            f"Liquidity {'✅' if liq_ok else '❌'} | "
+            f"Space {'✅' if space_ok else '❌'} | "
+            f"RR1 {rr1:.2f} {'✅' if rr1_ok else '❌'} | "
+            f"RR2 {rr2:.2f} {'✅' if rr2_ok else '❌'}"
+        )
         st.write(f"**Tradeable {'✅YES' if tradeable else '❌NO'}**")
         st.write(f"🔹 進場 `{entry:.2f}`  |  🛑 停損 `{stop:.2f}`")
         st.write(f"🎯 目標1 `{tp1:.2f}` | 🚀 目標2 `{tp2:.2f}`")
+
         m1, m2, m3 = st.columns(3)
         m1.metric("建議總張數", f"{total_lots}")
         m2.metric("TP1 賣出", f"{tp1_lots}")
         m3.metric("Runner", f"{runner_lots}")
-        if not tradeable: 
-            st.caption("⚠️ 目前為預案，未通過 Tradeable (流動性或風報比不足)。")
 
+        if not tradeable:
+            st.caption("⚠️ v11.5：未通過 Tradeable（流動性 / 空間 / RR1 任一不足）。")
 # ============ 6. 核心處理 ============
 if submitted:
     with st.spinner("正在執行旗艦級大數據掃描..."):
@@ -208,6 +227,22 @@ if submitted:
             res_120 = float(df.tail(120)["high"].max())
             res_252 = float(df.tail(252)["high"].max())
             
+           # ============ v11.5 Space Advantage Filter ============
+space_buf = float(space_tick_buffer) * t
+
+def next_resistance_above(price: float, levels: list[float]) -> float:
+    above = [lv for lv in levels if lv > price]
+    return min(above) if above else float("inf")
+
+levels = [pivot, res_120, res_252]
+next_res = next_resistance_above(current_price, levels)
+
+# 空間（到下一壓力的距離）
+space_to_res = (next_res - current_price) if np.isfinite(next_res) else float("inf")
+
+# Space Gate：至少要有 ATR * space_atr_mult 的空間（再扣掉 buffer）
+space_ok = space_to_res >= (float(space_atr_mult) * atr + space_buf)
+            
             # 【價量核心診斷】
             ma20_prev = float(df["MA20"].iloc[-6]) if len(df) > 6 else ma20_val
             ma20_slope_up = ma20_val > ma20_prev
@@ -248,7 +283,7 @@ if submitted:
                 st.write(f"**突破 Setup**：{'✅成立' if breakout_setup else '❌不成立'}")
                 st.write(f"**拉回 Setup**：{'✅成立' if pullback_setup else '❌不成立'}")
                 st.write(f"**流動性**：{'✅合格' if liq_ok else '❌不足'} ({float(hist_last['MA20_Amount']):.2f}億)")
-
+                st.write(f"**Space Gate**：{'✅合格' if space_ok else '❌不足'} (距離下一壓力 {space_to_res:.2f})")
             st.divider()
             st.subheader("⚔️ 多階層交易計畫")
             col_brk, col_pb = st.columns(2)
@@ -273,9 +308,26 @@ if submitted:
             tp1_pb, tp2_pb = calc_pullback_targets(entry_pb, pivot, res_120, atr, t)
 
             with col_brk:
-                render_plan(st.container(border=True), "Breakout 突破方案", entry_brk, stop_brk, tp1_brk, tp2_brk, 2.0, breakout_setup, "🚀", liq_ok, risk_amt, slip)
-            with col_pb:
-                render_plan(st.container(border=True), "Pullback 拉回方案", entry_pb, stop_pb, tp1_pb, tp2_pb, 3.0, pullback_setup, "💎", liq_ok, risk_amt, slip)
+    render_plan(
+        st.container(border=True),
+        "Breakout 突破方案",
+        entry_brk, stop_brk, tp1_brk, tp2_brk,
+        2.0, breakout_setup, "🚀",
+        liq_ok, risk_amt, slip,
+        space_ok,
+        rr2_gate_bonus=1.0
+    )
+
+with col_pb:
+    render_plan(
+        st.container(border=True),
+        "Pullback 拉回方案",
+        entry_pb, stop_pb, tp1_pb, tp2_pb,
+        3.0, pullback_setup, "💎",
+        liq_ok, risk_amt, slip,
+        space_ok,
+        rr2_gate_bonus=1.0
+    )
 
             st.divider()
             st.markdown("### 📈 趨勢觀測 (藍線:價 / 橘線:OBV)")
