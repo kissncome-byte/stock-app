@@ -94,9 +94,10 @@ with st.sidebar:
     slip_ticks = st.number_input("滑價 Buffer (ticks)", value=3, step=1, min_value=0)
     st.info("💡 v11.4.2 終極完全體：100% 回歸 v11.4 所有分析功能，並修復 With Object 報錯。")
     st.header("🧠 v11.5 空間優勢濾網")
-space_atr_mult = st.number_input("Space Gate：到下一壓力至少 ≥ ATR ×", value=2.0, step=0.5, min_value=0.0)
-space_tick_buffer = st.number_input("壓力位 Tick Buffer", value=2, step=1, min_value=0)
-st.caption("v11.5：自動剔除『壓力太近』導致 RR 偏低的交易情境。")
+    space_atr_mult = st.number_input("Space Gate：到下一壓力至少 ≥ ATR ×", value=2.0, step=0.5, min_value=0.0)
+    space_tick_buffer = st.number_input("壓力位 Tick Buffer", value=2, step=1, min_value=0)
+    st.caption("v11.5：自動剔除『壓力太近』導致 RR 偏低的交易情境。")
+
 with st.form("query_form"):
     col1, col2 = st.columns([3, 1])
     with col1: 
