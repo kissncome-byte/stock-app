@@ -207,24 +207,7 @@ def finmind_avg5_amount_yi(api: DataLoader, sid: str):
     return float(last5["Trading_money"].mean() / 1e8), int(len(last5))
 
 if run_screen:
-# ============ v11.7 篩選結果常駐顯示（即使 rerun 也不消失） ============
-if st.session_state.screen_df is not None and not run_screen:
-    st.subheader("✅ 上次篩選結果（常駐）")
-    ts = st.session_state.screen_ts or ""
-    st.caption(f"更新時間：{ts}")
-    st.dataframe(st.session_state.screen_df, use_container_width=True)
 
-    st.subheader("⭐ 上次篩選建議（Top Picks）")
-    topk = st.session_state.screen_df.head(10).copy()
-    if not topk.empty:
-        if "tag" not in topk.columns:
-            topk["tag"] = "達標"
-        st.dataframe(
-            topk[[c for c in ["stock_id","name","avg5_amount_yi","today_trade_value_yi","close","tag"] if c in topk.columns]],
-            use_container_width=True
-        )
-
-    
     with st.spinner("正在自動篩選（近5日平均成交金額）..."):
         try:
             api = DataLoader()
@@ -258,6 +241,26 @@ ts = st.session_state.screen_ts or ""
 st.caption(f"更新時間：{ts} ｜條件：近5日均額 ≥ {float(min_avg5_amt_yi):.2f} 億 ｜今日 TopN：{int(screen_top_n)}")
 
 topk = out.head(10).copy()
+
+# ============ v11.7 篩選結果常駐顯示（即使 rerun 也不消失） ============
+if st.session_state.screen_df is not None and not run_screen:
+    st.subheader("✅ 上次篩選結果（常駐）")
+    ts = st.session_state.screen_ts or ""
+    st.caption(f"更新時間：{ts}")
+    st.dataframe(st.session_state.screen_df, use_container_width=True)
+
+    st.subheader("⭐ 上次篩選建議（Top Picks）")
+    topk = st.session_state.screen_df.head(10).copy()
+    if not topk.empty:
+        if "tag" not in topk.columns:
+            topk["tag"] = "達標"
+        st.dataframe(
+            topk[[c for c in ["stock_id","name","avg5_amount_yi","today_trade_value_yi","close","tag"] if c in topk.columns]],
+            use_container_width=True
+        )
+
+    
+
 if not topk.empty:
     def tag_row(r):
         tags = []
