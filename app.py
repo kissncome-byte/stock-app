@@ -293,7 +293,13 @@ if submitted:
             stop_pb  = round_to_tick(entry_pb - 1.2 * atr - slip, t)
             tp1_pb, tp2_pb = calc_pullback_targets(entry_pb, pivot, res_120, atr, t)
 
-                       # ============ v11.6-A Entry-Based Space Gate ============
+          # ✅ 保底定義：避免任何執行路徑 NameError
+            space_ok_brk = False
+            space_ok_pb = False
+            space_to_res_brk = float("nan")
+            space_to_res_pb = float("nan")
+            
+            # ============ v11.6-A Entry-Based Space Gate ============
             space_buf = float(space_tick_buffer) * t
 
             def next_resistance_above(price, levels):
