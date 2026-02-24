@@ -243,9 +243,11 @@ if submitted:
             breakout_setup = (current_price >= pivot) and obv_up
             pullback_setup = ma20_slope_up and (ma20_val <= current_price <= ma20_val + 1.2 * atr)
 
-             # ✅ 修法 A：先保底定義，避免 UI 先引用 NameError
+            # ✅ 修法 A：UI 先用到的 Space 變數先保底，避免 NameError
             space_ok_brk = False
             space_ok_pb = False
+            space_to_res_brk = float("nan")
+            space_to_res_pb = float("nan")
             
             # ============ 9. UI 呈現 ============
             st.divider()
@@ -273,8 +275,8 @@ if submitted:
                 st.write(f"**突破 Setup**：{'✅成立' if breakout_setup else '❌不成立'}")
                 st.write(f"**拉回 Setup**：{'✅成立' if pullback_setup else '❌不成立'}")
                 st.write(f"**流動性**：{'✅合格' if liq_ok else '❌不足'} ({float(hist_last['MA20_Amount']):.2f}億)")
-                st.write(f"**Breakout Space**：{'✅' if space_ok_brk else '❌'} (距離 {space_to_res_brk:.2f})")
-                st.write(f"**Pullback Space**：{'✅' if space_ok_pb else '❌'} (距離 {space_to_res_pb:.2f})")
+                st.write(f"**Breakout Space**：{'✅' if space_ok_brk else '❌'}")
+                st.write(f"**Pullback Space**：{'✅' if space_ok_pb else '❌'}")
            
             st.divider()
             st.subheader("⚔️ 多階層交易計畫")
@@ -321,6 +323,11 @@ if submitted:
             next_res_pb = next_resistance_above(entry_pb, levels)
             space_to_res_pb = (next_res_pb - entry_pb) if np.isfinite(next_res_pb) else float("inf")
             space_ok_pb = space_to_res_pb >= (float(space_atr_mult) * atr + space_buf)
+            
+            # ✅ v11.6-B(顯示修正)：Space Gate 計算完成後再顯示（避免未定義/確保最終值）
+            st.markdown("### 🧠 Space Gate（以 Entry 為基準）")
+            st.write(f"**Breakout Space**：{'✅' if space_ok_brk else '❌'} ｜距離下一壓力 `{space_to_res_brk:.2f}`")
+            st.write(f"**Pullback Space**：{'✅' if space_ok_pb else '❌'} ｜距離下一壓力 `{space_to_res_pb:.2f}`")
             
             # 這兩個 with 必須在 try 區塊內、且與上方同層縮排
             with col_brk:
