@@ -308,24 +308,23 @@ if submitted:
     render_plan(
         st.container(border=True),
         "Breakout 突破方案",
-        entry_brk, stop_brk, tp1_brk, tp2_brk,
+        entry_brk, stop_brk,
+        tp1_brk, tp2_brk,
         2.0, breakout_setup, "🚀",
         liq_ok, risk_amt, slip,
         space_ok,
-        rr2_gate_bonus=1.0
-    )
+        rr2_gate_bonus=1.01 )
 
 with col_pb:
     render_plan(
         st.container(border=True),
         "Pullback 拉回方案",
-        entry_pb, stop_pb, tp1_pb, tp2_pb,
+        entry_pb, stop_pb,
+        tp1_pb, tp2_pb,
         3.0, pullback_setup, "💎",
         liq_ok, risk_amt, slip,
         space_ok,
-        rr2_gate_bonus=1.0
-    )
-
+        rr2_gate_bonus=1.0 )
             st.divider()
             st.markdown("### 📈 趨勢觀測 (藍線:價 / 橘線:OBV)")
             chart_df = df.tail(100).copy(); chart_df["date"] = pd.to_datetime(chart_df["date"])
