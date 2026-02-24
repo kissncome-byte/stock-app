@@ -10,7 +10,7 @@ import pytz
 from FinMind.data import DataLoader
 
 # ============ 1. Page Config ============
-st.set_page_config(page_title="SOP v11.3.7 終極無錯版", layout="wide")
+st.set_page_config(page_title="SOP v11.4 價量精算版", layout="wide")
 
 # ============ 2. 智慧市場狀態判斷 ============
 def get_market_status_label(rt_success: bool, last_trade_date_str: str):
@@ -22,23 +22,16 @@ def get_market_status_label(rt_success: bool, last_trade_date_str: str):
     start_time = datetime.strptime("09:00", "%H:%M").time()
     end_time = datetime.strptime("13:35", "%H:%M").time()
     
-    if weekday >= 5:
-        return "CLOSED_WEEKEND", f"市場休市 (週末) | 歷史日期: {last_trade_date_str}", "gray"
-
+    if weekday >= 5: return "CLOSED_WEEKEND", f"市場休市 (週末) | 數據日期: {last_trade_date_str}", "gray"
     is_trading_hours = start_time <= current_time <= end_time
     
     if rt_success:
-        if is_trading_hours:
-            return "OPEN", "市場交易中 (即時更新)", "red"
-        elif current_time < start_time:
-            return "PRE_MARKET", "盤前準備中 (即時連線正常)", "blue"
-        else:
-            return "POST_MARKET", "今日已收盤 (即時報價)", "green"
+        if is_trading_hours: return "OPEN", "市場交易中 (即時更新)", "red"
+        elif current_time < start_time: return "PRE_MARKET", "盤前準備中 (即時連線正常)", "blue"
+        else: return "POST_MARKET", "今日已收盤 (即時報價)", "green"
     else:
-        if is_trading_hours:
-            return "API_WAIT", f"連線受限，改用昨收 | 歷史日期: {last_trade_date_str}", "orange"
-        elif current_time < start_time:
-            return "PRE_MARKET", f"盤前準備中 | 歷史日期: {last_trade_date_str}", "blue"
+        if is_trading_hours: return "API_WAIT", f"連線受限，改用昨收 | 歷史日期: {last_trade_date_str}", "orange"
+        elif current_time < start_time: return "PRE_MARKET", f"盤前準備中 | 歷史日期: {last_trade_date_str}", "blue"
         else:
             if current_time > datetime.strptime("10:00", "%H:%M").time() and last_trade_date_str != now.strftime('%Y-%m-%d'):
                 return "CLOSED_HOLIDAY", f"市場休市 (國定假日) | 數據日期: {last_trade_date_str}", "gray"
@@ -47,11 +40,9 @@ def get_market_status_label(rt_success: bool, last_trade_date_str: str):
 # ============ 3. 輔助函式 ============
 def safe_float(x, default=0.0):
     try:
-        if x is None or str(x).strip() in ["-", "", "None", "nan"]:
-            return default
+        if x is None or str(x).strip() in ["-", "", "None", "nan"]: return default
         return float(str(x).replace(",", ""))
-    except:
-        return default
+    except: return default
 
 def tick_size(p: float) -> float:
     if p >= 1000: return 5.0
@@ -62,29 +53,24 @@ def tick_size(p: float) -> float:
     return 0.001
 
 def round_to_tick(x: float, t: float) -> float:
-    if x is None or np.isnan(x) or t == 0:
-        return 0.0
+    if x is None or np.isnan(x) or t == 0: return 0.0
     return round(x / t) * t
 
 # ============ 4. 權限認證 ============
 APP_PASSWORD = os.getenv("APP_PASSWORD", "") or st.secrets.get("APP_PASSWORD", "")
-if APP_PASSWORD and "authed" not in st.session_state:
-    st.session_state.authed = False
+if APP_PASSWORD and "authed" not in st.session_state: st.session_state.authed = False
 if APP_PASSWORD and not st.session_state.authed:
     st.title("🔐 系統登入")
     pw = st.text_input("Access Password", type="password")
     if st.button("Login"):
-        if pw == APP_PASSWORD:
-            st.session_state.authed = True
-            st.rerun()
-        else:
-            st.error("密碼錯誤")
+        if pw == APP_PASSWORD: st.session_state.authed = True; st.rerun()
+        else: st.error("密碼錯誤")
     st.stop()
 
 FINMIND_TOKEN = os.getenv("FINMIND_TOKEN", "") or st.secrets.get("FINMIND_TOKEN", "")
 
 # ============ 5. 主介面 ============
-st.title("🦅 SOP v11.3.7 全方位策略整合引擎")
+st.title("🦅 SOP v11.4 全方位策略整合引擎")
 
 with st.sidebar:
     st.header("⚙️ 實戰風控設定")
@@ -94,14 +80,12 @@ with st.sidebar:
     st.header("🛡️ 硬性門檻")
     liq_gate = st.number_input("流動性：MA20成交額(億) ≥", value=2.0, step=0.5)
     slip_ticks = st.number_input("滑價 Buffer (ticks)", value=3, step=1, min_value=0)
-    st.info("💡 v11.3.7：修復 Unpack 錯誤，穩定雙擎穿透連線。")
+    st.info("💡 v11.4：加回詳細【價量分析結果】，並修復目標價重疊問題 (創新高時自動切換ATR延伸)。")
 
 with st.form("query_form"):
     col1, col2 = st.columns([3, 1])
-    with col1:
-        stock_id = st.text_input("股票代號", value="2330").strip()
-    with col2:
-        submitted = st.form_submit_button("啟動全方位診斷", type="primary")
+    with col1: stock_id = st.text_input("股票代號", value="2330").strip()
+    with col2: submitted = st.form_submit_button("啟動全方位診斷", type="primary")
 
 def render_plan(container, name, entry, stop, tp1, tp2, rr_gate, setup_ok, accent, liq_ok, risk_amt, slip):
     R = entry - stop
@@ -120,18 +104,19 @@ def render_plan(container, name, entry, stop, tp1, tp2, rr_gate, setup_ok, accen
         st.write(f"🔹 進場 `{entry:.2f}`  |  🛑 停損 `{stop:.2f}`")
         st.write(f"🎯 目標1 `{tp1:.2f}` | 🚀 目標2 `{tp2:.2f}`")
         m1, m2, m3 = st.columns(3)
-        m1.metric("建議張數", f"{total_lots}")
+        m1.metric("建議總張數", f"{total_lots}")
         m2.metric("TP1 賣出", f"{tp1_lots}")
         m3.metric("Runner", f"{runner_lots}")
+        if not tradeable: st.caption("⚠️ 目前為預案，未通過 Tradeable (流動性或風報比不足)。")
 
 # ============ 6. 核心處理 ============
 if submitted:
-    with st.spinner("正在執行工業級數據校準與雙擎報價連線..."):
+    with st.spinner("正在執行大數據擷取與價量背離運算..."):
         try:
             api = DataLoader()
             if FINMIND_TOKEN: api.login_by_token(FINMIND_TOKEN)
 
-            # 1. 抓取歷史 (FinMind)
+            # 抓取歷史 (FinMind)
             start_date = (datetime.now() - timedelta(days=365)).strftime('%Y-%m-%d')
             df_raw = api.taiwan_stock_daily(stock_id=stock_id, start_date=start_date)
             df_inst = api.taiwan_stock_institutional_investors(stock_id=stock_id, start_date=(datetime.now()-timedelta(days=60)).strftime('%Y-%m-%d'))
@@ -143,8 +128,7 @@ if submitted:
             industry = match['industry_category'].values[0] if not match.empty else "未知產業"
 
             if df_raw is None or df_raw.empty:
-                st.error("❌ 無法取得歷史資料")
-                st.stop()
+                st.error("❌ 無法取得歷史資料"); st.stop()
 
             # 數據清洗
             df = df_raw.copy()
@@ -158,23 +142,21 @@ if submitted:
             df["ATR14"] = (df["high"] - df["low"]).rolling(14).mean()
             df["MA20"] = df["close"].rolling(20).mean()
             df["MA20_Amount"] = (df["amount"] / 1e8).rolling(20).mean() if "amount" in df.columns else (df["close"] * df["vol"] / 1e8).rolling(20).mean()
+            
+            # OBV 能量潮
             df["OBV"] = (np.where(df["close"].diff() > 0, 1, np.where(df["close"].diff() < 0, -1, 0)) * df["vol"]).cumsum()
             df["OBV_MA10"] = df["OBV"].rolling(10).mean()
 
             hist_last = df.iloc[-1]
             last_trade_date_str = str(hist_last["date"])
 
-            # ============ 7. 雙擎即時報價系統 (TWSE MIS -> Yahoo Finance) ============
-            rt_price = None
-            rt_success = False
+            # ============ 7. 雙擎即時報價系統 ============
+            rt_price = None; rt_success = False; current_vol = float(hist_last["vol"])
             
-            # 引擎 A: TWSE MIS (加入 Session Cookie 模擬)
+            # TWSE MIS 引擎
             try:
                 session = requests.Session()
-                headers = {
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                    "Accept-Language": "zh-TW,zh;q=0.9,en-US;q=0.8"
-                }
+                headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
                 session.get("https://mis.twse.com.tw/stock/index.jsp", headers=headers, timeout=3)
                 ts = int(time.time() * 1000)
                 url = f"https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=tse_{stock_id}.tw|otc_{stock_id}.tw&json=1&delay=0&_={ts}"
@@ -183,17 +165,15 @@ if submitted:
                     data = r.json()
                     if "msgArray" in data and len(data["msgArray"]) > 0:
                         info = data["msgArray"][0]
-                        z = safe_float(info.get("z"))
-                        y = safe_float(info.get("y"))
+                        z = safe_float(info.get("z")); y = safe_float(info.get("y"))
+                        v = safe_float(info.get("v"))
                         if z > 0:
-                            rt_price = z
-                            rt_success = True
+                            rt_price = z; rt_success = True; current_vol = v
                         elif y > 0:
-                            rt_price = y
-                            rt_success = True
+                            rt_price = y; rt_success = True; current_vol = v
             except: pass
 
-            # 引擎 B: Yahoo Finance 備援
+            # Yahoo Finance 備援
             if not rt_success:
                 try:
                     for suffix in [".TW", ".TWO"]:
@@ -205,17 +185,12 @@ if submitted:
                             if res_list:
                                 meta = res_list[0].get("meta", {})
                                 price = safe_float(meta.get("regularMarketPrice"))
-                                if price > 0:
-                                    rt_price = price
-                                    rt_success = True
-                                    break
+                                if price > 0: rt_price = price; rt_success = True; break
                 except: pass
 
-            # ============ 8. 狀態與策略判定 ============
-            # 🛠️ 修正點：接收三個變數 (包含 m_color)
+            # ============ 8. 狀態與價量診斷邏輯 ============
             m_code, m_desc, m_color = get_market_status_label(rt_success, last_trade_date_str)
             
-            # 決定目前價格
             current_price = rt_price if rt_success else float(hist_last["close"])
             ma20_val = float(hist_last["MA20"])
             atr = float(hist_last["ATR14"]) if not np.isnan(hist_last["ATR14"]) else current_price * 0.03
@@ -223,79 +198,112 @@ if submitted:
             slip = float(slip_ticks) * t
             risk_amt = float(total_capital) * 10000 * (float(risk_per_trade) / 100)
 
-            # 策略邏輯
+            # 壓力位與支撐
             pivot = float(df.tail(60)["high"].max())
             res_120 = float(df.tail(120)["high"].max()) if len(df) >= 120 else pivot
             res_252 = float(df.tail(252)["high"].max()) if len(df) >= 252 else res_120
             
+            # 【價量分析核心邏輯】
             ma20_prev = float(df["MA20"].iloc[-6]) if len(df) > 6 else ma20_val
-            trend_up = ma20_val > ma20_prev
-            liq_ok = float(hist_last["MA20_Amount"]) >= float(liq_gate)
+            ma20_slope_up = ma20_val > ma20_prev
+            obv_up = df["OBV"].iloc[-1] > df["OBV_MA10"].iloc[-1]
             
-            breakout_setup = (current_price >= pivot + t) and (current_price > ma20_val) and (df["OBV"].iloc[-1] > df["OBV_MA10"].iloc[-1])
-            pullback_setup = trend_up and (current_price >= ma20_val) and (current_price <= ma20_val + 1.0 * atr)
+            # 偵測是否出現「價創新高，但量未創新高」的背離
+            price_10d_max = df["close"].tail(10).max()
+            obv_10d_max = df["OBV"].tail(10).max()
+            is_div = (current_price >= price_10d_max) and (df["OBV"].iloc[-1] < obv_10d_max)
+            
+            # 今日量比估算 (判斷攻擊性)
+            avg_vol_20 = float(df["vol"].rolling(20).mean().iloc[-1])
+            vol_ratio = current_vol / avg_vol_20 if avg_vol_20 > 0 else 1.0
 
-            # UI 呈現
+            # 設置判定
+            liq_ok = float(hist_last["MA20_Amount"]) >= float(liq_gate)
+            breakout_setup = (current_price >= pivot) and obv_up
+            pullback_setup = ma20_slope_up and (ma20_val <= current_price <= ma20_val + 1.2 * atr)
+
+            # ============ 9. UI 呈現 ============
             st.divider()
-            top1, top2, top3 = st.columns([2.2, 1, 1])
+            top1, top2, top3 = st.columns([2.2, 1, 1.5])
             with top1:
                 st.header(f"{stock_name} {stock_id}")
-                st.caption(f"產業：{industry}")
+                st.caption(f"產業：{industry} | 資料日期：{last_trade_date_str}")
             with top2:
                 diff = current_price - float(hist_last['close'])
                 st.metric("目前價格", f"{current_price:.2f}", delta=f"{diff:.2f}" if rt_success else None)
             with top3:
-                # 🛠️ 修正點：將動態的 m_color 應用於 subheader
                 st.subheader(f":{m_color}[{m_desc}]")
 
+            # 🛠️ 補回：完整的價量與型態深度解析
+            st.markdown("### 🧬 價量與型態深度解析")
             c1, c2 = st.columns(2)
             with c1:
-                st.markdown("#### 📋 策略診斷")
-                st.write(f"{'📈' if trend_up else '📉'} MA20 趨勢 {'(多頭)' if trend_up else '(空頭/盤整)'}")
-                st.write(f"突破 Setup：{'✅成立' if breakout_setup else '❌不成立'}")
-                st.write(f"拉回 Setup：{'✅成立' if pullback_setup else '❌不成立'}")
+                # 趨勢與量能解讀
+                if ma20_slope_up:
+                    st.success("📈 **均線趨勢**：MA20 向上，具備多頭保護力道")
+                else:
+                    st.warning("📉 **均線趨勢**：MA20 向下或走平，動能偏弱")
+                
+                if obv_up:
+                    st.success("🟢 **量能配合**：OBV 位於均線之上，大戶買盤穩定")
+                else:
+                    st.warning("⚪ **量能配合**：OBV 低於均線，量能處於退潮期")
+                
+                if is_div:
+                    st.error("⚠️ **型態警示**：出現量價背離！股價創高但能量潮未跟上，慎防假突破。")
+                elif vol_ratio > 1.5:
+                    st.success(f"🔥 **攻擊量能**：今日成交量達均量 {vol_ratio:.1f} 倍，攻擊企圖明顯！")
+                
             with c2:
-                st.markdown("#### 🛡️ 風控門檻")
-                st.write(f"{'✅' if liq_ok else '❌'} 流動性 (MA20均額 {float(hist_last['MA20_Amount']):.2f} 億)")
-                st.write(f"單筆風險預算：{risk_amt:,.0f} 元")
+                st.write(f"**突破 Setup**：{'✅成立' if breakout_setup else '❌不成立'}")
+                st.write(f"**拉回 Setup**：{'✅成立' if pullback_setup else '❌不成立'}")
+                st.write(f"**流動性 (≥{liq_gate}億)**：{'✅' if liq_ok else '❌'} ({float(hist_last['MA20_Amount']):.2f}億)")
+                st.write(f"**ATR 波動度**：`{atr:.2f}` (滑價緩衝: `{slip:g}`)")
 
             # 交易計畫
             st.divider()
             st.subheader("⚔️ 多階層交易計畫")
             col_brk, col_pb = st.columns(2)
 
-            def breakout_targets(entry: float):
-                tp1 = res_120 if res_120 > entry else res_252
-                tp2 = res_252
-                return tp1, tp2
+            # 🛠️ 修正：避免創新高時 TP1 = TP2 的問題 (ATR 動態延伸投影)
+            def calc_breakout_targets(entry, res120, res252, atr_val, t_val):
+                # 如果前方有歷史壓力，用歷史壓力；如果創歷史新高，則用 ATR 延伸估算
+                tp1 = res120 if res120 > entry else entry + 2.0 * atr_val
+                tp2 = res252 if res252 > tp1 else tp1 + 3.0 * atr_val
+                return round_to_tick(tp1, t_val), round_to_tick(tp2, t_val)
 
-            def pullback_targets(entry: float):
-                tp1 = pivot
-                tp2 = res_120 if res_120 > tp1 else res_252
-                return tp1, tp2
+            def calc_pullback_targets(entry, pivot_val, res120, atr_val, t_val):
+                tp1 = pivot_val if pivot_val > entry else entry + 2.0 * atr_val
+                tp2 = res120 if res120 > tp1 else tp1 + 2.0 * atr_val
+                return round_to_tick(tp1, t_val), round_to_tick(tp2, t_val)
 
+            # Breakout 方案
             entry_brk = round_to_tick(pivot + t, t)
             stop_brk  = round_to_tick(entry_brk - 1.5 * atr - slip, t)
-            tp1_brk, tp2_brk = breakout_targets(entry_brk)
-            tp1_brk, tp2_brk = round_to_tick(tp1_brk, t), round_to_tick(tp2_brk, t)
+            tp1_brk, tp2_brk = calc_breakout_targets(entry_brk, res_120, res_252, atr, t)
 
+            # Pullback 方案
             entry_pb = round_to_tick(current_price if pullback_setup else ma20_val + 0.3 * atr, t)
             stop_pb  = round_to_tick(entry_pb - 1.2 * atr - slip, t)
-            tp1_pb, tp2_pb = pullback_targets(entry_pb)
-            tp1_pb, tp2_pb = round_to_tick(tp1_pb, t), round_to_tick(tp2_pb, t)
+            tp1_pb, tp2_pb = calc_pullback_targets(entry_pb, pivot, res_120, atr, t)
 
             with col_brk:
-                render_plan(st.container(border=True), "突破方案", entry_brk, stop_brk, tp1_brk, tp2_brk, 2.0, breakout_setup, "🚀", liq_ok, risk_amt, slip)
+                render_plan(st.container(border=True), "Breakout 突破方案", entry_brk, stop_brk, tp1_brk, tp2_brk, 2.0, breakout_setup, "🚀", liq_ok, risk_amt, slip)
             with col_pb:
-                render_plan(st.container(border=True), "拉回方案", entry_pb, stop_pb, tp1_pb, tp2_pb, 3.0, pullback_setup, "💎", liq_ok, risk_amt, slip)
+                render_plan(st.container(border=True), "Pullback 拉回方案", entry_pb, stop_pb, tp1_pb, tp2_pb, 3.0, pullback_setup, "💎", liq_ok, risk_amt, slip)
 
+            # 圖表
             st.divider()
+            st.markdown("### 📈 趨勢觀測 (藍線:價 / 橘線:OBV)")
             chart_df = df.tail(100).copy()
             chart_df["date"] = pd.to_datetime(chart_df["date"])
+            
             base = alt.Chart(chart_df).encode(x=alt.X("date:T", title="日期"))
-            line = base.mark_line(color="#2962FF").encode(y=alt.Y("close:Q", scale=alt.Scale(zero=False), title="價格"))
-            ma_line = base.mark_line(color="orange", strokeDash=[5, 5]).encode(y="MA20:Q")
-            st.altair_chart((line + ma_line).interactive(), use_container_width=True)
+            line_p = base.mark_line(color="#2962FF").encode(y=alt.Y("close:Q", scale=alt.Scale(zero=False), title="價格 (藍)"))
+            line_ma = base.mark_line(color="rgba(0,0,0,0.3)", strokeDash=[5, 5]).encode(y="MA20:Q")
+            line_o = base.mark_line(color="#FF6D00").encode(y=alt.Y("OBV:Q", scale=alt.Scale(zero=False), title="OBV (橘)"))
+            
+            st.altair_chart(alt.layer(line_ma, line_p, line_o).resolve_scale(y='independent').interactive(), use_container_width=True)
 
             with st.expander("📋 詳細法人與營收數據"):
                 tab_i, tab_r = st.tabs(["法人買賣超", "月營收趨勢"])
