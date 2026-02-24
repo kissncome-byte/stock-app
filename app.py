@@ -1,6 +1,8 @@
+# ====== 0. imports（只新增 certifi，其餘不動）======
 import os
 import time
 import requests
+import certifi  # ✅ NEW: 強制使用 certifi CA bundle
 import pandas as pd
 import numpy as np
 import streamlit as st
@@ -95,7 +97,7 @@ def fetch_twse_amount_by_date(dt_yyyymmdd: str) -> pd.DataFrame:
     """
     url = "https://www.twse.com.tw/rwd/zh/afterTrading/MI_INDEX"
     params = {"response": "json", "date": dt_yyyymmdd, "type": "ALL"}
-    r = requests.get(url, params=params, timeout=15)
+    r = requests.get(url, params=params, timeout=15, verify=certifi.where())
     r.raise_for_status()
     j = r.json()
 
@@ -127,7 +129,7 @@ def fetch_tpex_amount_by_date(dt_yyyy_mm_dd: str) -> pd.DataFrame:
     try:
         url = "https://www.tpex.org.tw/web/stock/aftertrading/daily_close_quotes/stk_quote_result.php"
         params = {"l": "zh-tw", "o": "json", "d": dt_yyyy_mm_dd}
-        r = requests.get(url, params=params, timeout=15)
+        r = requests.get(url, params=params, timeout=15, verify=certifi.where())
         r.raise_for_status()
         j = r.json()
 
@@ -355,7 +357,7 @@ def scan_evaluate_plans(feat, space_atr_mult_val: float, space_tick_buffer_val: 
     }
 
 
-# ============ 4. 權限認證 ============
+# ============ 4. 權限認證（你的原本需求，不動） ============
 APP_PASSWORD = os.getenv("APP_PASSWORD", "") or st.secrets.get("APP_PASSWORD", "")
 if APP_PASSWORD and "authed" not in st.session_state:
     st.session_state.authed = False
@@ -373,7 +375,7 @@ if APP_PASSWORD and not st.session_state.authed:
 
 FINMIND_TOKEN = os.getenv("FINMIND_TOKEN", "") or st.secrets.get("FINMIND_TOKEN", "")
 
-# ============ 5. 主介面 ============
+# ============ 5. 主介面（你的原本需求，不動） ============
 st.title("🦅 SOP v11.5 旗艦整合系統")
 
 with st.sidebar:
@@ -451,7 +453,7 @@ def render_plan(
             st.caption("⚠️ v11.5：未通過 Tradeable（流動性 / 空間 / RR1 任一不足）。")
 
 
-# ============ 6. 核心處理（個股分析：你的原本邏輯） ============
+# ============ 6. 核心處理（個股分析：你的原本邏輯，只在 requests 加 verify=certifi.where()） ============
 if submitted:
     with st.spinner("正在執行旗艦級大數據掃描..."):
         try:
@@ -506,14 +508,19 @@ if submitted:
             current_vol = float(hist_last["vol"])
             rt_y_price = 0.0
 
-            # 引擎 A: TWSE MIS (帶 Cookie)
+            # 引擎 A: TWSE MIS (帶 Cookie) ✅加 verify
             try:
                 session = requests.Session()
                 headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-                session.get("https://mis.twse.com.tw/stock/index.jsp", headers=headers, timeout=3)
+                session.get(
+                    "https://mis.twse.com.tw/stock/index.jsp",
+                    headers=headers,
+                    timeout=3,
+                    verify=certifi.where(),
+                )
                 ts = int(time.time() * 1000)
                 url = f"https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=tse_{stock_id}.tw|otc_{stock_id}.tw&json=1&delay=0&_={ts}"
-                r = session.get(url, headers=headers, timeout=3)
+                r = session.get(url, headers=headers, timeout=3, verify=certifi.where())
                 if r.status_code == 200:
                     data = r.json()
                     if "msgArray" in data and len(data["msgArray"]) > 0:
@@ -533,12 +540,17 @@ if submitted:
             except:
                 pass
 
-            # 引擎 B: Yahoo 備援
+            # 引擎 B: Yahoo 備援 ✅加 verify
             if not rt_success:
                 try:
                     for suffix in [".TW", ".TWO"]:
                         yh_url = f"https://query2.finance.yahoo.com/v8/finance/chart/{stock_id}{suffix}"
-                        yh_r = requests.get(yh_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=3)
+                        yh_r = requests.get(
+                            yh_url,
+                            headers={"User-Agent": "Mozilla/5.0"},
+                            timeout=3,
+                            verify=certifi.where(),
+                        )
                         if yh_r.status_code == 200:
                             meta = yh_r.json().get("chart", {}).get("result")[0].get("meta", {})
                             p = safe_float(meta.get("regularMarketPrice"))
@@ -578,7 +590,7 @@ if submitted:
             breakout_setup = (current_price >= pivot) and obv_up
             pullback_setup = ma20_slope_up and (ma20_val <= current_price <= ma20_val + 1.2 * atr)
 
-            # ✅ 修法 A：UI 先用到的 Space 變數先保底，避免 NameError
+            # ✅ 修法 A：UI 先用到的 Space 變數先保底
             space_ok_brk = False
             space_ok_pb = False
             space_to_res_brk = float("nan")
@@ -622,7 +634,6 @@ if submitted:
             st.subheader("⚔️ 多階層交易計畫")
             col_brk, col_pb = st.columns(2)
 
-            # 補回：修復目標價重疊 (ATR延伸邏輯)
             def calc_breakout_targets(entry, r120, r252, atr_val, t_val):
                 tp1 = r120 if r120 > entry else entry + 2.0 * atr_val
                 tp2 = r252 if r252 > tp1 else tp1 + 3.0 * atr_val
@@ -656,7 +667,6 @@ if submitted:
             space_to_res_pb = (next_res_pb - entry_pb) if np.isfinite(next_res_pb) else float("inf")
             space_ok_pb = space_to_res_pb >= (float(space_atr_mult) * atr + space_buf)
 
-            # ✅ v11.6-B(顯示修正)：Space Gate 計算完成後再顯示
             st.markdown("### 🧠 Space Gate（以 Entry 為基準）")
 
             def fmt_space(x):
