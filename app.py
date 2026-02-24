@@ -1,4 +1,4 @@
-import os
+    import os
 import time
 import requests
 import certifi
@@ -236,11 +236,11 @@ if run_screen:
                 out = pd.DataFrame(rows)
                 out = out.dropna(subset=["avg5_amount_yi"])
                 out = out[out["avg5_amount_yi"] >= float(min_avg5_amt_yi)]
-st.subheader("⭐ 篩選建議（Top Picks）")
-ts = st.session_state.screen_ts or ""
-st.caption(f"更新時間：{ts} ｜條件：近5日均額 ≥ {float(min_avg5_amt_yi):.2f} 億 ｜今日 TopN：{int(screen_top_n)}")
+               st.subheader("⭐ 篩選建議（Top Picks）")
+               ts = st.session_state.screen_ts or ""
+               st.caption(f"更新時間：{ts} ｜條件：近5日均額 ≥ {float(min_avg5_amt_yi):.2f} 億 ｜今日 TopN：{int(screen_top_n)}")
 
-topk = out.head(10).copy()
+               topk = out.head(10).copy()
 
 # ============ v11.7 篩選結果常駐顯示（即使 rerun 也不消失） ============
 if st.session_state.screen_df is not None and not run_screen:
@@ -283,10 +283,11 @@ else:
 
                 st.subheader("✅ 候選清單（符合近5日平均成交金額門檻）")
                
-                st.dataframe(out, use_container_width=True)
                 # ✅ 存到 session_state，避免 rerun 消失
                 st.session_state.screen_df = out.copy()
                 st.session_state.screen_ts = datetime.now(pytz.timezone("Asia/Taipei")).strftime("%Y-%m-%d %H:%M:%S")
+                st.dataframe(out, use_container_width=True)
+
                 st.caption("提示：點選上方表格中的 stock_id，複製到左側『股票代號』再跑旗艦診斷。")
         except Exception as e:
             st.error(f"自動篩選執行出錯: {e}")
