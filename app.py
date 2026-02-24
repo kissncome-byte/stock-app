@@ -227,21 +227,18 @@ if submitted:
             res_120 = float(df.tail(120)["high"].max())
             res_252 = float(df.tail(252)["high"].max())
             
-           # ============ v11.5 Space Advantage Filter ============
-space_buf = float(space_tick_buffer) * t
+            # ============ v11.5 Space Advantage Filter ============
+            space_buf = float(space_tick_buffer) * t
 
-def next_resistance_above(price: float, levels: list[float]) -> float:
-    above = [lv for lv in levels if lv > price]
-    return min(above) if above else float("inf")
+            def next_resistance_above(price: float, levels: list[float]) -> float:
+                above = [lv for lv in levels if lv > price]
+                return min(above) if above else float("inf")
 
-levels = [pivot, res_120, res_252]
-next_res = next_resistance_above(current_price, levels)
+            levels = [pivot, res_120, res_252]
+            next_res = next_resistance_above(current_price, levels)
 
-# 空間（到下一壓力的距離）
-space_to_res = (next_res - current_price) if np.isfinite(next_res) else float("inf")
-
-# Space Gate：至少要有 ATR * space_atr_mult 的空間（再扣掉 buffer）
-space_ok = space_to_res >= (float(space_atr_mult) * atr + space_buf)
+            space_to_res = (next_res - current_price) if np.isfinite(next_res) else float("inf")
+            space_ok = space_to_res >= (float(space_atr_mult) * atr + space_buf)
             
             # 【價量核心診斷】
             ma20_prev = float(df["MA20"].iloc[-6]) if len(df) > 6 else ma20_val
