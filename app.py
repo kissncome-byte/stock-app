@@ -293,7 +293,7 @@ if submitted:
             stop_pb  = round_to_tick(entry_pb - 1.2 * atr - slip, t)
             tp1_pb, tp2_pb = calc_pullback_targets(entry_pb, pivot, res_120, atr, t)
 
-                        # ============ v11.6-A Entry-Based Space Gate ============
+            # ============ v11.6-A Entry-Based Space Gate ============
             space_buf = float(space_tick_buffer) * t
 
             def next_resistance_above(price, levels):
@@ -313,7 +313,7 @@ if submitted:
             space_ok_pb = space_to_res_pb >= (float(space_atr_mult) * atr + space_buf)
             
             # 這兩個 with 必須在 try 區塊內、且與上方同層縮排
-                       with col_brk:
+            with col_brk:
                 render_plan(
                     st.container(border=True),
                     "Breakout 突破方案",
