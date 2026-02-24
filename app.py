@@ -305,8 +305,7 @@ if submitted:
             tp1_pb, tp2_pb = calc_pullback_targets(entry_pb, pivot, res_120, atr, t)
 
             with col_brk:
-    render_plan(
-        st.container(border=True),
+    render_plan(st.container(border=True),
         "Breakout 突破方案",
         entry_brk, stop_brk,
         tp1_brk, tp2_brk,
@@ -316,8 +315,7 @@ if submitted:
         rr2_gate_bonus=1.01 )
 
 with col_pb:
-    render_plan(
-        st.container(border=True),
+    render_plan(st.container(border=True),
         "Pullback 拉回方案",
         entry_pb, stop_pb,
         tp1_pb, tp2_pb,
