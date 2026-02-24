@@ -227,7 +227,8 @@ if submitted:
             pivot = float(df.tail(60)["high"].max())
             res_120 = float(df.tail(120)["high"].max())
             res_252 = float(df.tail(252)["high"].max())
-            
+            res_504 = float(df.tail(504)["high"].max()) if len(df) >= 504 else res_252
+            levels = [pivot, res_120, res_252, res_504]
                         
             # 【價量核心診斷】
             ma20_prev = float(df["MA20"].iloc[-6]) if len(df) > 6 else ma20_val
@@ -314,7 +315,7 @@ if submitted:
                 above = [lv for lv in levels if lv > price]
                 return min(above) if above else float("inf")
 
-            levels = [pivot, res_120, res_252]
+            levels = [pivot, res_120, res_252, res_504]
 
             next_res_brk = next_resistance_above(entry_brk, levels)
             space_to_res_brk = (next_res_brk - entry_brk) if np.isfinite(next_res_brk) else float("inf")
@@ -326,8 +327,11 @@ if submitted:
             
             # ✅ v11.6-B(顯示修正)：Space Gate 計算完成後再顯示（避免未定義/確保最終值）
             st.markdown("### 🧠 Space Gate（以 Entry 為基準）")
-            st.write(f"**Breakout Space**：{'✅' if space_ok_brk else '❌'} ｜距離下一壓力 `{space_to_res_brk:.2f}`")
-            st.write(f"**Pullback Space**：{'✅' if space_ok_pb else '❌'} ｜距離下一壓力 `{space_to_res_pb:.2f}`")
+            def fmt_space(x):
+                return "無更高壓力位" if (x is None or not np.isfinite(x)) else f"{x:.2f}"
+
+            st.write(f"**Breakout Space**：{'✅' if space_ok_brk else '❌'} ｜距離下一壓力 `{fmt_space(space_to_res_brk)}`")
+            st.write(f"**Pullback Space**：{'✅' if space_ok_pb else '❌'} ｜距離下一壓力 `{fmt_space(space_to_res_pb)}`")
             
             # 這兩個 with 必須在 try 區塊內、且與上方同層縮排
             with col_brk:
