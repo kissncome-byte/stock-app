@@ -10,9 +10,9 @@ import pytz
 from FinMind.data import DataLoader
 
 # ============ 1. Page Config ============
-st.set_page_config(page_title="SOP v11.3.5 穩定連線版", layout="wide")
+st.set_page_config(page_title="SOP v11.3.6 雙擎穿透版", layout="wide")
 
-# ============ 2. 智慧市場狀態判斷 (強化連線異常處理) ============
+# ============ 2. 智慧市場狀態判斷 ============
 def get_market_status_label(rt_success: bool, last_trade_date_str: str):
     tz = pytz.timezone('Asia/Taipei')
     now = datetime.now(tz)
@@ -22,11 +22,9 @@ def get_market_status_label(rt_success: bool, last_trade_date_str: str):
     start_time = datetime.strptime("09:00", "%H:%M").time()
     end_time = datetime.strptime("13:35", "%H:%M").time()
     
-    # 判斷是否為週末
     if weekday >= 5:
-        return "CLOSED_WEEKEND", f"市場休市 (週末) | 數據日期: {last_trade_date_str}", "gray"
+        return "CLOSED_WEEKEND", f"市場休市 (週末) | 歷史日期: {last_trade_date_str}", "gray"
 
-    # 判斷現在是否應該是交易時段
     is_trading_hours = start_time <= current_time <= end_time
     
     if rt_success:
@@ -37,17 +35,14 @@ def get_market_status_label(rt_success: bool, last_trade_date_str: str):
         else:
             return "POST_MARKET", "今日已收盤 (即時報價)", "green"
     else:
-        # 如果即時連線失敗，根據時鐘給出具體提示
         if is_trading_hours:
-            return "API_WAIT", f"市場交易中 (連線不穩，改用昨收分析) | 歷史日期: {last_trade_date_str}", "orange"
+            return "API_WAIT", f"市場交易中 (連線受限，改用昨收) | 歷史日期: {last_trade_date_str}", "orange"
         elif current_time < start_time:
-            return "PRE_MARKET", f"盤前準備中 (連線不穩) | 歷史日期: {last_trade_date_str}", "blue"
+            return "PRE_MARKET", f"盤前準備中 | 歷史日期: {last_trade_date_str}", "blue"
         else:
-            # 檢查是否可能是國定假日 (今天不是週末，是平日盤中時間，但 API 沒資料)
-            # 這裡簡單處理：若平日 10:00 後沒資料，標註可能休市
             if current_time > datetime.strptime("10:00", "%H:%M").time() and last_trade_date_str != now.strftime('%Y-%m-%d'):
                 return "CLOSED_HOLIDAY", f"市場休市 (國定假日) | 數據日期: {last_trade_date_str}", "gray"
-            return "POST_MARKET", f"今日已收盤 (連線不穩) | 數據日期: {last_trade_date_str}", "green"
+            return "POST_MARKET", f"今日已收盤 | 數據日期: {last_trade_date_str}", "green"
 
 # ============ 3. 輔助函式 ============
 def safe_float(x, default=0.0):
@@ -89,7 +84,7 @@ if APP_PASSWORD and not st.session_state.authed:
 FINMIND_TOKEN = os.getenv("FINMIND_TOKEN", "") or st.secrets.get("FINMIND_TOKEN", "")
 
 # ============ 5. 主介面 ============
-st.title("🦅 SOP v11.3.5 全方位策略整合引擎")
+st.title("🦅 SOP v11.3.6 全方位策略整合引擎")
 
 with st.sidebar:
     st.header("⚙️ 實戰風控設定")
@@ -99,6 +94,7 @@ with st.sidebar:
     st.header("🛡️ 硬性門檻")
     liq_gate = st.number_input("流動性：MA20成交額(億) ≥", value=2.0, step=0.5)
     slip_ticks = st.number_input("滑價 Buffer (ticks)", value=3, step=1, min_value=0)
+    st.info("💡 v11.3.6 升級：雙重 API 引擎 (TWSE + Yahoo)，終結雲端斷線問題。")
 
 with st.form("query_form"):
     col1, col2 = st.columns([3, 1])
@@ -130,7 +126,7 @@ def render_plan(container, name, entry, stop, tp1, tp2, rr_gate, setup_ok, accen
 
 # ============ 6. 核心處理 ============
 if submitted:
-    with st.spinner("正在同步全球數據與連線狀態..."):
+    with st.spinner("正在執行工業級數據校準與雙擎報價連線..."):
         try:
             api = DataLoader()
             if FINMIND_TOKEN: api.login_by_token(FINMIND_TOKEN)
@@ -147,7 +143,8 @@ if submitted:
             industry = match['industry_category'].values[0] if not match.empty else "未知產業"
 
             if df_raw is None or df_raw.empty:
-                st.error("❌ 無法取得歷史資料"); st.stop()
+                st.error("❌ 無法取得歷史資料")
+                st.stop()
 
             # 數據清洗
             df = df_raw.copy()
@@ -167,33 +164,57 @@ if submitted:
             hist_last = df.iloc[-1]
             last_trade_date_str = str(hist_last["date"])
 
-            # 2. 抓取即時 (TWSE MIS) - 強化連線
+            # ============ 7. 雙擎即時報價系統 (TWSE MIS -> Yahoo Finance) ============
             rt_price = None
             rt_success = False
+            
+            # 引擎 A: TWSE MIS (加入 Session Cookie 模擬)
             try:
                 session = requests.Session()
-                # 模擬真實瀏覽器行為
                 headers = {
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                    "Accept-Language": "zh-TW,zh;q=0.9,en-US;q=0.8"
                 }
+                # 關鍵：先打首頁拿 Cookie，再打 API
+                session.get("https://mis.twse.com.tw/stock/index.jsp", headers=headers, timeout=3)
                 ts = int(time.time() * 1000)
                 url = f"https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=tse_{stock_id}.tw|otc_{stock_id}.tw&json=1&delay=0&_={ts}"
-                r = session.get(url, headers=headers, timeout=5)
-                data = r.json()
-                if "msgArray" in data and len(data["msgArray"]) > 0:
-                    info = data["msgArray"][0]
-                    z = safe_float(info.get("z"))
-                    y = safe_float(info.get("y"))
-                    if z > 0:
-                        rt_price = z
-                        rt_success = True
-                    elif y > 0:
-                        rt_price = y
-                        rt_success = True
+                r = session.get(url, headers=headers, timeout=3)
+                if r.status_code == 200:
+                    data = r.json()
+                    if "msgArray" in data and len(data["msgArray"]) > 0:
+                        info = data["msgArray"][0]
+                        z = safe_float(info.get("z"))
+                        y = safe_float(info.get("y"))
+                        if z > 0:
+                            rt_price = z
+                            rt_success = True
+                        elif y > 0:
+                            rt_price = y
+                            rt_success = True
             except: pass
 
-            # 3. 狀態與策略判定
-            m_code, m_desc, m_color = get_market_status_label(rt_success, last_trade_date_str)
+            # 引擎 B: Yahoo Finance 備援 (如果 TWSE 還是擋住了 Streamlit IP)
+            if not rt_success:
+                try:
+                    # 嘗試上市(.TW)與上櫃(.TWO)
+                    for suffix in [".TW", ".TWO"]:
+                        yh_url = f"https://query2.finance.yahoo.com/v8/finance/chart/{stock_id}{suffix}"
+                        yh_r = requests.get(yh_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=3)
+                        if yh_r.status_code == 200:
+                            yh_data = yh_r.json()
+                            res_list = yh_data.get("chart", {}).get("result")
+                            if res_list:
+                                meta = res_list[0].get("meta", {})
+                                price = safe_float(meta.get("regularMarketPrice"))
+                                if price > 0:
+                                    rt_price = price
+                                    rt_success = True
+                                    break
+                except: pass
+
+            # ============ 8. 狀態與策略判定 ============
+            m_code, m_desc = get_market_status_label(rt_success, last_trade_date_str)
             
             # 決定目前價格
             current_price = rt_price if rt_success else float(hist_last["close"])
@@ -212,19 +233,24 @@ if submitted:
             trend_up = ma20_val > ma20_prev
             liq_ok = float(hist_last["MA20_Amount"]) >= float(liq_gate)
             
-            breakout_setup = (current_price >= pivot) and (df["OBV"].iloc[-1] > df["OBV_MA10"].iloc[-1])
-            pullback_setup = trend_up and (ma20_val <= current_price <= ma20_val + 1.2 * atr)
+            breakout_setup = (current_price >= pivot + t) and (current_price > ma20_val) and (df["OBV"].iloc[-1] > df["OBV_MA10"].iloc[-1])
+            pullback_setup = trend_up and (current_price >= ma20_val) and (current_price <= ma20_val + 1.0 * atr)
 
             # UI 呈現
             st.divider()
-            top1, top2, top3 = st.columns([2.2, 1, 1.5])
+            top1, top2, top3 = st.columns([2.2, 1, 1])
             with top1:
                 st.header(f"{stock_name} {stock_id}")
                 st.caption(f"產業：{industry} | 資料日期：{last_trade_date_str}")
             with top2:
-                st.metric("目前價格", f"{current_price:.2f}", delta=f"{current_price - float(hist_last['close']):.2f}" if rt_success else None)
+                diff = current_price - float(hist_last['close'])
+                st.metric("目前價格", f"{current_price:.2f}", delta=f"{diff:.2f}" if rt_success else None)
             with top3:
-                st.subheader(f":{m_color}[{m_desc}]")
+                # 根據連線狀態給予顏色警告
+                if "API_WAIT" in m_code:
+                    st.subheader(f":orange[{m_desc}]")
+                else:
+                    st.subheader(f":red[{m_desc}]" if "OPEN" in m_code else f":gray[{m_desc}]")
 
             c1, c2 = st.columns(2)
             with c1:
@@ -242,22 +268,31 @@ if submitted:
             st.subheader("⚔️ 多階層交易計畫")
             col_brk, col_pb = st.columns(2)
 
+            def breakout_targets(entry: float):
+                tp1 = res_120 if res_120 > entry else res_252
+                tp2 = res_252
+                return tp1, tp2
+
+            def pullback_targets(entry: float):
+                tp1 = pivot
+                tp2 = res_120 if res_120 > tp1 else res_252
+                return tp1, tp2
+
             entry_brk = round_to_tick(pivot + t, t)
             stop_brk  = round_to_tick(entry_brk - 1.5 * atr - slip, t)
-            tp1_brk   = round_to_tick(res_120 if res_120 > entry_brk else res_252, t)
-            tp2_brk   = round_to_tick(res_252 if res_252 > tp1_brk else tp1_brk + 3*atr, t)
+            tp1_brk, tp2_brk = breakout_targets(entry_brk)
+            tp1_brk, tp2_brk = round_to_tick(tp1_brk, t), round_to_tick(tp2_brk, t)
 
             entry_pb = round_to_tick(current_price if pullback_setup else ma20_val + 0.3 * atr, t)
             stop_pb  = round_to_tick(entry_pb - 1.2 * atr - slip, t)
-            tp1_pb   = round_to_tick(pivot, t)
-            tp2_pb   = round_to_tick(res_120, t)
+            tp1_pb, tp2_pb = pullback_targets(entry_pb)
+            tp1_pb, tp2_pb = round_to_tick(tp1_pb, t), round_to_tick(tp2_pb, t)
 
             with col_brk:
                 render_plan(st.container(border=True), "突破方案", entry_brk, stop_brk, tp1_brk, tp2_brk, 2.0, breakout_setup, "🚀", liq_ok, risk_amt, slip)
             with col_pb:
                 render_plan(st.container(border=True), "拉回方案", entry_pb, stop_pb, tp1_pb, tp2_pb, 3.0, pullback_setup, "💎", liq_ok, risk_amt, slip)
 
-            # 圖表
             st.divider()
             chart_df = df.tail(100).copy()
             chart_df["date"] = pd.to_datetime(chart_df["date"])
@@ -265,11 +300,6 @@ if submitted:
             line = base.mark_line(color="#2962FF").encode(y=alt.Y("close:Q", scale=alt.Scale(zero=False), title="價格"))
             ma_line = base.mark_line(color="orange", strokeDash=[5, 5]).encode(y="MA20:Q")
             st.altair_chart((line + ma_line).interactive(), use_container_width=True)
-
-            with st.expander("📋 詳細法人與營收數據"):
-                tab_i, tab_r = st.tabs(["法人買賣超", "月營收趨勢"])
-                with tab_i: st.dataframe(df_inst.tail(10)) if df_inst is not None else st.write("無資料")
-                with tab_r: st.dataframe(df_rev.tail(6)) if df_rev is not None else st.write("無資料")
 
         except Exception as e:
             st.error(f"系統執行出錯: {e}")
