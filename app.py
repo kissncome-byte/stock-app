@@ -242,6 +242,10 @@ if submitted:
             breakout_setup = (current_price >= pivot) and obv_up
             pullback_setup = ma20_slope_up and (ma20_val <= current_price <= ma20_val + 1.2 * atr)
 
+             # ✅ 修法 A：先保底定義，避免 UI 先引用 NameError
+            space_ok_brk = False
+            space_ok_pb = False
+            
             # ============ 9. UI 呈現 ============
             st.divider()
             top1, top2, top3 = st.columns([2.2, 1, 1.5])
@@ -268,8 +272,9 @@ if submitted:
                 st.write(f"**突破 Setup**：{'✅成立' if breakout_setup else '❌不成立'}")
                 st.write(f"**拉回 Setup**：{'✅成立' if pullback_setup else '❌不成立'}")
                 st.write(f"**流動性**：{'✅合格' if liq_ok else '❌不足'} ({float(hist_last['MA20_Amount']):.2f}億)")
-                st.write(f"**Breakout Space**：{'✅' if space_ok_brk else '❌'}")
-                st.write(f"**Pullback Space**：{'✅' if space_ok_pb else '❌'}")
+                st.write(f"**Breakout Space**：{'✅' if space_ok_brk else '❌'} (距離 {space_to_res_brk:.2f})")
+                st.write(f"**Pullback Space**：{'✅' if space_ok_pb else '❌'} (距離 {space_to_res_pb:.2f})")
+           
             st.divider()
             st.subheader("⚔️ 多階層交易計畫")
             col_brk, col_pb = st.columns(2)
