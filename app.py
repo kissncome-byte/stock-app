@@ -206,8 +206,62 @@ def finmind_avg5_amount_yi(api: DataLoader, sid: str):
     last5 = df.tail(5)
     return float(last5["Trading_money"].mean() / 1e8), int(len(last5))
 
-if run_screen:
+# ============ v11.7 篩選結果暫存（避免 rerun 消失） ============
+if "screen_df" not in st.session_state:
+    st.session_state.screen_df = None
+if "screen_ts" not in st.session_state:
+    st.session_state.screen_ts = None
 
+# ============ v11.7 篩選工具（只用 openapi.twse.com.tw + FinMind，避免 twse.com.tw SSL 問題） ============
+@st.cache_data(ttl=90)
+def fetch_twse_stock_day_all():
+    url = "https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL"
+    r = _rq_get(url, timeout=6)
+    r.raise_for_status()
+    js = r.json()
+    df = pd.DataFrame(js)
+
+    for col in ["TradeValue", "TradeVolume", "ClosingPrice"]:
+        if col in df.columns:
+            df[col] = df[col].apply(safe_float)
+
+    if "Code" in df.columns:
+        df["Code"] = df["Code"].astype(str).str.strip()
+    if "Name" in df.columns:
+        df["Name"] = df["Name"].astype(str).str.strip()
+
+    return df
+
+def finmind_avg5_amount_yi(api: DataLoader, sid: str):
+    start_date = (datetime.now() - timedelta(days=20)).strftime("%Y-%m-%d")
+    df = api.taiwan_stock_daily(stock_id=sid, start_date=start_date)
+    if df is None or df.empty:
+        return np.nan, 0
+
+    df = df.copy()
+    df.columns = [c.strip() for c in df.columns]
+
+    if "Trading_money" not in df.columns:
+        return np.nan, 0
+
+    df["Trading_money"] = pd.to_numeric(df["Trading_money"], errors="coerce")
+    df = df.dropna(subset=["Trading_money"])
+    if df.empty:
+        return np.nan, 0
+
+    last5 = df.tail(5)
+    return float(last5["Trading_money"].mean() / 1e8), int(len(last5))
+
+def _tag_row(r, min_avg5_amt_yi: float):
+    tags = []
+    if r.get("avg5_amount_yi", 0) >= float(min_avg5_amt_yi) * 1.5:
+        tags.append("強流動性")
+    if r.get("today_trade_value_yi", 0) >= float(min_avg5_amt_yi) * 2:
+        tags.append("今日爆量")
+    return " / ".join(tags) if tags else "達標"
+
+# ============ v11.7 篩選執行 ============
+if run_screen:
     with st.spinner("正在自動篩選（近5日平均成交金額）..."):
         try:
             api = DataLoader()
@@ -216,31 +270,77 @@ if run_screen:
 
             today_all = fetch_twse_stock_day_all()
 
-            if today_all is None or today_all.empty or "TradeValue" not in today_all.columns or "Code" not in today_all.columns:
+            if (
+                today_all is None
+                or today_all.empty
+                or "TradeValue" not in today_all.columns
+                or "Code" not in today_all.columns
+            ):
                 st.error("❌ 無法取得今日全市場成交資料（openapi.twse.com.tw）")
             else:
-                topn = today_all.sort_values("TradeValue", ascending=False).head(int(screen_top_n)).copy()
+                # 1) 先抓今日成交金額 TopN 加速
+                topn = (
+                    today_all.sort_values("TradeValue", ascending=False)
+                    .head(int(screen_top_n))
+                    .copy()
+                )
+
+                # 2) 計算每檔近 5 日 Trading_money 平均（億）
                 rows = []
-                for _, r in topn.iterrows():
-                    sid = str(r.get("Code", "")).strip()
-                    name = str(r.get("Name", "")).strip()
+                for _, rr in topn.iterrows():
+                    sid = str(rr.get("Code", "")).strip()
+                    name = str(rr.get("Name", "")).strip()
+
                     avg5_yi, n_days = finmind_avg5_amount_yi(api, sid)
-                    rows.append({
-                        "stock_id": sid,
-                        "name": name,
-                        "avg5_amount_yi": avg5_yi,
-                        "n_days": n_days,
-                        "today_trade_value_yi": float(r.get("TradeValue", 0.0)) / 1e8,
-                        "close": safe_float(r.get("ClosingPrice", 0.0)),
-                    })
+
+                    rows.append(
+                        {
+                            "stock_id": sid,
+                            "name": name,
+                            "avg5_amount_yi": avg5_yi,
+                            "n_days": n_days,
+                            "today_trade_value_yi": float(rr.get("TradeValue", 0.0)) / 1e8,
+                            "close": safe_float(rr.get("ClosingPrice", 0.0)),
+                        }
+                    )
+
                 out = pd.DataFrame(rows)
                 out = out.dropna(subset=["avg5_amount_yi"])
-                out = out[out["avg5_amount_yi"] >= float(min_avg5_amt_yi)]
-               st.subheader("⭐ 篩選建議（Top Picks）")
-               ts = st.session_state.screen_ts or ""
-               st.caption(f"更新時間：{ts} ｜條件：近5日均額 ≥ {float(min_avg5_amt_yi):.2f} 億 ｜今日 TopN：{int(screen_top_n)}")
+                out = out[out["avg5_amount_yi"] >= float(min_avg5_amt_yi)].copy()
+                out = out.sort_values(
+                    ["avg5_amount_yi", "today_trade_value_yi"],
+                    ascending=False
+                ).reset_index(drop=True)
 
-               topk = out.head(10).copy()
+                # 3) 先存起來（避免 rerun 消失）
+                st.session_state.screen_df = out.copy()
+                st.session_state.screen_ts = datetime.now(pytz.timezone("Asia/Taipei")).strftime("%Y-%m-%d %H:%M:%S")
+
+                # 4) 顯示候選清單
+                st.subheader("✅ 候選清單（符合近5日平均成交金額門檻）")
+                st.caption(f"更新時間：{st.session_state.screen_ts}")
+                st.dataframe(out, use_container_width=True)
+
+                # 5) 顯示 Top Picks（篩選建議）
+                st.subheader("⭐ 篩選建議（Top Picks）")
+                st.caption(
+                    f"條件：近5日均額 ≥ {float(min_avg5_amt_yi):.2f} 億 ｜"
+                    f"今日 TopN：{int(screen_top_n)}"
+                )
+
+                topk = out.head(10).copy()
+                if not topk.empty:
+                    topk["tag"] = topk.apply(lambda r: _tag_row(r, float(min_avg5_amt_yi)), axis=1)
+                    st.dataframe(
+                        topk[["stock_id", "name", "avg5_amount_yi", "today_trade_value_yi", "close", "tag"]],
+                        use_container_width=True
+                    )
+                    st.caption("用法：把 stock_id 複製到左側『股票代號』→ 按「啟動旗艦診斷」。")
+                else:
+                    st.write("本次沒有符合條件的候選股。")
+
+        except Exception as e:
+            st.error(f"自動篩選執行出錯: {e}")
 
 # ============ v11.7 篩選結果常駐顯示（即使 rerun 也不消失） ============
 if st.session_state.screen_df is not None and not run_screen:
@@ -250,47 +350,13 @@ if st.session_state.screen_df is not None and not run_screen:
     st.dataframe(st.session_state.screen_df, use_container_width=True)
 
     st.subheader("⭐ 上次篩選建議（Top Picks）")
-    topk = st.session_state.screen_df.head(10).copy()
-    if not topk.empty:
-        if "tag" not in topk.columns:
-            topk["tag"] = "達標"
-        st.dataframe(
-            topk[[c for c in ["stock_id","name","avg5_amount_yi","today_trade_value_yi","close","tag"] if c in topk.columns]],
-            use_container_width=True
-        )
+    topk2 = st.session_state.screen_df.head(10).copy()
+    if not topk2.empty:
+        if "tag" not in topk2.columns:
+            topk2["tag"] = topk2.apply(lambda r: _tag_row(r, float(min_avg5_amt_yi)), axis=1)
 
-    
-
-if not topk.empty:
-    def tag_row(r):
-        tags = []
-        if r.get("avg5_amount_yi", 0) >= float(min_avg5_amt_yi) * 1.5:
-            tags.append("強流動性")
-        if r.get("today_trade_value_yi", 0) >= float(min_avg5_amt_yi) * 2:
-            tags.append("今日爆量")
-        return " / ".join(tags) if tags else "達標"
-
-    topk["tag"] = topk.apply(tag_row, axis=1)
-    st.dataframe(
-        topk[["stock_id", "name", "avg5_amount_yi", "today_trade_value_yi", "close", "tag"]],
-        use_container_width=True
-    )
-    st.caption("用法：把 stock_id 貼到左側『股票代號』→ 按「啟動旗艦診斷」。")
-else:
-    st.write("本次沒有符合條件的候選股。")
-                
-                out = out.sort_values(["avg5_amount_yi", "today_trade_value_yi"], ascending=False).reset_index(drop=True)
-
-                st.subheader("✅ 候選清單（符合近5日平均成交金額門檻）")
-               
-                # ✅ 存到 session_state，避免 rerun 消失
-                st.session_state.screen_df = out.copy()
-                st.session_state.screen_ts = datetime.now(pytz.timezone("Asia/Taipei")).strftime("%Y-%m-%d %H:%M:%S")
-                st.dataframe(out, use_container_width=True)
-
-                st.caption("提示：點選上方表格中的 stock_id，複製到左側『股票代號』再跑旗艦診斷。")
-        except Exception as e:
-            st.error(f"自動篩選執行出錯: {e}")
+        show_cols = [c for c in ["stock_id", "name", "avg5_amount_yi", "today_trade_value_yi", "close", "tag"] if c in topk2.columns]
+        st.dataframe(topk2[show_cols], use_container_width=True)
 
 # ============ 6. 核心處理 ============
 if submitted:
