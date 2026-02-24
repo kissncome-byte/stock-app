@@ -10,7 +10,7 @@ import pytz
 from FinMind.data import DataLoader
 
 # ============ 1. Page Config ============
-st.set_page_config(page_title="SOP v11.3.6 雙擎穿透版", layout="wide")
+st.set_page_config(page_title="SOP v11.3.7 終極無錯版", layout="wide")
 
 # ============ 2. 智慧市場狀態判斷 ============
 def get_market_status_label(rt_success: bool, last_trade_date_str: str):
@@ -36,7 +36,7 @@ def get_market_status_label(rt_success: bool, last_trade_date_str: str):
             return "POST_MARKET", "今日已收盤 (即時報價)", "green"
     else:
         if is_trading_hours:
-            return "API_WAIT", f"市場交易中 (連線受限，改用昨收) | 歷史日期: {last_trade_date_str}", "orange"
+            return "API_WAIT", f"連線受限，改用昨收 | 歷史日期: {last_trade_date_str}", "orange"
         elif current_time < start_time:
             return "PRE_MARKET", f"盤前準備中 | 歷史日期: {last_trade_date_str}", "blue"
         else:
@@ -84,7 +84,7 @@ if APP_PASSWORD and not st.session_state.authed:
 FINMIND_TOKEN = os.getenv("FINMIND_TOKEN", "") or st.secrets.get("FINMIND_TOKEN", "")
 
 # ============ 5. 主介面 ============
-st.title("🦅 SOP v11.3.6 全方位策略整合引擎")
+st.title("🦅 SOP v11.3.7 全方位策略整合引擎")
 
 with st.sidebar:
     st.header("⚙️ 實戰風控設定")
@@ -94,7 +94,7 @@ with st.sidebar:
     st.header("🛡️ 硬性門檻")
     liq_gate = st.number_input("流動性：MA20成交額(億) ≥", value=2.0, step=0.5)
     slip_ticks = st.number_input("滑價 Buffer (ticks)", value=3, step=1, min_value=0)
-    st.info("💡 v11.3.6 升級：雙重 API 引擎 (TWSE + Yahoo)，終結雲端斷線問題。")
+    st.info("💡 v11.3.7：修復 Unpack 錯誤，穩定雙擎穿透連線。")
 
 with st.form("query_form"):
     col1, col2 = st.columns([3, 1])
@@ -175,7 +175,6 @@ if submitted:
                     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
                     "Accept-Language": "zh-TW,zh;q=0.9,en-US;q=0.8"
                 }
-                # 關鍵：先打首頁拿 Cookie，再打 API
                 session.get("https://mis.twse.com.tw/stock/index.jsp", headers=headers, timeout=3)
                 ts = int(time.time() * 1000)
                 url = f"https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=tse_{stock_id}.tw|otc_{stock_id}.tw&json=1&delay=0&_={ts}"
@@ -194,10 +193,9 @@ if submitted:
                             rt_success = True
             except: pass
 
-            # 引擎 B: Yahoo Finance 備援 (如果 TWSE 還是擋住了 Streamlit IP)
+            # 引擎 B: Yahoo Finance 備援
             if not rt_success:
                 try:
-                    # 嘗試上市(.TW)與上櫃(.TWO)
                     for suffix in [".TW", ".TWO"]:
                         yh_url = f"https://query2.finance.yahoo.com/v8/finance/chart/{stock_id}{suffix}"
                         yh_r = requests.get(yh_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=3)
@@ -214,7 +212,8 @@ if submitted:
                 except: pass
 
             # ============ 8. 狀態與策略判定 ============
-            m_code, m_desc = get_market_status_label(rt_success, last_trade_date_str)
+            # 🛠️ 修正點：接收三個變數 (包含 m_color)
+            m_code, m_desc, m_color = get_market_status_label(rt_success, last_trade_date_str)
             
             # 決定目前價格
             current_price = rt_price if rt_success else float(hist_last["close"])
@@ -241,16 +240,13 @@ if submitted:
             top1, top2, top3 = st.columns([2.2, 1, 1])
             with top1:
                 st.header(f"{stock_name} {stock_id}")
-                st.caption(f"產業：{industry} | 資料日期：{last_trade_date_str}")
+                st.caption(f"產業：{industry}")
             with top2:
                 diff = current_price - float(hist_last['close'])
                 st.metric("目前價格", f"{current_price:.2f}", delta=f"{diff:.2f}" if rt_success else None)
             with top3:
-                # 根據連線狀態給予顏色警告
-                if "API_WAIT" in m_code:
-                    st.subheader(f":orange[{m_desc}]")
-                else:
-                    st.subheader(f":red[{m_desc}]" if "OPEN" in m_code else f":gray[{m_desc}]")
+                # 🛠️ 修正點：將動態的 m_color 應用於 subheader
+                st.subheader(f":{m_color}[{m_desc}]")
 
             c1, c2 = st.columns(2)
             with c1:
@@ -300,6 +296,11 @@ if submitted:
             line = base.mark_line(color="#2962FF").encode(y=alt.Y("close:Q", scale=alt.Scale(zero=False), title="價格"))
             ma_line = base.mark_line(color="orange", strokeDash=[5, 5]).encode(y="MA20:Q")
             st.altair_chart((line + ma_line).interactive(), use_container_width=True)
+
+            with st.expander("📋 詳細法人與營收數據"):
+                tab_i, tab_r = st.tabs(["法人買賣超", "月營收趨勢"])
+                with tab_i: st.dataframe(df_inst.tail(10)) if df_inst is not None else st.write("無資料")
+                with tab_r: st.dataframe(df_rev.tail(6)) if df_rev is not None else st.write("無資料")
 
         except Exception as e:
             st.error(f"系統執行出錯: {e}")
