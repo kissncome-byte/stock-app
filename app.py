@@ -293,7 +293,7 @@ if submitted:
             stop_pb  = round_to_tick(entry_pb - 1.2 * atr - slip, t)
             tp1_pb, tp2_pb = calc_pullback_targets(entry_pb, pivot, res_120, atr, t)
 
-            # ============ v11.6-A Entry-Based Space Gate ============
+                       # ============ v11.6-A Entry-Based Space Gate ============
             space_buf = float(space_tick_buffer) * t
 
             def next_resistance_above(price, levels):
@@ -302,12 +302,10 @@ if submitted:
 
             levels = [pivot, res_120, res_252]
 
-            # Breakout 用 entry_brk 計算空間
             next_res_brk = next_resistance_above(entry_brk, levels)
             space_to_res_brk = (next_res_brk - entry_brk) if np.isfinite(next_res_brk) else float("inf")
             space_ok_brk = space_to_res_brk >= (float(space_atr_mult) * atr + space_buf)
 
-            # Pullback 用 entry_pb 計算空間
             next_res_pb = next_resistance_above(entry_pb, levels)
             space_to_res_pb = (next_res_pb - entry_pb) if np.isfinite(next_res_pb) else float("inf")
             space_ok_pb = space_to_res_pb >= (float(space_atr_mult) * atr + space_buf)
