@@ -269,7 +269,7 @@ if submitted:
                 st.write(f"**拉回 Setup**：{'✅成立' if pullback_setup else '❌不成立'}")
                 st.write(f"**流動性**：{'✅合格' if liq_ok else '❌不足'} ({float(hist_last['MA20_Amount']):.2f}億)")
                 st.write(f"**Breakout Space**：{'✅' if space_ok_brk else '❌'}")
-st.write(f"**Pullback Space**：{'✅' if space_ok_pb else '❌'}")
+                st.write(f"**Pullback Space**：{'✅' if space_ok_pb else '❌'}")
             st.divider()
             st.subheader("⚔️ 多階層交易計畫")
             col_brk, col_pb = st.columns(2)
