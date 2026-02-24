@@ -285,7 +285,7 @@ if submitted:
             st.subheader("⚔️ 多階層交易計畫")
             col_brk, col_pb = st.columns(2)
 
-            # 補回：修復目標價重疊 (ATR延伸邏輯)
+                        # 補回：修復目標價重疊 (ATR延伸邏輯)
             def calc_breakout_targets(entry, r120, r252, atr_val, t_val):
                 tp1 = r120 if r120 > entry else entry + 2.0 * atr_val
                 tp2 = r252 if r252 > tp1 else tp1 + 3.0 * atr_val
@@ -304,30 +304,32 @@ if submitted:
             stop_pb  = round_to_tick(entry_pb - 1.2 * atr - slip, t)
             tp1_pb, tp2_pb = calc_pullback_targets(entry_pb, pivot, res_120, atr, t)
 
-with col_brk:
-    render_plan(
-        st.container(border=True),
-        "Breakout 突破方案",
-        entry_brk, stop_brk,
-        tp1_brk, tp2_brk,
-        2.0, breakout_setup, "🚀",
-        liq_ok, risk_amt, slip,
-        space_ok,
-        rr2_gate_bonus=1.0
-    )
+            # 這兩個 with 必須在 try 區塊內、且與上方同層縮排
+            with col_brk:
+                render_plan(
+                    st.container(border=True),
+                    "Breakout 突破方案",
+                    entry_brk, stop_brk,
+                    tp1_brk, tp2_brk,
+                    2.0, breakout_setup, "🚀",
+                    liq_ok, risk_amt, slip,
+                    space_ok,
+                    rr2_gate_bonus=1.0
+                )
 
-with col_pb:
-    render_plan(
-        st.container(border=True),
-        "Pullback 拉回方案",
-        entry_pb, stop_pb,
-        tp1_pb, tp2_pb,
-        3.0, pullback_setup, "💎",
-        liq_ok, risk_amt, slip,
-        space_ok,
-        rr2_gate_bonus=1.0
-    )
-            st.divider()
+            with col_pb:
+                render_plan(
+                    st.container(border=True),
+                    "Pullback 拉回方案",
+                    entry_pb, stop_pb,
+                    tp1_pb, tp2_pb,
+                    3.0, pullback_setup, "💎",
+                    liq_ok, risk_amt, slip,
+                    space_ok,
+                    rr2_gate_bonus=1.0
+                )
+          
+         st.divider()
             st.markdown("### 📈 趨勢觀測 (藍線:價 / 橘線:OBV)")
             chart_df = df.tail(100).copy(); chart_df["date"] = pd.to_datetime(chart_df["date"])
             base = alt.Chart(chart_df).encode(x=alt.X("date:T", title="日期"))
