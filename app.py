@@ -329,7 +329,7 @@ if submitted:
                     rr2_gate_bonus=1.0
                 )
           
-         st.divider()
+            st.divider()
             st.markdown("### 📈 趨勢觀測 (藍線:價 / 橘線:OBV)")
             chart_df = df.tail(100).copy(); chart_df["date"] = pd.to_datetime(chart_df["date"])
             base = alt.Chart(chart_df).encode(x=alt.X("date:T", title="日期"))
