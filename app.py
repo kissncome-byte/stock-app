@@ -55,8 +55,21 @@ def round_to_tick(x: float, t: float) -> float:
         return 0.0
     return round(x / t) * t
 
-# ============ 4. Token ============
+# ============ 4. 權限認證 ============
+APP_PASSWORD = os.getenv("APP_PASSWORD", "") or st.secrets.get("APP_PASSWORD", "")
+if APP_PASSWORD and "authed" not in st.session_state:
+    st.session_state.authed = False
+if APP_PASSWORD and not st.session_state.authed:
+    st.title("🔐 系統登入")
+    pw = st.text_input("Access Password", type="password")
+    if st.button("Login"):
+        if pw == APP_PASSWORD:
+            st.session_state.authed = True
+            st.rerun()
+    st.stop()
+
 FINMIND_TOKEN = os.getenv("FINMIND_TOKEN", "") or st.secrets.get("FINMIND_TOKEN", "")
+
 
 # ============ 5. 主介面 ============
 st.title("🦅 SOP v11.3.2 全方位策略整合引擎")
