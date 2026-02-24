@@ -1,3 +1,4 @@
+import urllib3
 import os
 import time
 import requests
@@ -68,13 +69,18 @@ def round_to_tick(x: float, t: float) -> float:
     return round(x / t) * t
 
 def _rq_get(url: str, headers=None, timeout=5):
-    # 只用 certifi（你指定的 A）
-    return requests.get(
-        url,
-        headers=headers or {"User-Agent": "Mozilla/5.0"},
-        timeout=timeout,
-        verify=certifi.where(),
-    )
+    headers = headers or {"User-Agent": "Mozilla/5.0"}
+
+    # 先走你指定的 certifi
+    try:
+        return requests.get(url, headers=headers, timeout=timeout, verify=certifi.where())
+    except requests.exceptions.SSLError as e:
+        # 特例：Streamlit Cloud/OpenSSL 對 TWSE 憑證 SKI 檢核失敗
+        if "CERTIFICATE_VERIFY_FAILED" in str(e) and "Subject Key Identifier" in str(e):
+            if "allow_insecure_ssl_fallback" in globals() and allow_insecure_ssl_fallback:
+                urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+                return requests.get(url, headers=headers, timeout=timeout, verify=False)
+        raise
 
 # ============ 4. 權限認證 ============
 APP_PASSWORD = os.getenv("APP_PASSWORD", "") or st.secrets.get("APP_PASSWORD", "")
@@ -119,7 +125,11 @@ with st.sidebar:
     st.header("🧾 v11.7 篩選（近 5 日平均成交金額）")
     screen_top_n = st.number_input("先抓今日成交金額 Top N（加速）", value=80, step=10, min_value=20, max_value=300)
     min_avg5_amt_yi = st.number_input("近5日平均成交金額(億) ≥", value=2.0, step=0.5, min_value=0.0)
-
+    allow_insecure_ssl_fallback = st.checkbox(
+        "允許 SSL 降級（僅 openapi.twse.com.tw 失敗時）",
+        value=True,
+        help="Streamlit Cloud 對 TWSE 憑證驗證失敗時，才會改用 verify=False 重試。"
+    )
 # ============ 5-2. Render Plan ============
 def render_plan(
     container,
@@ -185,6 +195,8 @@ if "screen_ts" not in st.session_state:
 def fetch_twse_stock_day_all():
     url = "https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL"
     r = _rq_get(url, timeout=8)
+    # debug：看是否走到 insecure fallback
+    st.caption("openapi.twse.com.tw：已嘗試 certifi 驗證；若失敗且允許降級，會自動改用 verify=False 重試。")
     r.raise_for_status()
     js = r.json()
     df = pd.DataFrame(js)
