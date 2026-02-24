@@ -227,19 +227,7 @@ if submitted:
             res_120 = float(df.tail(120)["high"].max())
             res_252 = float(df.tail(252)["high"].max())
             
-            # ============ v11.5 Space Advantage Filter ============
-            space_buf = float(space_tick_buffer) * t
-
-            def next_resistance_above(price: float, levels: list[float]) -> float:
-                above = [lv for lv in levels if lv > price]
-                return min(above) if above else float("inf")
-
-            levels = [pivot, res_120, res_252]
-            next_res = next_resistance_above(current_price, levels)
-
-            space_to_res = (next_res - current_price) if np.isfinite(next_res) else float("inf")
-            space_ok = space_to_res >= (float(space_atr_mult) * atr + space_buf)
-            
+                        
             # 【價量核心診斷】
             ma20_prev = float(df["MA20"].iloc[-6]) if len(df) > 6 else ma20_val
             ma20_slope_up = ma20_val > ma20_prev
@@ -280,7 +268,8 @@ if submitted:
                 st.write(f"**突破 Setup**：{'✅成立' if breakout_setup else '❌不成立'}")
                 st.write(f"**拉回 Setup**：{'✅成立' if pullback_setup else '❌不成立'}")
                 st.write(f"**流動性**：{'✅合格' if liq_ok else '❌不足'} ({float(hist_last['MA20_Amount']):.2f}億)")
-                st.write(f"**Space Gate**：{'✅合格' if space_ok else '❌不足'} (距離下一壓力 {space_to_res:.2f})")
+                st.write(f"**Breakout Space**：{'✅' if space_ok_brk else '❌'}")
+st.write(f"**Pullback Space**：{'✅' if space_ok_pb else '❌'}")
             st.divider()
             st.subheader("⚔️ 多階層交易計畫")
             col_brk, col_pb = st.columns(2)
@@ -304,30 +293,49 @@ if submitted:
             stop_pb  = round_to_tick(entry_pb - 1.2 * atr - slip, t)
             tp1_pb, tp2_pb = calc_pullback_targets(entry_pb, pivot, res_120, atr, t)
 
+                        # ============ v11.6-A Entry-Based Space Gate ============
+            space_buf = float(space_tick_buffer) * t
+
+            def next_resistance_above(price, levels):
+                above = [lv for lv in levels if lv > price]
+                return min(above) if above else float("inf")
+
+            levels = [pivot, res_120, res_252]
+
+            # Breakout 用 entry_brk 計算空間
+            next_res_brk = next_resistance_above(entry_brk, levels)
+            space_to_res_brk = (next_res_brk - entry_brk) if np.isfinite(next_res_brk) else float("inf")
+            space_ok_brk = space_to_res_brk >= (float(space_atr_mult) * atr + space_buf)
+
+            # Pullback 用 entry_pb 計算空間
+            next_res_pb = next_resistance_above(entry_pb, levels)
+            space_to_res_pb = (next_res_pb - entry_pb) if np.isfinite(next_res_pb) else float("inf")
+            space_ok_pb = space_to_res_pb >= (float(space_atr_mult) * atr + space_buf)
+            
             # 這兩個 with 必須在 try 區塊內、且與上方同層縮排
             with col_brk:
-                render_plan(
-                    st.container(border=True),
-                    "Breakout 突破方案",
-                    entry_brk, stop_brk,
-                    tp1_brk, tp2_brk,
-                    2.0, breakout_setup, "🚀",
-                    liq_ok, risk_amt, slip,
-                    space_ok,
-                    rr2_gate_bonus=1.0
-                )
+    render_plan(
+        st.container(border=True),
+        "Breakout 突破方案",
+        entry_brk, stop_brk,
+        tp1_brk, tp2_brk,
+        2.0, breakout_setup, "🚀",
+        liq_ok, risk_amt, slip,
+        space_ok_brk,
+        rr2_gate_bonus=1.0
+    )
 
-            with col_pb:
-                render_plan(
-                    st.container(border=True),
-                    "Pullback 拉回方案",
-                    entry_pb, stop_pb,
-                    tp1_pb, tp2_pb,
-                    3.0, pullback_setup, "💎",
-                    liq_ok, risk_amt, slip,
-                    space_ok,
-                    rr2_gate_bonus=1.0
-                )
+    with col_pb:
+    render_plan(
+        st.container(border=True),
+        "Pullback 拉回方案",
+        entry_pb, stop_pb,
+        tp1_pb, tp2_pb,
+        3.0, pullback_setup, "💎",
+        liq_ok, risk_amt, slip,
+        space_ok_pb,
+        rr2_gate_bonus=1.0
+    )
           
             st.divider()
             st.markdown("### 📈 趨勢觀測 (藍線:價 / 橘線:OBV)")
