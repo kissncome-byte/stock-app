@@ -1,9 +1,8 @@
 streamlit
 pandas
-requests
-finmind
-altair
 numpy
-pytz
-tqdm
+requests
 certifi
+altair
+pytz
+FinMind
