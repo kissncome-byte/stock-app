@@ -534,6 +534,8 @@ if "screen_ts" not in st.session_state:
     st.session_state["screen_ts"] = ""
 if "picked_stock" not in st.session_state:
     st.session_state["picked_stock"] = "2330"
+if "stock_input" not in st.session_state:
+    st.session_state["stock_input"] = st.session_state["picked_stock"]
 
 # ============ 8. Main UI ============
 st.title("🦅 SOP v15.1 強勢股 + 熱門產業")
@@ -559,7 +561,6 @@ with st.sidebar:
     strong_only = st.checkbox("市場掃描只看強勢股", value=True)
 
 tab_a, tab_b = st.tabs(["📌 個股分析", "🔎 市場掃描"])
-
 
 # ============ 9. Render ============
 def render_plan(
@@ -839,7 +840,6 @@ with tab_b:
                     if out.empty:
                         st.warning("本次掃描沒有符合條件的候選。")
                     else:
-                        # 自動熱門產業：先從掃描結果裡挑最熱門產業
                         hot_industry_df = None
                         if industry_mode == "自動熱門產業":
                             hot_industry_df = (
@@ -919,8 +919,10 @@ with tab_b:
                         pick_list = out["stock_id"].head(int(top_show)).tolist()
                         if pick_list:
                             picked = st.selectbox("帶入個股分析", pick_list, key="picked_from_scan")
+                            st.caption("選好後按「帶入個股分析」，再切到個股分析分頁執行診斷。")
                             if st.button("帶入個股分析", key="btn_use_pick"):
                                 st.session_state["picked_stock"] = picked
+                                st.session_state["stock_input"] = picked
                                 st.rerun()
 
             except Exception as e:
@@ -935,12 +937,11 @@ with tab_b:
 # ===================== TAB A: Single Stock =====================
 with tab_a:
     st.subheader("個股分析")
-    default_stock = st.session_state.get("picked_stock", "2330")
 
     with st.form("single_stock_form"):
         col1, col2 = st.columns([3, 1])
         with col1:
-            stock_id = st.text_input("股票代號", value=default_stock).strip()
+            stock_id = st.text_input("股票代號", key="stock_input").strip()
         with col2:
             submitted = st.form_submit_button("啟動旗艦診斷", type="primary")
 
