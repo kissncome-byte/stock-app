@@ -527,7 +527,7 @@ def render_single_stock_result(result: dict):
             else:
                 st.write("無資料")
 
-
+tab_a, tab_b = st.tabs(["📌 個股分析", "🔎 市場掃描"])
 with tab_b:
     st.subheader("市場掃描（Quant Scanner）")
     scan_limit = st.number_input("最大掃描股票數", value=200, step=50, min_value=50, max_value=1000, key="scan_limit")
