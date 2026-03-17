@@ -11,7 +11,7 @@ import pytz
 from FinMind.data import DataLoader
 
 # ============ 1. Page Config ============
-st.set_page_config(page_title="SOP v13.2 Quant Scanner", layout="wide")
+st.set_page_config(page_title="SOP v14 統一評估架構", layout="wide")
 
 # ============ 2. Global ============
 TZ = pytz.timezone("Asia/Taipei")
@@ -86,6 +86,40 @@ def get_market_status_label(rt_success: bool, last_trade_date_str: str):
 def next_resistance_above(price: float, levels):
     above = [lv for lv in levels if lv > price]
     return min(above) if above else float("inf")
+
+
+def detect_style(result: dict) -> str:
+    brk_score = 0
+    pb_score = 0
+
+    if result["breakout_setup"]:
+        brk_score += 3
+    if result["pullback_setup"]:
+        pb_score += 3
+
+    if result["space_ok_brk"]:
+        brk_score += 2
+    if result["space_ok_pb"]:
+        pb_score += 2
+
+    if result["rr1_brk"] >= 2.0:
+        brk_score += 2
+    if result["rr1_pb"] >= 3.0:
+        pb_score += 2
+
+    if result["brk_tradeable"]:
+        brk_score += 3
+    if result["pb_tradeable"]:
+        pb_score += 3
+
+    if brk_score > pb_score:
+        return "突破型"
+    if pb_score > brk_score:
+        return "拉回型"
+
+    if result["current_price"] >= result["pivot"]:
+        return "突破型"
+    return "拉回型"
 
 
 # ============ 4. Auth ============
@@ -172,7 +206,7 @@ def get_rev_df(stock_id: str, days: int = 220):
     return df if df is not None else pd.DataFrame()
 
 
-# ============ 6. Indicator / Plan Core ============
+# ============ 6. Core ============
 def prepare_indicator_df(df: pd.DataFrame):
     if df is None or df.empty:
         return None
@@ -201,7 +235,6 @@ def compute_live_price(stock_id: str, hist_last_close: float):
     rt_success = False
     rt_y_price = 0.0
 
-    # TWSE MIS
     try:
         session = requests.Session()
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
@@ -231,7 +264,6 @@ def compute_live_price(stock_id: str, hist_last_close: float):
     except Exception:
         pass
 
-    # Yahoo fallback
     if not rt_success:
         try:
             for suffix in [".TW", ".TWO"]:
@@ -348,6 +380,19 @@ def evaluate_stock(
     rr2_pb = ((tp2_pb - entry_pb) / R_pb) if R_pb > 0 else 0.0
     pb_tradeable = liq_ok and space_ok_pb and (rr1_pb >= 3.0)
 
+    style = detect_style({
+        "breakout_setup": breakout_setup,
+        "pullback_setup": pullback_setup,
+        "space_ok_brk": space_ok_brk,
+        "space_ok_pb": space_ok_pb,
+        "rr1_brk": rr1_brk,
+        "rr1_pb": rr1_pb,
+        "brk_tradeable": brk_tradeable,
+        "pb_tradeable": pb_tradeable,
+        "current_price": current_price,
+        "pivot": pivot,
+    })
+
     return {
         "stock_id": stock_id,
         "stock_name": stock_name,
@@ -396,10 +441,10 @@ def evaluate_stock(
         "rr1_pb": rr1_pb,
         "rr2_pb": rr2_pb,
         "pb_tradeable": pb_tradeable,
+        "style": style,
     }
 
 
-# ============ 7. Scanner Universe ============
 @st.cache_data(ttl=3600)
 def get_finmind_universe():
     info = get_stock_info_df().copy()
@@ -418,7 +463,7 @@ def get_finmind_universe():
     return info[keep_cols].drop_duplicates("stock_id").reset_index(drop=True)
 
 
-# ============ 8. Session State Init ============
+# ============ 7. Session ============
 if "screen_df" not in st.session_state:
     st.session_state["screen_df"] = None
 if "screen_ts" not in st.session_state:
@@ -426,9 +471,9 @@ if "screen_ts" not in st.session_state:
 if "picked_stock" not in st.session_state:
     st.session_state["picked_stock"] = "2330"
 
-# ============ 9. Main UI ============
-st.title("🦅 SOP v13.2 Quant Scanner")
-st.caption("首頁可選：個股分析 / 市場掃描")
+# ============ 8. Main UI ============
+st.title("🦅 SOP v14 統一評估架構")
+st.caption("市場掃描與個股分析使用同一套核心原則；市場掃描另加入自動標記突破型 / 拉回型")
 
 with st.sidebar:
     st.header("⚙️ 實戰風控設定")
@@ -447,8 +492,7 @@ with st.sidebar:
 
 tab_a, tab_b = st.tabs(["📌 個股分析", "🔎 市場掃描"])
 
-
-# ============ 10. Render Single Stock ============
+# ============ 9. Render ============
 def render_plan(
     container,
     name,
@@ -507,7 +551,7 @@ def render_single_stock_result(result: dict):
     top1, top2, top3 = st.columns([2.2, 1, 1.5])
     with top1:
         st.header(f"{result['stock_name']} {result['stock_id']}")
-        st.caption(f"產業：{result['industry']} | 資料來源：{'即時' if result['rt_success'] else '歷史'}")
+        st.caption(f"產業：{result['industry']} | 類型：{result['style']} | 資料來源：{'即時' if result['rt_success'] else '歷史'}")
     with top2:
         diff = result["current_price"] - (result["rt_y_price"] if result["rt_y_price"] > 0 else result["df"].iloc[-1]["close"])
         st.metric("目前現價", f"{result['current_price']:.2f}", delta=f"{diff:.2f}")
@@ -536,6 +580,7 @@ def render_single_stock_result(result: dict):
         st.write(f"**突破 Setup**：{'✅成立' if result['breakout_setup'] else '❌不成立'}")
         st.write(f"**拉回 Setup**：{'✅成立' if result['pullback_setup'] else '❌不成立'}")
         st.write(f"**流動性**：{'✅合格' if result['liq_ok'] else '❌不足'} ({result['ma20_amount']:.2f}億)")
+        st.write(f"**自動判型**：{result['style']}")
 
     st.markdown("### 🧠 Space Gate（以 Entry 為基準）")
     st.write(f"**Breakout Space**：{'✅' if result['space_ok_brk'] else '❌'} ｜距離下一壓力 `{fmt_space(result['space_to_res_brk'])}`")
@@ -609,7 +654,7 @@ def render_single_stock_result(result: dict):
 
 # ===================== TAB B: Market Scanner =====================
 with tab_b:
-    st.subheader("市場掃描（v13.2）")
+    st.subheader("市場掃描（v14 統一評估架構）")
     scan_limit = st.number_input("最大掃描股票數", value=200, step=50, min_value=50, max_value=1000, key="scan_limit")
     top_show = st.number_input("輸出候選數", value=30, step=10, min_value=10, max_value=200, key="top_show")
     trend_filter = st.checkbox("只顯示 MA20 上升股票", value=True, key="trend_filter")
@@ -653,7 +698,7 @@ with tab_b:
                             continue
 
                         tier = "C"
-                        if result["space_ok_brk"] or result["space_ok_pb"]:
+                        if result["liq_ok"] and (result["space_ok_brk"] or result["space_ok_pb"]):
                             tier = "B"
                         if result["brk_tradeable"] or result["pb_tradeable"]:
                             tier = "A"
@@ -663,6 +708,7 @@ with tab_b:
                                 "stock_id": result["stock_id"],
                                 "stock_name": result["stock_name"],
                                 "industry": result["industry"],
+                                "style": result["style"],
                                 "price": result["current_price"],
                                 "liq20E": result["ma20_amount"],
                                 "brk_setup": result["breakout_setup"],
@@ -684,10 +730,12 @@ with tab_b:
                     if out.empty:
                         st.warning("本次掃描沒有符合條件的候選。")
                     else:
+                        out["tier_rank"] = out["tier"].map({"A": 1, "B": 2, "C": 3})
                         out = out.sort_values(
-                            by=["tier", "brk_rr2", "pb_rr2", "liq20E"],
+                            by=["tier_rank", "brk_rr2", "pb_rr2", "liq20E"],
                             ascending=[True, False, False, False],
                         ).reset_index(drop=True)
+                        out = out.drop(columns=["tier_rank"])
 
                         st.session_state["screen_df"] = out.copy()
                         st.session_state["screen_ts"] = datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S")
@@ -721,6 +769,7 @@ with tab_b:
                                     "stock_id",
                                     "stock_name",
                                     "industry",
+                                    "style",
                                     "price",
                                     "liq20E",
                                     "brk_rr1",
