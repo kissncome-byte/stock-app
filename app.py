@@ -16,7 +16,6 @@ st.set_page_config(page_title="SOP v13 最終版", layout="wide")
 # ============ 2. Global ============
 TZ = pytz.timezone("Asia/Taipei")
 
-
 # ============ 3. Helper ============
 def safe_float(x, default=0.0):
     try:
@@ -47,7 +46,7 @@ def round_to_tick(x: float, t: float) -> float:
     return round(x / t) * t
 
 
-def fmt_space(x: float) -> str:
+def fmt_space(x) -> str:
     if x is None or pd.isna(x) or np.isinf(x):
         return "無更高壓力位"
     return f"{x:.2f}"
@@ -84,31 +83,22 @@ def get_market_status_label(rt_success: bool, last_trade_date_str: str):
             return "POST_MARKET", f"今日已收盤 | 數據日期: {last_trade_date_str}", "green"
 
 
-def next_resistance_above(price: float, levels: list[float]) -> float:
+def next_resistance_above(price: float, levels):
     above = [lv for lv in levels if lv > price]
     return min(above) if above else float("inf")
-
-
-def _rq_get(url: str, headers=None, timeout=5):
-    return requests.get(
-        url,
-        headers=headers or {"User-Agent": "Mozilla/5.0"},
-        timeout=timeout,
-        verify=certifi.where(),
-    )
 
 
 # ============ 4. Auth ============
 APP_PASSWORD = os.getenv("APP_PASSWORD", "") or st.secrets.get("APP_PASSWORD", "")
 if APP_PASSWORD and "authed" not in st.session_state:
-    st.session_state.authed = False
+    st.session_state["authed"] = False
 
-if APP_PASSWORD and not st.session_state.authed:
+if APP_PASSWORD and not st.session_state["authed"]:
     st.title("🔐 系統登入")
     pw = st.text_input("Access Password", type="password")
     if st.button("Login"):
         if pw == APP_PASSWORD:
-            st.session_state.authed = True
+            st.session_state["authed"] = True
             st.rerun()
         else:
             st.error("密碼錯誤")
@@ -116,8 +106,7 @@ if APP_PASSWORD and not st.session_state.authed:
 
 FINMIND_TOKEN = os.getenv("FINMIND_TOKEN", "") or st.secrets.get("FINMIND_TOKEN", "")
 
-
-# ============ 5. Cached Data Access ============
+# ============ 5. Cached API ============
 @st.cache_resource
 def get_api():
     api = DataLoader()
@@ -151,13 +140,12 @@ def get_daily_df(stock_id: str, days: int = 365):
 
     df = df_raw.copy()
     df.columns = [c.strip() for c in df.columns]
-    rename_map = {
+    df = df.rename(columns={
         "Trading_Volume": "vol",
         "Trading_money": "amount",
         "max": "high",
         "min": "low",
-    }
-    df = df.rename(columns=rename_map)
+    })
 
     for c in ["close", "high", "low", "vol", "amount"]:
         if c in df.columns:
@@ -185,7 +173,7 @@ def get_rev_df(stock_id: str, days: int = 220):
 
 
 # ============ 6. Indicator / Plan Core ============
-def prepare_indicator_df(df: pd.DataFrame) -> pd.DataFrame | None:
+def prepare_indicator_df(df: pd.DataFrame):
     if df is None or df.empty:
         return None
 
@@ -268,7 +256,15 @@ def compute_live_price(stock_id: str, hist_last_close: float):
     return (rt_price if rt_success else hist_last_close), rt_success, rt_y_price
 
 
-def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, liq_gate: float, slip_ticks: int, space_atr_mult: float, space_tick_buffer: int):
+def evaluate_stock(
+    stock_id: str,
+    total_capital: float,
+    risk_per_trade: float,
+    liq_gate: float,
+    slip_ticks: int,
+    space_atr_mult: float,
+    space_tick_buffer: int,
+):
     df_raw = get_daily_df(stock_id, days=365)
     if df_raw is None or df_raw.empty:
         return None
@@ -314,7 +310,6 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, l
     breakout_setup = (current_price >= pivot) and obv_up
     pullback_setup = ma20_slope_up and (ma20_val <= current_price <= ma20_val + 1.2 * atr)
 
-    # Targets
     def calc_breakout_targets(entry, r120, r252, atr_val, t_val):
         tp1 = r120 if r120 > entry else entry + 2.0 * atr_val
         tp2 = r252 if r252 > tp1 else tp1 + 3.0 * atr_val
@@ -423,6 +418,19 @@ def get_finmind_universe():
     return info[keep_cols].drop_duplicates("stock_id").reset_index(drop=True)
 
 
+# ============ 8. Session State Init ============
+if "screen_df" not in st.session_state:
+    st.session_state["screen_df"] = None
+if "screen_ts" not in st.session_state:
+    st.session_state["screen_ts"] = ""
+if "picked_stock" not in st.session_state:
+    st.session_state["picked_stock"] = "2330"
+
+# ============ 9. Home Tabs ============
+tab_a, tab_b = st.tabs(["📌 個股分析", "🔎 市場掃描"])
+
+
+# ============ 10. Single Stock Renderer ============
 def render_single_stock_result(result: dict):
     st.divider()
     top1, top2, top3 = st.columns([2.2, 1, 1.5])
@@ -527,7 +535,8 @@ def render_single_stock_result(result: dict):
             else:
                 st.write("無資料")
 
-tab_a, tab_b = st.tabs(["📌 個股分析", "🔎 市場掃描"])
+
+# ===================== TAB B: Scanner =====================
 with tab_b:
     st.subheader("市場掃描（Quant Scanner）")
     scan_limit = st.number_input("最大掃描股票數", value=200, step=50, min_value=50, max_value=1000, key="scan_limit")
@@ -607,11 +616,11 @@ with tab_b:
                             ascending=False,
                         ).reset_index(drop=True)
 
-                        st.session_state.screen_df = out.copy()
-                        st.session_state.screen_ts = datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S")
+                        st.session_state["screen_df"] = out.copy()
+                        st.session_state["screen_ts"] = datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S")
 
                         st.subheader("✅ 掃描結果")
-                        st.caption(f"更新時間：{st.session_state.screen_ts}")
+                        st.caption(f"更新時間：{st.session_state['screen_ts']}")
                         st.dataframe(out.head(int(top_show)), use_container_width=True)
 
                         st.subheader("⭐ 今日最佳候選（Top Picks）")
@@ -619,7 +628,7 @@ with tab_b:
                         topk["tag"] = np.where(
                             topk["brk_tradeable"] | topk["pb_tradeable"],
                             "🔥 Tradeable",
-                            "觀察"
+                            "觀察",
                         )
                         st.dataframe(
                             topk[
@@ -640,21 +649,24 @@ with tab_b:
                         pick_list = out["stock_id"].head(int(top_show)).tolist()
                         if pick_list:
                             picked = st.selectbox("帶入個股分析", pick_list, key="picked_from_scan")
-                            if st.button("帶入左側個股分析", key="btn_use_pick"):
+                            if st.button("帶入個股分析", key="btn_use_pick"):
                                 st.session_state["picked_stock"] = picked
                                 st.rerun()
 
             except Exception as e:
                 st.error(f"市場掃描執行出錯: {type(e).__name__}: {e}")
 
-    if st.session_state.screen_df is not None and not run_scan:
+    if st.session_state.get("screen_df") is not None and not run_scan:
         st.subheader("✅ 上次掃描結果（常駐）")
-        st.caption(f"更新時間：{st.session_state.screen_ts or ''}")
-        st.dataframe(st.session_state.screen_df.head(int(top_show)), use_container_width=True)
+        st.caption(f"更新時間：{st.session_state.get('screen_ts', '')}")
+        st.dataframe(st.session_state["screen_df"].head(int(top_show)), use_container_width=True)
 
+
+# ===================== TAB A: Single Stock =====================
 with tab_a:
     st.subheader("個股分析")
     default_stock = st.session_state.get("picked_stock", "2330")
+
     with st.form("single_stock_form"):
         col1, col2 = st.columns([3, 1])
         with col1:
