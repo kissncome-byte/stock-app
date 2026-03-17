@@ -11,7 +11,7 @@ import pytz
 from FinMind.data import DataLoader
 
 # ============ 1. Page Config ============
-st.set_page_config(page_title="SOP v13 最終版", layout="wide")
+st.set_page_config(page_title="SOP v13.2 Quant Scanner", layout="wide")
 
 # ============ 2. Global ============
 TZ = pytz.timezone("Asia/Taipei")
@@ -399,7 +399,7 @@ def evaluate_stock(
     }
 
 
-# ============ 7. Scanner ============
+# ============ 7. Scanner Universe ============
 @st.cache_data(ttl=3600)
 def get_finmind_universe():
     info = get_stock_info_df().copy()
@@ -426,11 +426,82 @@ if "screen_ts" not in st.session_state:
 if "picked_stock" not in st.session_state:
     st.session_state["picked_stock"] = "2330"
 
-# ============ 9. Home Tabs ============
+# ============ 9. Main UI ============
+st.title("🦅 SOP v13.2 Quant Scanner")
+st.caption("首頁可選：個股分析 / 市場掃描")
+
+with st.sidebar:
+    st.header("⚙️ 實戰風控設定")
+    total_capital = st.number_input("操作本金 (萬)", value=100, step=10)
+    risk_per_trade = st.slider("單筆最大風險 (%)", 1.0, 20.0, 2.0)
+
+    st.divider()
+    st.header("🛡️ 硬性門檻")
+    liq_gate = st.number_input("流動性：MA20成交額(億) ≥", value=2.0, step=0.5)
+    slip_ticks = st.number_input("滑價 Buffer (ticks)", value=3, step=1, min_value=0)
+
+    st.divider()
+    st.header("🧠 Space Gate")
+    space_atr_mult = st.number_input("到下一壓力至少 ≥ ATR ×", value=2.0, step=0.5, min_value=0.0)
+    space_tick_buffer = st.number_input("壓力位 Tick Buffer", value=2, step=1, min_value=0)
+
 tab_a, tab_b = st.tabs(["📌 個股分析", "🔎 市場掃描"])
 
 
-# ============ 10. Single Stock Renderer ============
+# ============ 10. Render Single Stock ============
+def render_plan(
+    container,
+    name,
+    entry,
+    stop,
+    tp1,
+    tp2,
+    rr_gate,
+    setup_ok,
+    accent,
+    liq_ok,
+    risk_amt,
+    slip,
+    space_ok,
+    rr2_gate_bonus=1.0,
+):
+    R = entry - stop
+    risk_per_share = abs(entry - stop) + slip
+
+    rr1 = ((tp1 - entry) / R) if R > 0 else 0.0
+    rr2 = ((tp2 - entry) / R) if R > 0 else 0.0
+
+    rr1_ok = rr1 >= rr_gate
+    rr2_ok = rr2 >= (rr_gate + rr2_gate_bonus)
+
+    tradeable = liq_ok and space_ok and rr1_ok
+
+    total_lots = int(risk_amt / (risk_per_share * 1000)) if (tradeable and risk_per_share > 0) else 0
+    tp1_lots = total_lots // 2
+    runner_lots = total_lots - tp1_lots
+
+    with container:
+        st.markdown(f"### {accent} {name}")
+        st.write(
+            f"Setup {'✅' if setup_ok else '❌'} | "
+            f"Liquidity {'✅' if liq_ok else '❌'} | "
+            f"Space {'✅' if space_ok else '❌'} | "
+            f"RR1 {rr1:.2f} {'✅' if rr1_ok else '❌'} | "
+            f"RR2 {rr2:.2f} {'✅' if rr2_ok else '❌'}"
+        )
+        st.write(f"**Tradeable {'✅YES' if tradeable else '❌NO'}**")
+        st.write(f"🔹 進場 `{entry:.2f}`  |  🛑 停損 `{stop:.2f}`")
+        st.write(f"🎯 目標1 `{tp1:.2f}` | 🚀 目標2 `{tp2:.2f}`")
+
+        m1, m2, m3 = st.columns(3)
+        m1.metric("建議總張數", f"{total_lots}")
+        m2.metric("TP1 賣出", f"{tp1_lots}")
+        m3.metric("Runner", f"{runner_lots}")
+
+        if not tradeable:
+            st.caption("⚠️ 未通過 Tradeable（流動性 / 空間 / RR1 任一不足）。")
+
+
 def render_single_stock_result(result: dict):
     st.divider()
     top1, top2, top3 = st.columns([2.2, 1, 1.5])
@@ -536,13 +607,12 @@ def render_single_stock_result(result: dict):
                 st.write("無資料")
 
 
-# ===================== TAB B: Scanner =====================
+# ===================== TAB B: Market Scanner =====================
 with tab_b:
-    st.subheader("市場掃描（Quant Scanner）")
+    st.subheader("市場掃描（v13.2）")
     scan_limit = st.number_input("最大掃描股票數", value=200, step=50, min_value=50, max_value=1000, key="scan_limit")
     top_show = st.number_input("輸出候選數", value=30, step=10, min_value=10, max_value=200, key="top_show")
     trend_filter = st.checkbox("只顯示 MA20 上升股票", value=True, key="trend_filter")
-    only_tradeable = st.checkbox("只顯示 Tradeable", value=True, key="only_tradeable")
 
     run_scan = st.button("🚦 開始市場掃描", type="primary", key="run_scan")
 
@@ -582,9 +652,11 @@ with tab_b:
                             prog.progress(i / total)
                             continue
 
-                        if only_tradeable and not (result["brk_tradeable"] or result["pb_tradeable"]):
-                            prog.progress(i / total)
-                            continue
+                        tier = "C"
+                        if result["space_ok_brk"] or result["space_ok_pb"]:
+                            tier = "B"
+                        if result["brk_tradeable"] or result["pb_tradeable"]:
+                            tier = "A"
 
                         rows.append(
                             {
@@ -603,6 +675,7 @@ with tab_b:
                                 "pb_rr1": result["rr1_pb"],
                                 "pb_rr2": result["rr2_pb"],
                                 "pb_tradeable": result["pb_tradeable"],
+                                "tier": tier,
                             }
                         )
                         prog.progress(i / total)
@@ -612,24 +685,36 @@ with tab_b:
                         st.warning("本次掃描沒有符合條件的候選。")
                     else:
                         out = out.sort_values(
-                            by=["brk_tradeable", "pb_tradeable", "brk_rr2", "pb_rr2", "liq20E"],
-                            ascending=False,
+                            by=["tier", "brk_rr2", "pb_rr2", "liq20E"],
+                            ascending=[True, False, False, False],
                         ).reset_index(drop=True)
 
                         st.session_state["screen_df"] = out.copy()
                         st.session_state["screen_ts"] = datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S")
 
-                        st.subheader("✅ 掃描結果")
-                        st.caption(f"更新時間：{st.session_state['screen_ts']}")
-                        st.dataframe(out.head(int(top_show)), use_container_width=True)
+                        st.subheader("🥇 A級交易機會")
+                        a_df = out[out["tier"] == "A"].copy()
+                        if a_df.empty:
+                            st.write("無")
+                        else:
+                            st.dataframe(a_df.head(int(top_show)), use_container_width=True)
+
+                        st.subheader("🥈 B級強候選")
+                        b_df = out[out["tier"] == "B"].copy()
+                        if b_df.empty:
+                            st.write("無")
+                        else:
+                            st.dataframe(b_df.head(int(top_show)), use_container_width=True)
+
+                        st.subheader("🥉 C級候選")
+                        c_df = out[out["tier"] == "C"].copy()
+                        if c_df.empty:
+                            st.write("無")
+                        else:
+                            st.dataframe(c_df.head(int(top_show)), use_container_width=True)
 
                         st.subheader("⭐ 今日最佳候選（Top Picks）")
                         topk = out.head(10).copy()
-                        topk["tag"] = np.where(
-                            topk["brk_tradeable"] | topk["pb_tradeable"],
-                            "🔥 Tradeable",
-                            "觀察",
-                        )
                         st.dataframe(
                             topk[
                                 [
@@ -640,7 +725,7 @@ with tab_b:
                                     "liq20E",
                                     "brk_rr1",
                                     "pb_rr1",
-                                    "tag",
+                                    "tier",
                                 ]
                             ],
                             use_container_width=True,
