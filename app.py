@@ -125,6 +125,7 @@ with st.sidebar:
     st.header("🧾 v11.7 篩選（近 5 日平均成交金額）")
     screen_top_n = st.number_input("先抓今日成交金額 Top N（加速）", value=80, step=10, min_value=20, max_value=300)
     min_avg5_amt_yi = st.number_input("近5日平均成交金額(億) ≥", value=2.0, step=0.5, min_value=0.0)
+    max_scan_count = st.number_input("FinMind 掃描檔數上限", value=200, step=50, min_value=50, max_value=1000)
     allow_insecure_ssl_fallback = st.checkbox(
         "允許 SSL 降級（僅 openapi.twse.com.tw 失敗時）",
         value=True,
@@ -191,27 +192,52 @@ if "screen_ts" not in st.session_state:
     st.session_state.screen_ts = None
 
 # ============ v11.7 篩選工具（只用 openapi.twse.com.tw + FinMind） ============
-@st.cache_data(ttl=90)
-@st.cache_data(ttl=90)
-def fetch_twse_stock_day_all():
-    url = "https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL"
-    r = _rq_get(url, timeout=6)
-    r.raise_for_status()
-    js = r.json()
-    df = pd.DataFrame(js)
 
-    for col in ["TradeValue", "TradeVolume", "ClosingPrice"]:
-        if col in df.columns:
-            df[col] = df[col].apply(safe_float)
-
-    if "Code" in df.columns:
-        df["Code"] = df["Code"].astype(str).str.strip()
-    if "Name" in df.columns:
-        df["Name"] = df["Name"].astype(str).str.strip()
-
-    return df
 
 def finmind_avg5_amount_yi(api: DataLoader, sid: str):
+    @st.cache_data(ttl=3600)
+def get_finmind_universe(api: DataLoader):
+    info = api.taiwan_stock_info().copy()
+    info["stock_id"] = info["stock_id"].astype(str).str.strip()
+
+    # 只留 4 碼股票
+    info = info[info["stock_id"].str.fullmatch(r"\d{4}", na=False)].copy()
+
+    keep_cols = ["stock_id"]
+    if "stock_name" in info.columns:
+        keep_cols.append("stock_name")
+    if "industry_category" in info.columns:
+        keep_cols.append("industry_category")
+
+    info = info[keep_cols].drop_duplicates("stock_id").reset_index(drop=True)
+    return info
+
+
+def scan_finmind_avg5(api: DataLoader, universe_df: pd.DataFrame, max_scan: int):
+    rows = []
+    total = min(len(universe_df), int(max_scan))
+    prog = st.progress(0)
+
+    for i, (_, row) in enumerate(universe_df.head(total).iterrows(), start=1):
+        sid = str(row["stock_id"]).strip()
+        name = str(row["stock_name"]) if "stock_name" in row else ""
+
+        avg5_yi, n_days = finmind_avg5_amount_yi(api, sid)
+
+        rows.append({
+            "stock_id": sid,
+            "name": name,
+            "avg5_amount_yi": avg5_yi,
+            "n_days": n_days,
+        })
+
+        prog.progress(i / total)
+
+    out = pd.DataFrame(rows)
+    out = out.dropna(subset=["avg5_amount_yi"])
+    out = out.sort_values("avg5_amount_yi", ascending=False).reset_index(drop=True)
+    return out
+    
     start_date = (datetime.now() - timedelta(days=20)).strftime("%Y-%m-%d")
     df = api.taiwan_stock_daily(stock_id=sid, start_date=start_date)
     if df is None or df.empty:
