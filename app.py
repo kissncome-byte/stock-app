@@ -11,10 +11,11 @@ import pytz
 from FinMind.data import DataLoader
 
 # ============ 1. Page Config ============
-st.set_page_config(page_title="SOP v14 統一評估架構", layout="wide")
+st.set_page_config(page_title="SOP v15 統一評估架構", layout="wide")
 
 # ============ 2. Global ============
 TZ = pytz.timezone("Asia/Taipei")
+
 
 # ============ 3. Helper ============
 def safe_float(x, default=0.0):
@@ -122,6 +123,65 @@ def detect_style(result: dict) -> str:
     return "拉回型"
 
 
+def judge_market_regime_from_df(df: pd.DataFrame) -> dict:
+    """
+    用個股/市場資料本身的趨勢特徵，簡化判斷市場環境。
+    回傳:
+    {
+        "regime": "強勢盤" / "震盪盤" / "偏弱盤",
+        "preferred_style": "突破型" / "拉回型",
+        "reason": ...
+    }
+    """
+    if df is None or df.empty or len(df) < 30:
+        return {
+            "regime": "資料不足",
+            "preferred_style": "拉回型",
+            "reason": "資料不足，預設偏防守。"
+        }
+
+    x = df.copy()
+    x["MA20"] = x["close"].rolling(20).mean()
+    x = x.dropna(subset=["MA20"]).copy()
+    if x.empty or len(x) < 6:
+        return {
+            "regime": "資料不足",
+            "preferred_style": "拉回型",
+            "reason": "資料不足，預設偏防守。"
+        }
+
+    price = float(x["close"].iloc[-1])
+    ma20 = float(x["MA20"].iloc[-1])
+    ma20_prev = float(x["MA20"].iloc[-6])
+    slope_up = ma20 > ma20_prev
+
+    high_60 = float(x.tail(60)["high"].max()) if len(x) >= 60 else float(x["high"].max())
+    atr14 = float((x["high"] - x["low"]).rolling(14).mean().iloc[-1]) if len(x) >= 14 else 0.0
+
+    near_high = price >= (high_60 - 0.5 * atr14) if atr14 > 0 else price >= high_60 * 0.98
+    above_ma20 = price >= ma20
+
+    if slope_up and above_ma20 and near_high:
+        return {
+            "regime": "強勢盤",
+            "preferred_style": "突破型",
+            "reason": "均線上彎、價格站上 MA20 且接近區間高點。"
+        }
+
+    if slope_up and above_ma20:
+        return {
+            "regime": "震盪偏強盤",
+            "preferred_style": "拉回型",
+            "reason": "均線仍上彎，但尚未明顯突破高點，偏向等回檔切入。"
+        }
+
+    return {
+        "regime": "偏弱盤",
+        "preferred_style": "拉回型",
+        "reason": "價格/均線結構較弱，偏防守。"
+    }
+
+
 # ============ 4. Auth ============
 APP_PASSWORD = os.getenv("APP_PASSWORD", "") or st.secrets.get("APP_PASSWORD", "")
 if APP_PASSWORD and "authed" not in st.session_state:
@@ -139,6 +199,7 @@ if APP_PASSWORD and not st.session_state["authed"]:
     st.stop()
 
 FINMIND_TOKEN = os.getenv("FINMIND_TOKEN", "") or st.secrets.get("FINMIND_TOKEN", "")
+
 
 # ============ 5. Cached API ============
 @st.cache_resource
@@ -393,6 +454,8 @@ def evaluate_stock(
         "pivot": pivot,
     })
 
+    regime = judge_market_regime_from_df(df)
+
     return {
         "stock_id": stock_id,
         "stock_name": stock_name,
@@ -442,6 +505,9 @@ def evaluate_stock(
         "rr2_pb": rr2_pb,
         "pb_tradeable": pb_tradeable,
         "style": style,
+        "regime": regime["regime"],
+        "preferred_style": regime["preferred_style"],
+        "regime_reason": regime["reason"],
     }
 
 
@@ -472,8 +538,8 @@ if "picked_stock" not in st.session_state:
     st.session_state["picked_stock"] = "2330"
 
 # ============ 8. Main UI ============
-st.title("🦅 SOP v14 統一評估架構")
-st.caption("市場掃描與個股分析使用同一套核心原則；市場掃描另加入自動標記突破型 / 拉回型")
+st.title("🦅 SOP v15 統一評估架構")
+st.caption("市場環境自動判斷：強勢盤偏突破型，震盪/偏弱盤偏拉回型。掃描與個股分析共用同一套核心評估原則。")
 
 with st.sidebar:
     st.header("⚙️ 實戰風控設定")
@@ -491,6 +557,7 @@ with st.sidebar:
     space_tick_buffer = st.number_input("壓力位 Tick Buffer", value=2, step=1, min_value=0)
 
 tab_a, tab_b = st.tabs(["📌 個股分析", "🔎 市場掃描"])
+
 
 # ============ 9. Render ============
 def render_plan(
@@ -557,6 +624,11 @@ def render_single_stock_result(result: dict):
         st.metric("目前現價", f"{result['current_price']:.2f}", delta=f"{diff:.2f}")
     with top3:
         st.subheader(f":{result['m_color']}[{result['m_desc']}]")
+
+    st.markdown("### 🌦️ 市場環境判讀")
+    st.write(f"**環境判定**：{result['regime']}")
+    st.write(f"**偏好型態**：{result['preferred_style']}")
+    st.write(f"**原因**：{result['regime_reason']}")
 
     st.markdown("### 🧬 價量與型態深度解析")
     c1, c2 = st.columns(2)
@@ -654,10 +726,11 @@ def render_single_stock_result(result: dict):
 
 # ===================== TAB B: Market Scanner =====================
 with tab_b:
-    st.subheader("市場掃描（v14 統一評估架構）")
+    st.subheader("市場掃描（v15）")
     scan_limit = st.number_input("最大掃描股票數", value=200, step=50, min_value=50, max_value=1000, key="scan_limit")
     top_show = st.number_input("輸出候選數", value=30, step=10, min_value=10, max_value=200, key="top_show")
     trend_filter = st.checkbox("只顯示 MA20 上升股票", value=True, key="trend_filter")
+    adapt_to_regime = st.checkbox("依市場環境偏好排序型態", value=True, key="adapt_to_regime")
 
     run_scan = st.button("🚦 開始市場掃描", type="primary", key="run_scan")
 
@@ -703,12 +776,18 @@ with tab_b:
                         if result["brk_tradeable"] or result["pb_tradeable"]:
                             tier = "A"
 
+                        preferred_bonus = 0
+                        if adapt_to_regime and result["style"] == result["preferred_style"]:
+                            preferred_bonus = 1
+
                         rows.append(
                             {
                                 "stock_id": result["stock_id"],
                                 "stock_name": result["stock_name"],
                                 "industry": result["industry"],
                                 "style": result["style"],
+                                "regime": result["regime"],
+                                "preferred_style": result["preferred_style"],
                                 "price": result["current_price"],
                                 "liq20E": result["ma20_amount"],
                                 "brk_setup": result["breakout_setup"],
@@ -722,6 +801,7 @@ with tab_b:
                                 "pb_rr2": result["rr2_pb"],
                                 "pb_tradeable": result["pb_tradeable"],
                                 "tier": tier,
+                                "preferred_bonus": preferred_bonus,
                             }
                         )
                         prog.progress(i / total)
@@ -732,8 +812,8 @@ with tab_b:
                     else:
                         out["tier_rank"] = out["tier"].map({"A": 1, "B": 2, "C": 3})
                         out = out.sort_values(
-                            by=["tier_rank", "brk_rr2", "pb_rr2", "liq20E"],
-                            ascending=[True, False, False, False],
+                            by=["tier_rank", "preferred_bonus", "brk_rr2", "pb_rr2", "liq20E"],
+                            ascending=[True, False, False, False, False],
                         ).reset_index(drop=True)
                         out = out.drop(columns=["tier_rank"])
 
@@ -770,6 +850,8 @@ with tab_b:
                                     "stock_name",
                                     "industry",
                                     "style",
+                                    "regime",
+                                    "preferred_style",
                                     "price",
                                     "liq20E",
                                     "brk_rr1",
