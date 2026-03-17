@@ -11,11 +11,10 @@ import pytz
 from FinMind.data import DataLoader
 
 # ============ 1. Page Config ============
-st.set_page_config(page_title="SOP v15 統一評估架構", layout="wide")
+st.set_page_config(page_title="SOP v15.1 強勢股 + 熱門產業", layout="wide")
 
 # ============ 2. Global ============
 TZ = pytz.timezone("Asia/Taipei")
-
 
 # ============ 3. Helper ============
 def safe_float(x, default=0.0):
@@ -124,15 +123,6 @@ def detect_style(result: dict) -> str:
 
 
 def judge_market_regime_from_df(df: pd.DataFrame) -> dict:
-    """
-    用個股/市場資料本身的趨勢特徵，簡化判斷市場環境。
-    回傳:
-    {
-        "regime": "強勢盤" / "震盪盤" / "偏弱盤",
-        "preferred_style": "突破型" / "拉回型",
-        "reason": ...
-    }
-    """
     if df is None or df.empty or len(df) < 30:
         return {
             "regime": "資料不足",
@@ -456,6 +446,13 @@ def evaluate_stock(
 
     regime = judge_market_regime_from_df(df)
 
+    strong_stock = (
+        ma20_slope_up
+        and current_price >= ma20_val
+        and obv_up
+        and liq_ok
+    )
+
     return {
         "stock_id": stock_id,
         "stock_name": stock_name,
@@ -508,6 +505,7 @@ def evaluate_stock(
         "regime": regime["regime"],
         "preferred_style": regime["preferred_style"],
         "regime_reason": regime["reason"],
+        "strong_stock": strong_stock,
     }
 
 
@@ -538,8 +536,8 @@ if "picked_stock" not in st.session_state:
     st.session_state["picked_stock"] = "2330"
 
 # ============ 8. Main UI ============
-st.title("🦅 SOP v15 統一評估架構")
-st.caption("市場環境自動判斷：強勢盤偏突破型，震盪/偏弱盤偏拉回型。掃描與個股分析共用同一套核心評估原則。")
+st.title("🦅 SOP v15.1 強勢股 + 熱門產業")
+st.caption("市場掃描只看強勢股，並可鎖定全部產業 / 手動指定產業 / 系統自動熱門產業。")
 
 with st.sidebar:
     st.header("⚙️ 實戰風控設定")
@@ -555,6 +553,10 @@ with st.sidebar:
     st.header("🧠 Space Gate")
     space_atr_mult = st.number_input("到下一壓力至少 ≥ ATR ×", value=2.0, step=0.5, min_value=0.0)
     space_tick_buffer = st.number_input("壓力位 Tick Buffer", value=2, step=1, min_value=0)
+
+    st.divider()
+    st.header("🔥 強勢股掃描")
+    strong_only = st.checkbox("市場掃描只看強勢股", value=True)
 
 tab_a, tab_b = st.tabs(["📌 個股分析", "🔎 市場掃描"])
 
@@ -653,6 +655,7 @@ def render_single_stock_result(result: dict):
         st.write(f"**拉回 Setup**：{'✅成立' if result['pullback_setup'] else '❌不成立'}")
         st.write(f"**流動性**：{'✅合格' if result['liq_ok'] else '❌不足'} ({result['ma20_amount']:.2f}億)")
         st.write(f"**自動判型**：{result['style']}")
+        st.write(f"**強勢股**：{'✅' if result['strong_stock'] else '❌'}")
 
     st.markdown("### 🧠 Space Gate（以 Entry 為基準）")
     st.write(f"**Breakout Space**：{'✅' if result['space_ok_brk'] else '❌'} ｜距離下一壓力 `{fmt_space(result['space_to_res_brk'])}`")
@@ -726,11 +729,29 @@ def render_single_stock_result(result: dict):
 
 # ===================== TAB B: Market Scanner =====================
 with tab_b:
-    st.subheader("市場掃描（v15）")
+    st.subheader("市場掃描（v15.1）")
+
     scan_limit = st.number_input("最大掃描股票數", value=200, step=50, min_value=50, max_value=1000, key="scan_limit")
     top_show = st.number_input("輸出候選數", value=30, step=10, min_value=10, max_value=200, key="top_show")
     trend_filter = st.checkbox("只顯示 MA20 上升股票", value=True, key="trend_filter")
     adapt_to_regime = st.checkbox("依市場環境偏好排序型態", value=True, key="adapt_to_regime")
+
+    info_df = get_finmind_universe()
+    industry_options = sorted(info_df["industry_category"].dropna().astype(str).unique().tolist()) if not info_df.empty and "industry_category" in info_df.columns else []
+
+    industry_mode = st.radio(
+        "產業鎖定模式",
+        ["全部產業", "手動指定產業", "自動熱門產業"],
+        horizontal=True
+    )
+
+    selected_industries = []
+    top_hot_industries = 5
+
+    if industry_mode == "手動指定產業":
+        selected_industries = st.multiselect("選擇產業", industry_options)
+    elif industry_mode == "自動熱門產業":
+        top_hot_industries = st.number_input("熱門產業前幾名", value=5, step=1, min_value=1, max_value=20)
 
     run_scan = st.button("🚦 開始市場掃描", type="primary", key="run_scan")
 
@@ -741,6 +762,9 @@ with tab_b:
                 if uni is None or uni.empty:
                     st.error("❌ 無法取得股票清單")
                 else:
+                    if industry_mode == "手動指定產業" and selected_industries:
+                        uni = uni[uni["industry_category"].astype(str).isin(selected_industries)].copy()
+
                     rows = []
                     total = min(len(uni), int(scan_limit))
                     prog = st.progress(0)
@@ -770,6 +794,10 @@ with tab_b:
                             prog.progress(i / total)
                             continue
 
+                        if strong_only and not result["strong_stock"]:
+                            prog.progress(i / total)
+                            continue
+
                         tier = "C"
                         if result["liq_ok"] and (result["space_ok_brk"] or result["space_ok_pb"]):
                             tier = "B"
@@ -790,6 +818,7 @@ with tab_b:
                                 "preferred_style": result["preferred_style"],
                                 "price": result["current_price"],
                                 "liq20E": result["ma20_amount"],
+                                "strong_stock": result["strong_stock"],
                                 "brk_setup": result["breakout_setup"],
                                 "brk_space": result["space_ok_brk"],
                                 "brk_rr1": result["rr1_brk"],
@@ -810,15 +839,40 @@ with tab_b:
                     if out.empty:
                         st.warning("本次掃描沒有符合條件的候選。")
                     else:
+                        # 自動熱門產業：先從掃描結果裡挑最熱門產業
+                        hot_industry_df = None
+                        if industry_mode == "自動熱門產業":
+                            hot_industry_df = (
+                                out.groupby("industry", dropna=False)
+                                .agg(
+                                    strong_count=("strong_stock", "sum"),
+                                    a_count=("tier", lambda s: (s == "A").sum()),
+                                    avg_liq=("liq20E", "mean"),
+                                )
+                                .reset_index()
+                            )
+                            hot_industry_df = hot_industry_df.sort_values(
+                                by=["a_count", "strong_count", "avg_liq"],
+                                ascending=False
+                            ).reset_index(drop=True)
+
+                            hot_list = hot_industry_df["industry"].head(int(top_hot_industries)).astype(str).tolist()
+                            out = out[out["industry"].astype(str).isin(hot_list)].copy()
+
                         out["tier_rank"] = out["tier"].map({"A": 1, "B": 2, "C": 3})
+                        out["style_rank"] = out["style"].map({"突破型": 1, "拉回型": 2})
                         out = out.sort_values(
-                            by=["tier_rank", "preferred_bonus", "brk_rr2", "pb_rr2", "liq20E"],
-                            ascending=[True, False, False, False, False],
+                            by=["tier_rank", "preferred_bonus", "style_rank", "brk_rr2", "pb_rr2", "liq20E"],
+                            ascending=[True, False, True, False, False, False],
                         ).reset_index(drop=True)
-                        out = out.drop(columns=["tier_rank"])
+                        out = out.drop(columns=["tier_rank", "style_rank"])
 
                         st.session_state["screen_df"] = out.copy()
                         st.session_state["screen_ts"] = datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S")
+
+                        if industry_mode == "自動熱門產業" and hot_industry_df is not None and not hot_industry_df.empty:
+                            st.subheader("🔥 熱門產業排行榜")
+                            st.dataframe(hot_industry_df.head(int(top_hot_industries)), use_container_width=True)
 
                         st.subheader("🥇 A級交易機會")
                         a_df = out[out["tier"] == "A"].copy()
