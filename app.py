@@ -192,13 +192,36 @@ if "screen_ts" not in st.session_state:
 
 # ============ v11.7 篩選工具（只用 openapi.twse.com.tw + FinMind） ============
 @st.cache_data(ttl=90)
+@st.cache_data(ttl=90)
 def fetch_twse_stock_day_all():
     url = "https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL"
     r = _rq_get(url, timeout=8)
-    # debug：看是否走到 insecure fallback
-    st.caption("openapi.twse.com.tw：已嘗試 certifi 驗證；若失敗且允許降級，會自動改用 verify=False 重試。")
+
+    # 先檢查狀態碼
     r.raise_for_status()
-    js = r.json()
+
+    # 再檢查內容是不是 JSON
+    text = r.text.strip()
+    if not text:
+        raise ValueError("TWSE API 回傳空內容")
+
+    try:
+        js = r.json()
+    except Exception:
+        raise ValueError(f"TWSE API 非 JSON 回應，前 200 字：{text[:200]}")
+
+    df = pd.DataFrame(js)
+
+    for col in ["TradeValue", "TradeVolume", "ClosingPrice"]:
+        if col in df.columns:
+            df[col] = df[col].apply(safe_float)
+
+    if "Code" in df.columns:
+        df["Code"] = df["Code"].astype(str).str.strip()
+    if "Name" in df.columns:
+        df["Name"] = df["Name"].astype(str).str.strip()
+
+    return df
     df = pd.DataFrame(js)
 
     for col in ["TradeValue", "TradeVolume", "ClosingPrice"]:
