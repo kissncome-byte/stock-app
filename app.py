@@ -285,15 +285,14 @@ def prepare_indicator_df(df: pd.DataFrame):
 def compute_live_price(stock_id: str, hist_last_close: float):
     rt_price = None
     rt_success = False
-    rt_y_price = 0.0
     rt_source = "歷史收盤"
+    rt_type = "historical"  # realtime / delayed / historical
 
-    # 引擎 A：TWSE MIS
+    # ===== 引擎 A：TWSE MIS =====
     try:
         session = requests.Session()
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-        }
+        headers = {"User-Agent": "Mozilla/5.0"}
+
         session.get(
             "https://mis.twse.com.tw/stock/index.jsp",
             headers=headers,
@@ -303,57 +302,64 @@ def compute_live_price(stock_id: str, hist_last_close: float):
 
         ts = int(time.time() * 1000)
         url = f"https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=tse_{stock_id}.tw|otc_{stock_id}.tw&json=1&delay=0&_={ts}"
-        r = session.get(url, headers=headers, timeout=3, verify=certifi.where())
+
+        r = session.get(
+            url,
+            headers=headers,
+            timeout=3,
+            verify=certifi.where(),
+        )
 
         if r.status_code == 200:
             data = r.json()
             if "msgArray" in data and len(data["msgArray"]) > 0:
                 info = data["msgArray"][0]
 
-                # z: 最新成交價
-                # y: 昨收/參考價
-                z = safe_float(info.get("z"))
-                y = safe_float(info.get("y"))
-                rt_y_price = y
+                z = safe_float(info.get("z"))   # 最新成交價
+                tv = safe_float(info.get("tv")) # 最新成交量
 
-                # 只有 z > 0 才算真正即時
-                if z > 0:
+                # 只有真的有成交才算即時
+                if z > 0 and tv > 0:
                     rt_price = z
                     rt_success = True
-                    rt_source = "TWSE MIS 即時"
+                    rt_source = "TWSE 即時成交"
+                    rt_type = "realtime"
+
     except Exception:
         pass
 
-    # 引擎 B：Yahoo 備援
+    # ===== 引擎 B：Yahoo 備援 =====
     if not rt_success:
         try:
             for suffix in [".TW", ".TWO"]:
-                yh_url = f"https://query2.finance.yahoo.com/v8/finance/chart/{stock_id}{suffix}"
-                yh_r = requests.get(
-                    yh_url,
+                url = f"https://query2.finance.yahoo.com/v8/finance/chart/{stock_id}{suffix}"
+                r = requests.get(
+                    url,
                     headers={"User-Agent": "Mozilla/5.0"},
                     timeout=3,
                     verify=certifi.where(),
                 )
 
-                if yh_r.status_code == 200:
-                    meta = yh_r.json().get("chart", {}).get("result", [{}])[0].get("meta", {})
+                if r.status_code == 200:
+                    meta = r.json().get("chart", {}).get("result", [{}])[0].get("meta", {})
                     p = safe_float(meta.get("regularMarketPrice"))
-                    prev_close = safe_float(meta.get("previousClose"))
-
-                    if prev_close > 0:
-                        rt_y_price = prev_close
 
                     if p > 0:
                         rt_price = p
                         rt_success = True
-                        rt_source = f"Yahoo 即時/延遲 {suffix}"
+                        rt_source = f"Yahoo 價格 {suffix}"
+                        rt_type = "delayed"
                         break
         except Exception:
             pass
 
     final_price = rt_price if rt_success else hist_last_close
-    return final_price, rt_success, rt_y_price, rt_source
+
+    if not rt_success:
+        rt_source = "歷史收盤"
+        rt_type = "historical"
+
+    return final_price, rt_success, rt_source, rt_type
 
 
 def evaluate_stock(
@@ -381,9 +387,11 @@ def evaluate_stock(
     hist_last = df.iloc[-1]
     last_trade_date_str = str(hist_last["date"])
 
-    current_price, rt_success, rt_y_price, rt_source = compute_live_price(
+    current_price, rt_success, rt_source, rt_type = compute_live_price(
         stock_id, float(hist_last["close"])
     )
+    rt_y_price = float(hist_last["close"])
+
     m_code, m_desc, m_color = get_market_status_label(rt_success, last_trade_date_str)
 
     ma20_val = float(hist_last["MA20"])
@@ -486,7 +494,8 @@ def evaluate_stock(
         "rt_success": rt_success,
         "rt_y_price": rt_y_price,
         "rt_source": rt_source,
-        "quote_status": "即時/近即時" if rt_success else "歷史/非即時",
+        "rt_type": rt_type,
+        "quote_status": "即時成交" if rt_type == "realtime" else ("延遲報價" if rt_type == "delayed" else "歷史收盤"),
         "m_code": m_code,
         "m_desc": m_desc,
         "m_color": m_color,
@@ -670,9 +679,15 @@ def render_single_stock_result(result: dict):
         st.header(f"{result['stock_name']} {result['stock_id']}")
         st.caption(f"產業：{result['industry']} | 個股型態：{result['個股型態']} | 資料來源：{'即時' if result['rt_success'] else '歷史'}")
     with top2:
-        diff = result["current_price"] - (result["rt_y_price"] if result["rt_y_price"] > 0 else result["df"].iloc[-1]["close"])
+        diff = result["current_price"] - float(result["df"].iloc[-1]["close"])
         st.metric("目前現價", f"{result['current_price']:.2f}", delta=f"{diff:.2f}")
-        st.caption(f"報價狀態：{result['quote_status']}｜來源：{result['rt_source']}")
+
+        if result["rt_type"] == "realtime":
+            st.success(f"即時成交價｜{result['rt_source']}")
+        elif result["rt_type"] == "delayed":
+            st.warning(f"延遲報價｜{result['rt_source']}")
+        else:
+            st.error(f"非即時（歷史）｜{result['rt_source']}")
     with top3:
         st.subheader(f":{result['m_color']}[{result['m_desc']}]")
 
@@ -810,7 +825,6 @@ with tab_b:
                     if industry_mode == "手動指定產業" and selected_industries:
                         universe = universe[universe["industry_category"].astype(str).isin(selected_industries)].copy()
 
-                    # ===== Layer 1 =====
                     layer1_rows = []
                     total = min(len(universe), int(market_scan_limit))
                     prog = st.progress(0)
@@ -854,6 +868,7 @@ with tab_b:
                                 "市場偏好型態": result["市場偏好型態"],
                                 "price": result["current_price"],
                                 "quote_status": result["quote_status"],
+                                "rt_type": result["rt_type"],
                                 "rt_source": result["rt_source"],
                                 "liq20E": result["ma20_amount"],
                                 "strong_stock": result["strong_stock"],
@@ -872,7 +887,6 @@ with tab_b:
                         st.subheader("Layer 1｜全市場快速掃描完成")
                         st.write(f"掃描完成筆數：{len(layer1_df)}")
 
-                        # ===== Layer 2 =====
                         hot_industry_df = (
                             layer1_df.groupby("industry", dropna=False)
                             .agg(
@@ -903,7 +917,6 @@ with tab_b:
                         st.subheader("Layer 2｜熱門產業排行榜")
                         st.dataframe(hot_industry_df.head(int(hot_industry_top_n)), use_container_width=True)
 
-                        # ===== Layer 3 =====
                         layer2_df = layer2_df.head(int(deep_scan_limit)).copy()
 
                         deep_rows = []
@@ -930,6 +943,7 @@ with tab_b:
                                     "市場偏好型態": result["市場偏好型態"],
                                     "price": result["current_price"],
                                     "quote_status": result["quote_status"],
+                                    "rt_type": result["rt_type"],
                                     "rt_source": result["rt_source"],
                                     "liq20E": result["ma20_amount"],
                                     "strong_stock": result["strong_stock"],
@@ -954,11 +968,18 @@ with tab_b:
                         else:
                             out["tier_rank"] = out["tier"].map({"A": 1, "B": 2, "C": 3})
                             out["style_rank"] = out["個股型態"].map({"突破型": 1, "拉回型": 2})
+                            out["quote_rank"] = out["rt_type"].map({
+                                "realtime": 1,
+                                "delayed": 2,
+                                "historical": 3
+                            })
+
                             out = out.sort_values(
-                                by=["tier_rank", "preferred_bonus", "style_rank", "brk_rr2", "pb_rr2", "liq20E"],
-                                ascending=[True, False, True, False, False, False],
+                                by=["tier_rank", "quote_rank", "preferred_bonus", "style_rank", "brk_rr2", "pb_rr2", "liq20E"],
+                                ascending=[True, True, False, True, False, False, False],
                             ).reset_index(drop=True)
-                            out = out.drop(columns=["tier_rank", "style_rank"])
+
+                            out = out.drop(columns=["tier_rank", "style_rank", "quote_rank"])
 
                             st.session_state["screen_df"] = out.copy()
                             st.session_state["screen_ts"] = datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S")
@@ -979,15 +1000,24 @@ with tab_b:
 
                             st.subheader("🥇 A級交易機會")
                             a_df = out[out["tier"] == "A"].copy()
-                            st.dataframe(a_df.head(int(top_show)), use_container_width=True) if not a_df.empty else st.write("無")
+                            if a_df.empty:
+                                st.write("無")
+                            else:
+                                st.dataframe(a_df.head(int(top_show)), use_container_width=True)
 
                             st.subheader("🥈 B級強候選")
                             b_df = out[out["tier"] == "B"].copy()
-                            st.dataframe(b_df.head(int(top_show)), use_container_width=True) if not b_df.empty else st.write("無")
+                            if b_df.empty:
+                                st.write("無")
+                            else:
+                                st.dataframe(b_df.head(int(top_show)), use_container_width=True)
 
                             st.subheader("🥉 C級候選")
                             c_df = out[out["tier"] == "C"].copy()
-                            st.dataframe(c_df.head(int(top_show)), use_container_width=True) if not c_df.empty else st.write("無")
+                            if c_df.empty:
+                                st.write("無")
+                            else:
+                                st.dataframe(c_df.head(int(top_show)), use_container_width=True)
 
                             st.subheader("⭐ 今日最佳候選（Top Picks）")
                             topk = out.head(10).copy()
