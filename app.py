@@ -305,14 +305,83 @@ def compute_live_price(stock_id: str, hist_last_close: float):
                 info = data["msgArray"][0]
                 z = safe_float(info.get("z"))
                 y = safe_float(info.get("y"))
+               def compute_live_price(stock_id: str, hist_last_close: float):
+    rt_price = None
+    rt_success = False
+    rt_y_price = 0.0
+    rt_source = "歷史收盤"
+
+    # 引擎 A：TWSE MIS
+    try:
+        session = requests.Session()
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        }
+        session.get(
+            "https://mis.twse.com.tw/stock/index.jsp",
+            headers=headers,
+            timeout=3,
+            verify=certifi.where(),
+        )
+
+        ts = int(time.time() * 1000)
+        url = f"https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=tse_{stock_id}.tw|otc_{stock_id}.tw&json=1&delay=0&_={ts}"
+        r = session.get(url, headers=headers, timeout=3, verify=certifi.where())
+
+        if r.status_code == 200:
+            data = r.json()
+            if "msgArray" in data and len(data["msgArray"]) > 0:
+                info = data["msgArray"][0]
+
+                # z: 最新成交價
+                # y: 昨收 / 參考價
+                z = safe_float(info.get("z"))
+                y = safe_float(info.get("y"))
+
+                rt_y_price = y
+
+                # 只有 z > 0 才算真正即時價
                 if z > 0:
                     rt_price = z
                     rt_success = True
-                    rt_y_price = y
-                elif y > 0:
-                    rt_price = y
-                    rt_success = True
-                    rt_y_price = y
+                    rt_source = "TWSE MIS 即時"
+
+    except Exception:
+        pass
+
+    # 引擎 B：Yahoo 備援
+    if not rt_success:
+        try:
+            for suffix in [".TW", ".TWO"]:
+                yh_url = f"https://query2.finance.yahoo.com/v8/finance/chart/{stock_id}{suffix}"
+                yh_r = requests.get(
+                    yh_url,
+                    headers={"User-Agent": "Mozilla/5.0"},
+                    timeout=3,
+                    verify=certifi.where(),
+                )
+
+                if yh_r.status_code == 200:
+                    meta = yh_r.json().get("chart", {}).get("result", [{}])[0].get("meta", {})
+                    p = safe_float(meta.get("regularMarketPrice"))
+                    prev_close = safe_float(meta.get("previousClose"))
+
+                    if prev_close > 0:
+                        rt_y_price = prev_close
+
+                    # Yahoo regularMarketPrice 才當現價
+                    if p > 0:
+                        rt_price = p
+                        rt_success = True
+                        rt_source = f"Yahoo 即時/延遲 {suffix}"
+                        break
+        except Exception:
+            pass
+
+    # 如果兩個引擎都沒拿到現價，就退回歷史收盤
+    final_price = rt_price if rt_success else hist_last_close
+
+    return final_price, rt_success, rt_y_price, rt_source
     except Exception:
         pass
 
