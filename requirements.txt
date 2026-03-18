@@ -6,3 +6,4 @@ certifi
 altair
 pytz
 FinMind
+tqdm
