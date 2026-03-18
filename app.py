@@ -314,11 +314,9 @@ def compute_live_price(stock_id: str, hist_last_close: float):
             data = r.json()
             if "msgArray" in data and len(data["msgArray"]) > 0:
                 info = data["msgArray"][0]
+                z = safe_float(info.get("z"))
+                tv = safe_float(info.get("tv"))
 
-                z = safe_float(info.get("z"))   # 最新成交價
-                tv = safe_float(info.get("tv")) # 最新成交量
-
-                # 只有真的有成交才算即時
                 if z > 0 and tv > 0:
                     rt_price = z
                     rt_success = True
@@ -613,6 +611,7 @@ with st.sidebar:
 
     strong_only = st.checkbox("市場掃描只看強勢股", value=True)
     trend_filter = st.checkbox("只顯示 MA20 上升股票", value=True)
+    realtime_only = st.checkbox("市場掃描只看真正即時報價", value=False)
     adapt_to_regime = st.checkbox("依市場環境偏好排序型態", value=True)
 
 tab_a, tab_b = st.tabs(["📌 個股分析", "🔎 市場掃描"])
@@ -659,7 +658,7 @@ def render_plan(
             f"RR1 {rr1:.2f} {'✅' if rr1_ok else '❌'} | "
             f"RR2 {rr2:.2f} {'✅' if rr2_ok else '❌'}"
         )
-        st.write(f"**Tradeable {'✅YES' if tradeable else '❌NO'}**")
+        st.write(f"**可交易 {'✅是' if tradeable else '❌否'}**")
         st.write(f"🔹 進場 `{entry:.2f}`  |  🛑 停損 `{stop:.2f}`")
         st.write(f"🎯 目標1 `{tp1:.2f}` | 🚀 目標2 `{tp2:.2f}`")
 
@@ -669,7 +668,7 @@ def render_plan(
         m3.metric("Runner", f"{runner_lots}")
 
         if not tradeable:
-            st.caption("⚠️ 未通過 Tradeable（流動性 / 空間 / RR1 任一不足）。")
+            st.caption("⚠️ 未通過可交易條件（流動性 / 空間 / RR1 任一不足）。")
 
 
 def render_single_stock_result(result: dict):
@@ -858,6 +857,10 @@ with tab_b:
                             prog.progress(i / total)
                             continue
 
+                        if realtime_only and result["rt_type"] != "realtime":
+                            prog.progress(i / total)
+                            continue
+
                         layer1_rows.append(
                             {
                                 "stock_id": result["stock_id"],
@@ -923,11 +926,11 @@ with tab_b:
                         for _, r in layer2_df.iterrows():
                             result = r["result_obj"]
 
-                            tier = "C"
+                            tier = "觀察"
                             if result["liq_ok"] and (result["space_ok_brk"] or result["space_ok_pb"]):
-                                tier = "B"
+                                tier = "強候選"
                             if result["brk_tradeable"] or result["pb_tradeable"]:
-                                tier = "A"
+                                tier = "可交易"
 
                             preferred_bonus = 0
                             if adapt_to_regime and result["個股型態"] == result["市場偏好型態"]:
@@ -966,7 +969,11 @@ with tab_b:
                         if out.empty:
                             st.warning("Layer3 沒有深度掃描結果。")
                         else:
-                            out["tier_rank"] = out["tier"].map({"A": 1, "B": 2, "C": 3})
+                            out["tier_rank"] = out["tier"].map({
+                                "可交易": 1,
+                                "強候選": 2,
+                                "觀察": 3
+                            })
                             out["style_rank"] = out["個股型態"].map({"突破型": 1, "拉回型": 2})
                             out["quote_rank"] = out["rt_type"].map({
                                 "realtime": 1,
@@ -984,36 +991,36 @@ with tab_b:
                             st.session_state["screen_df"] = out.copy()
                             st.session_state["screen_ts"] = datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S")
 
-                            a_count = int((out["tier"] == "A").sum())
-                            b_count = int((out["tier"] == "B").sum())
-                            c_count = int((out["tier"] == "C").sum())
+                            a_count = int((out["tier"] == "可交易").sum())
+                            b_count = int((out["tier"] == "強候選").sum())
+                            c_count = int((out["tier"] == "觀察").sum())
                             breakout_count = int((out["個股型態"] == "突破型").sum())
                             pullback_count = int((out["個股型態"] == "拉回型").sum())
 
                             st.subheader("市場溫度計")
                             c1, c2, c3, c4, c5 = st.columns(5)
-                            c1.metric("A級", a_count)
-                            c2.metric("B級", b_count)
-                            c3.metric("C級", c_count)
+                            c1.metric("可交易", a_count)
+                            c2.metric("強候選", b_count)
+                            c3.metric("觀察", c_count)
                             c4.metric("突破型", breakout_count)
                             c5.metric("拉回型", pullback_count)
 
-                            st.subheader("🥇 A級交易機會")
-                            a_df = out[out["tier"] == "A"].copy()
+                            st.subheader("🥇 可交易")
+                            a_df = out[out["tier"] == "可交易"].copy()
                             if a_df.empty:
                                 st.write("無")
                             else:
                                 st.dataframe(a_df.head(int(top_show)), use_container_width=True)
 
-                            st.subheader("🥈 B級強候選")
-                            b_df = out[out["tier"] == "B"].copy()
+                            st.subheader("🥈 強候選")
+                            b_df = out[out["tier"] == "強候選"].copy()
                             if b_df.empty:
                                 st.write("無")
                             else:
                                 st.dataframe(b_df.head(int(top_show)), use_container_width=True)
 
-                            st.subheader("🥉 C級候選")
-                            c_df = out[out["tier"] == "C"].copy()
+                            st.subheader("🥉 觀察")
+                            c_df = out[out["tier"] == "觀察"].copy()
                             if c_df.empty:
                                 st.write("無")
                             else:
