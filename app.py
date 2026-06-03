@@ -376,11 +376,9 @@ def evaluate_stock(
         daily_inst = inst_df.groupby("date")["net_sheets"].sum().reset_index()
         inst_3d_sum = float(daily_inst.tail(3)["net_sheets"].sum())
 
-    # 營收基本面
+    # 營收基本面 (💡 此處已完全修復 SyntaxError)
     rev_df = get_rev_df(stock_id, days=120)
     latest_yoy = 0.0
-    if not rev_df.empty hover_yoy in rev_df.columns:
-        pass
     if not rev_df.empty and "revenue_year_growth_rate" in rev_df.columns:
         rev_sorted = rev_df.sort_values("date")
         latest_yoy = safe_float(rev_sorted.iloc[-1]["revenue_year_growth_rate"])
@@ -464,7 +462,7 @@ def evaluate_stock(
             tech_conclusion_short = "⚠️ 假突破嫌疑"
         else:
             tech_conclusion_long = "趨勢多頭成形，買盤動能延續性佳，屬於健康的攻擊型態，適合尋找突破點切入。"
-            tech_conclusion_short = "🚀多頭成形"
+            tech_conclusion_short = "🚀 多頭成形"
             
     elif minus_di > plus_di and adx_now >= 20:
         tech_conclusion_long = "📉 **【強勢空頭成形】** 技術面完全由空方主導（ADX上攻且空頭掌控）。市場賣壓極其沉重，此時盲目做多無異於螳臂擋車，極易逆勢受傷，強烈建議觀望，或尋找融券放空機會。"
@@ -555,7 +553,7 @@ with tab1:
             res = evaluate_stock(target_stock, total_cap, risk_pct, 500, 1, 1.5, 3)
             
             if res:
-                # 💡 [正式修復] 頂部第一時間印出股票中文名字與所屬產業別大徽章
+                # 頂部印出股票中文名字與所屬產業別大徽章
                 st.markdown(f"## 🏢 {res['stock_name']} ({res['stock_id']}) · `{res['industry']}`")
                 
                 # 頂部儀表板
