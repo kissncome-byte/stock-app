@@ -114,56 +114,6 @@ def detect_style(result: dict) -> str:
     return "拉回型"
 
 
-def judge_market_regime_from_df(df: pd.DataFrame) -> dict:
-    if df is None or df.empty or len(df) < 30:
-        return {
-            "regime": "資料不足",
-            "preferred_style": "拉回型",
-            "reason": "資料不足，預設偏防守。"
-        }
-
-    x = df.copy()
-    x["MA20"] = x["close"].rolling(20).mean()
-    x = x.dropna(subset=["MA20"]).copy()
-    if x.empty or len(x) < 6:
-        return {
-            "regime": "資料不足",
-            "preferred_style": "拉回型",
-            "reason": "資料不足，預設偏防守。"
-        }
-
-    price = float(x["close"].iloc[-1])
-    ma20 = float(x["MA20"].iloc[-1])
-    ma20_prev = float(x["MA20"].iloc[-6])
-    slope_up = ma20 > ma20_prev
-
-    high_60 = float(x.tail(60)["high"].max()) if len(x) >= 60 else float(x["high"].max())
-    atr14 = float((x["high"] - x["low"]).rolling(14).mean().iloc[-1]) if len(x) >= 14 else 0.0
-
-    near_high = price >= (high_60 - 0.5 * atr14) if atr14 > 0 else price >= high_60 * 0.98
-    above_ma20 = price >= ma20
-
-    if slope_up and above_ma20 and near_high:
-        return {
-            "regime": "強勢盤",
-            "preferred_style": "突破型",
-            "reason": "均線上彎、價格站上 MA20 且接近區間高點。"
-        }
-
-    if slope_up and above_ma20:
-        return {
-            "regime": "震盪偏強盤",
-            "preferred_style": "拉回型",
-            "reason": "均線仍上彎，但尚未明顯突破高點，偏向等回檔切入。"
-        }
-
-    return {
-        "regime": "偏弱盤",
-        "preferred_style": "拉回型",
-        "reason": "價格/均線結構較弱，偏防守。"
-    }
-
-
 # ============ 4. Auth (已移除密碼驗證) ============
 FINMIND_TOKEN = os.getenv("FINMIND_TOKEN", "") or st.secrets.get("FINMIND_TOKEN", "")
 
@@ -232,34 +182,6 @@ def get_rev_df(stock_id: str, days: int = 220):
     start_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
     df = api.taiwan_stock_month_revenue(stock_id=stock_id, start_date=start_date)
     return df if df is not None else pd.DataFrame()
-
-
-@st.cache_data(ttl=86400)
-def get_financial_statement_df(stock_id: str, years: int = 2):
-    api = get_api()
-    start_date = (datetime.now() - timedelta(days=years * 365)).strftime("%Y-%m-%d")
-    try:
-        df_raw = api.taiwan_stock_financial_statement(stock_id=stock_id, start_date=start_date)
-        if df_raw is None or df_raw.empty:
-            return pd.DataFrame()
-        df = df_raw.copy()
-        targets = ["EPS", "OperatingIncomeGrossProfitRatio", "OperatingIncomeProfitRatio"]
-        df = df[df["type"].isin(targets)]
-        if df.empty:
-            return pd.DataFrame()
-        
-        df_pivot = df.pivot_table(index="date", columns="type", values="value", aggfunc="last").reset_index()
-        
-        core_cols = ["EPS", "OperatingIncomeGrossProfitRatio", "OperatingIncomeProfitRatio"]
-        for col in core_cols:
-            if col not in df_pivot.columns:
-                df_pivot[col] = 0.0
-            else:
-                df_pivot[col] = pd.to_numeric(df_pivot[col], errors="coerce").fillna(0.0)
-                
-        return df_pivot
-    except Exception:
-        return pd.DataFrame()
 
 
 # ============ 6. Core ============
@@ -474,6 +396,7 @@ def evaluate_stock(
                 tech_conclusion_long = "🛡️ **【高手最愛！拉回安全防守點】** 股價經歷短線修正，目前精準跌到 MA20 均線防守區，過熱指標被洗乾淨了。最棒的是，下跌期間法人在偷偷吃貨，營收也很好！這就是最標準的拉回極品，下檔有肉墊，適合分批佈局。"
                 tech_conclusion_short = "🛡️ 精準拉回"
 
+    # ====== 價格與風控計算骨架 (補回並依台股法規進行 Tick 修正) ======
     pivot = ma20_val
     brk_setup = (current_price >= pivot) and (rsi_now < 70)
     pb_setup = (current_price < pivot) and (current_price >= ma20_val * 0.97)
@@ -481,14 +404,16 @@ def evaluate_stock(
     levels = [ma20_val * 1.1, ma20_val * 1.2, ma20_val * 1.3]
     next_res = next_resistance_above(current_price, levels)
 
-    target_brk = next_res if next_res != float("inf") else current_price * 1.15
-    stop_brk = current_price - (2 * atr) - slip
+    # 突破型價位精算
+    target_brk = round_to_tick(next_res if next_res != float("inf") else current_price * 1.15, t)
+    stop_brk = round_to_tick(current_price - (2 * atr) - slip, t)
     r_brk = target_brk - current_price
     s_brk = current_price - stop_brk
     rr1_brk = r_brk / s_brk if s_brk > 0 else 0
 
-    target_pb = pivot
-    stop_pb = current_price - atr - slip
+    # 拉回型價位精算
+    target_pb = round_to_tick(pivot, t)
+    stop_pb = round_to_tick(current_price - atr - slip, t)
     r_pb = target_pb - current_price
     s_pb = current_price - stop_pb
     rr1_pb = r_pb / s_pb if s_pb > 0 else 0
@@ -510,8 +435,15 @@ def evaluate_stock(
         "pullback_setup": pb_setup,
         "space_ok_brk": r_brk > (space_atr_mult * atr),
         "space_ok_pb": r_pb > (float(space_tick_buffer) * t),
+        
+        # 💡 正式修正：將消失的關鍵價格因子與風控數字存入字典
+        "target_brk": target_brk,
+        "stop_brk": stop_brk,
         "rr1_brk": rr1_brk,
+        "target_pb": target_pb,
+        "stop_pb": stop_pb,
         "rr1_pb": rr1_pb,
+        
         "brk_tradeable": brk_setup and rr1_brk >= 1.5,
         "pb_tradeable": pb_setup and rr1_pb >= 2.0,
         "tech_conclusion_long": tech_conclusion_long,
@@ -543,15 +475,45 @@ if st.sidebar.button("開始秒級雷達掃描"):
         )
         
         if res:
+            # 第一層：大指標看板
             col1, col2, col3, col4 = st.columns(4)
-            col1.metric("股價狀態", f"{res['current_price']} 元", f"狀態: {res['tech_conclusion_short']}")
+            col1.metric("即時股價", f"{res['current_price']} 元", f"診斷: {res['tech_conclusion_short']}")
             col2.metric("近3日法人買賣超", f"{res['inst_3d_sheets']:.0f} 張")
             col3.metric("最新營收年增率", f"{res['latest_revenue_yoy']:.2f} %")
             col4.metric("建議操盤風格", res["style"])
             
+            # 第二層：白話文大腦建議
             st.subheader("💡 終極雷達白話文操盤建議")
             st.info(res["tech_conclusion_long"])
             
+            # 💡 第三層：全新加入——精算風控操作價位藍圖（白話文版）
+            st.subheader("🎯 交易藍圖與精算風控價位")
+            
+            box_brk, box_pb = st.columns(2)
+            
+            with box_brk:
+                st.markdown("### 🏃‍♂️ 【突破型策略】方案藍圖")
+                st.markdown(f"* **預估進場點 (現價)：** `{res['current_price']}` 元")
+                st.markdown(f"* **波段停利目標價：** `{res['target_brk']}` 元")
+                st.markdown(f"* **嚴格防守停損點：** `{res['stop_brk']}` 元")
+                st.markdown(f"* **這筆交易的風報比：** `{res['rr1_brk']:.2f}` (賺賠比小於 1.5 建議放棄)")
+                if res['brk_tradeable']:
+                    st.success("✅ 訊號符合！風報比合理，具備突破追擊機率。")
+                else:
+                    st.warning("⚠️ 突破防守空間不足，或波動過大導致勝率性價比低，暫不建議強追。")
+                    
+            with box_pb:
+                st.markdown("### 🛡️ 【拉回型策略】方案藍圖")
+                st.markdown(f"* **回檔理想買點 (現價)：** `{res['current_price']}` 元")
+                st.markdown(f"* **短線停利壓力位：** `{res['target_pb']}` 元")
+                st.markdown(f"* **破位出局停損點：** `{res['stop_pb']}` 元")
+                st.markdown(f"* **這筆交易的風報比：** `{res['rr1_pb']:.2f}` (賺賠比小於 2.0 建議放棄)")
+                if res['pb_tradeable']:
+                    st.success("✅ 訊號符合！屬於風險受控的精準拉回防守買點。")
+                else:
+                    st.warning("⚠️ 距離上方壓力（停利空間）太近，肉不夠多，建議再等回落深一點。")
+            
+            # 第四層：底層原始 JSON 數據
             st.write("### 🔍 因子診斷後台數據")
             st.json(res)
         else:
