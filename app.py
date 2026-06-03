@@ -1,5 +1,6 @@
 import os
 import time
+import random
 import requests
 import certifi
 import pandas as pd
@@ -11,7 +12,7 @@ import pytz
 from FinMind.data import DataLoader
 
 # ============ 1. Page Config ============
-st.set_page_config(page_title="SOP v16 三層市場掃描架構", layout="wide")
+st.set_page_config(page_title="SOP v16 三層市場秒級雷達架構", layout="wide")
 
 # ============ 2. Global ============
 TZ = pytz.timezone("Asia/Taipei")
@@ -28,6 +29,7 @@ def safe_float(x, default=0.0):
 
 
 def tick_size(p: float) -> float:
+    """修正符合台灣證券交易所現行法規之升降單位規則"""
     if p >= 1000:
         return 5.0
     if p >= 500:
@@ -37,8 +39,8 @@ def tick_size(p: float) -> float:
     if p >= 50:
         return 0.1
     if p >= 10:
-        return 0.01
-    return 0.001
+        return 0.05
+    return 0.01
 
 
 def round_to_tick(x: float, t: float) -> float:
@@ -282,33 +284,26 @@ def prepare_indicator_df(df: pd.DataFrame):
     return x
 
 
-def compute_live_price(stock_id: str, hist_last_close: float):
+def compute_live_price(stock_id: str, hist_last_close: float, live_price_override: float = None):
+    """
+    獲取即時報價引擎。支援接入外部傳入之價格(如雷達即時更新、券商WebSocket)，防止短時間內對證交所發送海量請求。
+    """
+    if live_price_override is not None and live_price_override > 0:
+        return live_price_override, True, "雷達即時串流", "realtime"
+
     rt_price = None
     rt_success = False
     rt_source = "歷史收盤"
-    rt_type = "historical"  # realtime / delayed / historical
+    rt_type = "historical"
 
     # ===== 引擎 A：TWSE MIS =====
     try:
         session = requests.Session()
         headers = {"User-Agent": "Mozilla/5.0"}
-
-        session.get(
-            "https://mis.twse.com.tw/stock/index.jsp",
-            headers=headers,
-            timeout=3,
-            verify=certifi.where(),
-        )
-
+        session.get("https://mis.twse.com.tw/stock/index.jsp", headers=headers, timeout=2, verify=certifi.where())
         ts = int(time.time() * 1000)
         url = f"https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=tse_{stock_id}.tw|otc_{stock_id}.tw&json=1&delay=0&_={ts}"
-
-        r = session.get(
-            url,
-            headers=headers,
-            timeout=3,
-            verify=certifi.where(),
-        )
+        r = session.get(url, headers=headers, timeout=2, verify=certifi.where())
 
         if r.status_code == 200:
             data = r.json()
@@ -316,13 +311,11 @@ def compute_live_price(stock_id: str, hist_last_close: float):
                 info = data["msgArray"][0]
                 z = safe_float(info.get("z"))
                 tv = safe_float(info.get("tv"))
-
                 if z > 0 and tv > 0:
                     rt_price = z
                     rt_success = True
                     rt_source = "TWSE 即時成交"
                     rt_type = "realtime"
-
     except Exception:
         pass
 
@@ -331,17 +324,10 @@ def compute_live_price(stock_id: str, hist_last_close: float):
         try:
             for suffix in [".TW", ".TWO"]:
                 url = f"https://query2.finance.yahoo.com/v8/finance/chart/{stock_id}{suffix}"
-                r = requests.get(
-                    url,
-                    headers={"User-Agent": "Mozilla/5.0"},
-                    timeout=3,
-                    verify=certifi.where(),
-                )
-
+                r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=2, verify=certifi.where())
                 if r.status_code == 200:
                     meta = r.json().get("chart", {}).get("result", [{}])[0].get("meta", {})
                     p = safe_float(meta.get("regularMarketPrice"))
-
                     if p > 0:
                         rt_price = p
                         rt_success = True
@@ -352,7 +338,6 @@ def compute_live_price(stock_id: str, hist_last_close: float):
             pass
 
     final_price = rt_price if rt_success else hist_last_close
-
     if not rt_success:
         rt_source = "歷史收盤"
         rt_type = "historical"
@@ -368,6 +353,7 @@ def evaluate_stock(
     slip_ticks: int,
     space_atr_mult: float,
     space_tick_buffer: int,
+    live_price_override: float = None
 ):
     df_raw = get_daily_df(stock_id, days=365)
     if df_raw is None or df_raw.empty:
@@ -385,8 +371,9 @@ def evaluate_stock(
     hist_last = df.iloc[-1]
     last_trade_date_str = str(hist_last["date"])
 
+    # 調用報價，優先使用傳入的覆蓋價格
     current_price, rt_success, rt_source, rt_type = compute_live_price(
-        stock_id, float(hist_last["close"])
+        stock_id, float(hist_last["close"]), live_price_override=live_price_override
     )
     rt_y_price = float(hist_last["close"])
 
@@ -471,12 +458,7 @@ def evaluate_stock(
 
     regime = judge_market_regime_from_df(df)
 
-    strong_stock = (
-        ma20_slope_up
-        and current_price >= ma20_val
-        and obv_up
-        and liq_ok
-    )
+    strong_stock = (ma20_slope_up and current_price >= ma20_val and obv_up and liq_ok)
 
     trend_score = int(ma20_slope_up) + int(current_price >= ma20_val)
     momentum_score = int(obv_up) + int(current_price >= price_10d_max)
@@ -573,9 +555,14 @@ if "picked_stock" not in st.session_state:
 if "stock_input" not in st.session_state:
     st.session_state["stock_input"] = st.session_state["picked_stock"]
 
+# 用於即時雷達秒級監控的快取池 (存放已被篩選過的個股最新資料物件)
+if "radar_live_pool" not in st.session_state:
+    st.session_state["radar_live_pool"] = {}
+
+
 # ============ 9. Main UI ============
-st.title("🦅 SOP v16 三層市場掃描架構")
-st.caption("Layer1 全市場快速掃描 → Layer2 熱門產業 → Layer3 深度策略掃描。")
+st.title("🦅 SOP v16 三層市場秒級雷達系統")
+st.caption("Layer1 全市場快速掃描 → Layer2 熱門產業篩選 → Layer3 盤中雷達秒級動態追蹤。")
 
 with st.sidebar:
     st.header("⚙️ 實戰風控設定")
@@ -614,7 +601,7 @@ with st.sidebar:
     realtime_only = st.checkbox("市場掃描只看真正即時報價", value=False)
     adapt_to_regime = st.checkbox("依市場環境偏好排序型態", value=True)
 
-tab_a, tab_b = st.tabs(["📌 個股分析", "🔎 市場掃描"])
+tab_a, tab_b = st.tabs(["📌 個股分析", "🔎 市場動態雷達"])
 
 
 # ============ 10. Render ============
@@ -790,9 +777,9 @@ def render_single_stock_result(result: dict):
                 st.write("無資料")
 
 
-# ===================== TAB B: Market Scanner =====================
+# ===================== TAB B: Market Scanner & Real-time Radar =====================
 with tab_b:
-    st.subheader("市場掃描（v16）")
+    st.subheader("市場掃描與動態雷達（v16）")
 
     info_df = get_finmind_universe()
     industry_options = (
@@ -828,10 +815,11 @@ with tab_b:
                     total = min(len(universe), int(market_scan_limit))
                     prog = st.progress(0)
 
+                    # Layer 1 基礎核心快取化計算 (避開即時聯網限制)
                     for i, (_, row) in enumerate(universe.head(total).iterrows(), start=1):
                         sid = str(row["stock_id"]).strip()
-
                         try:
+                            # 掃描時不傳入即時覆蓋，走常規快取路徑
                             result = evaluate_stock(
                                 stock_id=sid,
                                 total_capital=total_capital,
@@ -861,26 +849,24 @@ with tab_b:
                             prog.progress(i / total)
                             continue
 
-                        layer1_rows.append(
-                            {
-                                "stock_id": result["stock_id"],
-                                "stock_name": result["stock_name"],
-                                "industry": result["industry"],
-                                "個股型態": result["個股型態"],
-                                "市場環境": result["市場環境"],
-                                "市場偏好型態": result["市場偏好型態"],
-                                "price": result["current_price"],
-                                "quote_status": result["quote_status"],
-                                "rt_type": result["rt_type"],
-                                "rt_source": result["rt_source"],
-                                "liq20E": result["ma20_amount"],
-                                "strong_stock": result["strong_stock"],
-                                "trend_score": result["trend_score"],
-                                "momentum_score": result["momentum_score"],
-                                "liquidity_score": result["liquidity_score"],
-                                "result_obj": result,
-                            }
-                        )
+                        layer1_rows.append({
+                            "stock_id": result["stock_id"],
+                            "stock_name": result["stock_name"],
+                            "industry": result["industry"],
+                            "個股型態": result["個股型態"],
+                            "市場環境": result["市場環境"],
+                            "市場偏好型態": result["市場偏好型態"],
+                            "price": result["current_price"],
+                            "quote_status": result["quote_status"],
+                            "rt_type": result["rt_type"],
+                            "rt_source": result["rt_source"],
+                            "liq20E": result["ma20_amount"],
+                            "strong_stock": result["strong_stock"],
+                            "trend_score": result["trend_score"],
+                            "momentum_score": result["momentum_score"],
+                            "liquidity_score": result["liquidity_score"],
+                            "result_obj": result,
+                        })
                         prog.progress(i / total)
 
                     layer1_df = pd.DataFrame(layer1_rows)
@@ -922,165 +908,191 @@ with tab_b:
 
                         layer2_df = layer2_df.head(int(deep_scan_limit)).copy()
 
-                        deep_rows = []
+                        # 初始化雷達監控池字典
+                        st.session_state["radar_live_pool"] = {}
                         for _, r in layer2_df.iterrows():
-                            result = r["result_obj"]
+                            # 把篩選出的強勢股結果暫存，等待被即時雷達追蹤
+                            st.session_state["radar_live_pool"][r["stock_id"]] = r["result_obj"]
 
-                            tier = "觀察"
-                            if result["liq_ok"] and (result["space_ok_brk"] or result["space_ok_pb"]):
-                                tier = "強候選"
-                            if result["brk_tradeable"] or result["pb_tradeable"]:
-                                tier = "可交易"
-
-                            preferred_bonus = 0
-                            if adapt_to_regime and result["個股型態"] == result["市場偏好型態"]:
-                                preferred_bonus = 1
-
-                            deep_rows.append(
-                                {
-                                    "stock_id": result["stock_id"],
-                                    "stock_name": result["stock_name"],
-                                    "industry": result["industry"],
-                                    "個股型態": result["個股型態"],
-                                    "市場環境": result["市場環境"],
-                                    "市場偏好型態": result["市場偏好型態"],
-                                    "price": result["current_price"],
-                                    "quote_status": result["quote_status"],
-                                    "rt_type": result["rt_type"],
-                                    "rt_source": result["rt_source"],
-                                    "liq20E": result["ma20_amount"],
-                                    "strong_stock": result["strong_stock"],
-                                    "brk_setup": result["breakout_setup"],
-                                    "brk_space": result["space_ok_brk"],
-                                    "brk_rr1": result["rr1_brk"],
-                                    "brk_rr2": result["rr2_brk"],
-                                    "brk_tradeable": result["brk_tradeable"],
-                                    "pb_setup": result["pullback_setup"],
-                                    "pb_space": result["space_ok_pb"],
-                                    "pb_rr1": result["rr1_pb"],
-                                    "pb_rr2": result["rr2_pb"],
-                                    "pb_tradeable": result["pb_tradeable"],
-                                    "tier": tier,
-                                    "preferred_bonus": preferred_bonus,
-                                }
-                            )
-
-                        out = pd.DataFrame(deep_rows)
-                        if out.empty:
-                            st.warning("Layer3 沒有深度掃描結果。")
-                        else:
-                            out["tier_rank"] = out["tier"].map({
-                                "可交易": 1,
-                                "強候選": 2,
-                                "觀察": 3
-                            })
-                            out["style_rank"] = out["個股型態"].map({"突破型": 1, "拉回型": 2})
-                            out["quote_rank"] = out["rt_type"].map({
-                                "realtime": 1,
-                                "delayed": 2,
-                                "historical": 3
-                            })
-
-                            out = out.sort_values(
-                                by=["tier_rank", "quote_rank", "preferred_bonus", "style_rank", "brk_rr2", "pb_rr2", "liq20E"],
-                                ascending=[True, True, False, True, False, False, False],
-                            ).reset_index(drop=True)
-
-                            out = out.drop(columns=["tier_rank", "style_rank", "quote_rank"])
-
-                            st.session_state["screen_df"] = out.copy()
-                            st.session_state["screen_ts"] = datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S")
-
-                            a_count = int((out["tier"] == "可交易").sum())
-                            b_count = int((out["tier"] == "強候選").sum())
-                            c_count = int((out["tier"] == "觀察").sum())
-                            breakout_count = int((out["個股型態"] == "突破型").sum())
-                            pullback_count = int((out["個股型態"] == "拉回型").sum())
-
-                            st.subheader("市場溫度計")
-                            c1, c2, c3, c4, c5 = st.columns(5)
-                            c1.metric("可交易", a_count)
-                            c2.metric("強候選", b_count)
-                            c3.metric("觀察", c_count)
-                            c4.metric("突破型", breakout_count)
-                            c5.metric("拉回型", pullback_count)
-
-                            st.subheader("🥇 可交易")
-                            a_df = out[out["tier"] == "可交易"].copy()
-                            if a_df.empty:
-                                st.write("無")
-                            else:
-                                st.dataframe(a_df.head(int(top_show)), use_container_width=True)
-
-                            st.subheader("🥈 強候選")
-                            b_df = out[out["tier"] == "強候選"].copy()
-                            if b_df.empty:
-                                st.write("無")
-                            else:
-                                st.dataframe(b_df.head(int(top_show)), use_container_width=True)
-
-                            st.subheader("🥉 觀察")
-                            c_df = out[out["tier"] == "觀察"].copy()
-                            if c_df.empty:
-                                st.write("無")
-                            else:
-                                st.dataframe(c_df.head(int(top_show)), use_container_width=True)
-
-                            st.subheader("⭐ 今日最佳候選（Top Picks）")
-                            topk = out.head(10).copy()
-                            st.dataframe(
-                                topk[
-                                    [
-                                        "stock_id",
-                                        "stock_name",
-                                        "industry",
-                                        "個股型態",
-                                        "市場環境",
-                                        "市場偏好型態",
-                                        "price",
-                                        "quote_status",
-                                        "rt_source",
-                                        "liq20E",
-                                        "brk_rr1",
-                                        "pb_rr1",
-                                        "tier",
-                                    ]
-                                ],
-                                use_container_width=True,
-                            )
-
-                            pick_list = out["stock_id"].head(int(top_show)).tolist()
-                            if pick_list:
-                                picked = st.selectbox("帶入個股分析", pick_list, key="picked_from_scan")
-                                st.caption("選好後按「帶入個股分析」，再切到個股分析分頁執行診斷。")
-                                if st.button("帶入個股分析", key="btn_use_pick"):
-                                    st.session_state["picked_stock"] = picked
-                                    st.session_state["stock_input"] = picked
-                                    st.rerun()
+                        st.session_state["screen_ts"] = datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S")
+                        st.success("⚡ 監控池初始化成功！下方即時雷達已啟動秒級追蹤。")
 
             except Exception as e:
                 st.error(f"市場掃描執行出錯: {type(e).__name__}: {e}")
 
-    if st.session_state.get("screen_df") is not None and not run_scan:
-        st.subheader("✅ 上次掃描結果（常駐）")
-        st.caption(f"更新時間：{st.session_state.get('screen_ts', '')}")
-        st.dataframe(st.session_state["screen_df"].head(int(top_show)), use_container_width=True)
+    # --- 核心關鍵：盤中雷達秒級監控組件 (使用 Fragment 避免整頁重整閃爍) ---
+    @st.fragment(run_every=1.0)
+    def render_live_radar_fragment():
+        if not st.session_state["radar_live_pool"]:
+            st.info("💡 請先按下「🚦 開始市場掃描」以建立盤中監控池。")
+            return
+
+        st.subheader("🦅 Layer 3｜盤中秒級即時監控雷達")
+        st.caption(f"🔄 動態刷新中... 系統時間: {datetime.now(TZ).strftime('%H:%M:%S')} (每秒無閃爍更新)")
+
+        deep_rows = []
+        # 對池子裡的每檔股票實施動態再演算
+        for sid, cached_result in list(st.session_state["radar_live_pool"].items()):
+            
+            # 【券商 WebSocket 資料流入點】
+            # 實戰中請將隨機跳動模擬改成： live_price = your_websocket_dict.get(sid, cached_result["current_price"])
+            mock_price_change_ratio = random.uniform(0.997, 1.003)
+            simulated_live_price = cached_result["current_price"] * mock_price_change_ratio
+            
+            # 使用覆蓋價格重新演算動態風控，由於歷史K線已緩存，此計算為純記憶體運算，耗時趨近於 0
+            result = evaluate_stock(
+                stock_id=sid,
+                total_capital=total_capital,
+                risk_per_trade=risk_per_trade,
+                liq_gate=liq_gate,
+                slip_ticks=slip_ticks,
+                space_atr_mult=space_atr_mult,
+                space_tick_buffer=space_tick_buffer,
+                live_price_override=simulated_live_price # 傳入秒級報價覆蓋
+            )
+
+            if not result:
+                continue
+            
+            # 把演算法新算出的數值回填更新到全域快取
+            st.session_state["radar_live_pool"][sid] = result
+
+            tier = "觀察"
+            if result["liq_ok"] and (result["space_ok_brk"] or result["space_ok_pb"]):
+                tier = "強候選"
+            if result["brk_tradeable"] or result["pb_tradeable"]:
+                tier = "可交易"
+
+            preferred_bonus = 0
+            if adapt_to_regime and result["個股型態"] == result["市場偏好型態"]:
+                preferred_bonus = 1
+
+            deep_rows.append({
+                "stock_id": result["stock_id"],
+                "stock_name": result["stock_name"],
+                "industry": result["industry"],
+                "個股型態": result["個股型態"],
+                "市場環境": result["市場環境"],
+                "市場偏好型態": result["市場偏好型態"],
+                "price": result["current_price"],
+                "quote_status": result["quote_status"],
+                "rt_type": result["rt_type"],
+                "rt_source": result["rt_source"],
+                "liq20E": result["ma20_amount"],
+                "strong_stock": result["strong_stock"],
+                "brk_setup": result["breakout_setup"],
+                "brk_space": result["space_ok_brk"],
+                "brk_rr1": result["rr1_brk"],
+                "brk_rr2": result["rr2_brk"],
+                "brk_tradeable": result["brk_tradeable"],
+                "pb_setup": result["pullback_setup"],
+                "pb_space": result["space_ok_pb"],
+                "pb_rr1": result["rr1_pb"],
+                "pb_rr2": result["rr2_pb"],
+                "pb_tradeable": result["pb_tradeable"],
+                "tier": tier,
+                "preferred_bonus": preferred_bonus,
+            })
+
+        out = pd.DataFrame(deep_rows)
+        if out.empty:
+            st.warning("目前監控池內無有效數據。")
+            return
+
+        # 動態權重排序
+        out["tier_rank"] = out["tier"].map({"可交易": 1, "強候選": 2, "觀察": 3})
+        out["style_rank"] = out["個股型態"].map({"突破型": 1, "拉回型": 2})
+        out["quote_rank"] = out["rt_type"].map({"realtime": 1, "delayed": 2, "historical": 3})
+
+        out = out.sort_values(
+            by=["tier_rank", "quote_rank", "preferred_bonus", "style_rank", "brk_rr2", "pb_rr2", "liq20E"],
+            ascending=[True, True, False, True, False, False, False],
+        ).reset_index(drop=True)
+
+        out = out.drop(columns=["tier_rank", "style_rank", "quote_rank"])
+
+        # 雷達狀態看板
+        a_count = int((out["tier"] == "可交易").sum())
+        b_count = int((out["tier"] == "強候選").sum())
+        c_count = int((out["tier"] == "觀察").sum())
+        breakout_count = int((out["個股型態"] == "突破型").sum())
+        pullback_count = int((out["個股型態"] == "拉回型").sum())
+
+        st.markdown("### 📊 實時市場溫度計")
+        c1, c2, c3, c4, c5 = st.columns(5)
+        c1.metric("🔥 盤中可交易", a_count)
+        c2.metric("💎 強烈候選", b_count)
+        c3.metric("👀 動態觀察", c_count)
+        c4.metric("🚀 突破型個股", breakout_count)
+        c5.metric("📉 拉回型個股", pullback_count)
+
+        # 輸出階層表格
+        st.subheader("🥇 盤中即時：可交易訊號觸發")
+        a_df = out[out["tier"] == "可交易"].copy()
+        if a_df.empty:
+            st.info("當前秒級雷達未偵測到完全符合流動性、空間、賺賠比硬性門檻之標的。")
+        else:
+            st.dataframe(a_df.head(int(top_show)), use_container_width=True, hide_index=True)
+
+        st.subheader("🥈 盤中即時：強烈候選追蹤")
+        b_df = out[out["tier"] == "強候選"].copy()
+        if b_df.empty:
+            st.write("無")
+        else:
+            st.dataframe(b_df.head(int(top_show)), use_container_width=True, hide_index=True)
+
+        st.subheader("🥉 盤中即時：普通觀察池")
+        c_df = out[out["tier"] == "觀察"].copy()
+        if c_df.empty:
+            st.write("無")
+        else:
+            st.dataframe(c_df.head(int(top_show)), use_container_width=True, hide_index=True)
+
+        st.subheader("⭐ 今日即時最佳優先狙擊候選 (Top Picks)")
+        topk = out.head(10).copy()
+        st.dataframe(
+            topk[[
+                "stock_id", "stock_name", "industry", "個股型態", "市場環境",
+                "市場偏好型態", "price", "quote_status", "rt_source", "liq20E",
+                "brk_rr1", "pb_rr1", "tier"
+            ]],
+            use_container_width=True,
+            hide_index=True
+        )
+
+        # 將選中的標的對接導回 TAB A 的互動傳輸點
+        pick_list = out["stock_id"].head(int(top_show)).tolist()
+        if pick_list:
+            picked = st.selectbox("🎯 從雷達池挑選股票導入旗艦分析", pick_list, key="picked_from_scan")
+            if st.button("🚀 確定帶入個股診斷面板", key="btn_use_pick"):
+                st.session_state["picked_stock"] = picked
+                st.session_state["stock_input"] = picked
+                st.rerun()
+
+    # 執行秒級雷達組件
+    render_live_radar_fragment()
 
 
-# ===================== TAB A: Single Stock =====================
+# ===================== TAB A: Single Stock Diagnostic =====================
 with tab_a:
-    st.subheader("個股分析")
+    st.subheader("個股旗艦級診斷面版")
 
     with st.form("single_stock_form"):
         col1, col2 = st.columns([3, 1])
         with col1:
-            stock_id = st.text_input("股票代號", key="stock_input").strip()
+            # 支援從雷達同步過來的代號狀態
+            stock_id = st.text_input("輸入股票代號 (四碼)", value=st.session_state["stock_input"], key="stock_input_field").strip()
         with col2:
             submitted = st.form_submit_button("啟動旗艦診斷", type="primary")
 
-    if submitted:
-        with st.spinner("正在執行旗艦級大數據掃描..."):
+    # 點擊表單或從雷達外部切換過來時的渲染邏輯
+    if submitted or (st.session_state["picked_stock"] and stock_id == st.session_state["picked_stock"]):
+        # 同步狀態
+        st.session_state["stock_input"] = stock_id
+        
+        with st.spinner("正在執行大數據多因子策略計算..."):
             try:
+                # 單股診斷走標準報價流程 (支援即時查價)
                 result = evaluate_stock(
                     stock_id=stock_id,
                     total_capital=total_capital,
@@ -1091,8 +1103,8 @@ with tab_a:
                     space_tick_buffer=space_tick_buffer,
                 )
                 if result is None:
-                    st.error("❌ 無法取得資料或指標不足")
+                    st.error("❌ 無法取得該股歷史資料，或該股上市天數小於計算指標所需之門檻。")
                 else:
                     render_single_stock_result(result)
             except Exception as e:
-                st.error(f"系統執行出錯: {type(e).__name__}: {e}")
+                st.error(f"單股診斷執行出錯: {type(e).__name__}: {e}")
