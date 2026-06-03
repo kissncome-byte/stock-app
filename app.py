@@ -12,7 +12,7 @@ import pytz
 from FinMind.data import DataLoader
 
 # ============ 1. Page Config ============
-st.set_page_config(page_title="SOP v16 多因子秒級雷達系統", layout="wide")
+st.set_page_config(page_title="SOP v16 終極多因子秒級雷達系統", layout="wide")
 
 # ============ 2. Global ============
 TZ = pytz.timezone("Asia/Taipei")
@@ -29,6 +29,7 @@ def safe_float(x, default=0.0):
 
 
 def tick_size(p: float) -> float:
+    """符合台灣證券交易所現行法規之升降單位規則"""
     if p >= 1000:
         return 5.0
     if p >= 500:
@@ -261,6 +262,7 @@ def get_rev_df(stock_id: str, days: int = 220):
 
 @st.cache_data(ttl=86400)
 def get_financial_statement_df(stock_id: str, years: int = 2):
+    """從 FinMind 獲取每季損益表核心指標，並實施強硬的型態保護與缺失補位"""
     api = get_api()
     start_date = (datetime.now() - timedelta(days=years * 365)).strftime("%Y-%m-%d")
     try:
@@ -272,7 +274,17 @@ def get_financial_statement_df(stock_id: str, years: int = 2):
         df = df[df["type"].isin(targets)]
         if df.empty:
             return pd.DataFrame()
+        
         df_pivot = df.pivot_table(index="date", columns="type", values="value", aggfunc="last").reset_index()
+        
+        # 💡 強制檢查核心特徵欄位，防止部分股票(如金融股)因缺少科目導致樞紐分析後缺少欄位而引發繪圖報錯
+        core_cols = ["EPS", "OperatingIncomeGrossProfitRatio", "OperatingIncomeProfitRatio"]
+        for col in core_cols:
+            if col not in df_pivot.columns:
+                df_pivot[col] = 0.0
+            else:
+                df_pivot[col] = pd.to_numeric(df_pivot[col], errors="coerce").fillna(0.0)
+                
         return df_pivot
     except Exception:
         return pd.DataFrame()
@@ -296,7 +308,7 @@ def prepare_indicator_df(df: pd.DataFrame):
     x["OBV"] = (direction * x["vol"]).cumsum()
     x["OBV_MA10"] = x["OBV"].rolling(10).mean()
 
-    # RSI 14
+    # === RSI 14 計算 ===
     delta = x["close"].diff()
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
@@ -306,7 +318,7 @@ def prepare_indicator_df(df: pd.DataFrame):
     rs = avg_gain / avg_loss
     x["RSI14"] = 100 - (100 / (1 + rs))
 
-    # DMI
+    # === DMI 計算 ===
     x["up_move"] = x["high"].diff()
     x["down_move"] = x["low"].shift(1) - x["low"]
     x["plus_dm"] = np.where((x["up_move"] > x["down_move"]) & (x["up_move"] > 0), x["up_move"], 0)
@@ -437,7 +449,7 @@ def evaluate_stock(
     plus_di = float(hist_last["PLUS_DI"])
     minus_di = float(hist_last["MINUS_DI"])
 
-    # ====== 核心大改裝 1：將複雜指標融合成「白話結論描述」 ======
+    # ====== 將複雜指標融合成「白話結論描述」 ======
     tech_conclusion_long = "⚖️ 擺動指標中性，目前短線無爆發性動能。"
     tech_conclusion_short = "中性觀望"
 
@@ -478,7 +490,7 @@ def evaluate_stock(
     breakout_setup = (current_price >= pivot) and obv_up and (rsi_now < 78)
     pullback_setup = ma20_slope_up and (ma20_val <= current_price <= ma20_val + 1.2 * atr)
 
-    # ====== 核心大改裝 2：財報基本面 QoQ 動態趨勢判斷 ======
+    # ====== 財報基本面 QoQ 動態趨勢判斷與標籤化 ======
     df_fin = get_financial_statement_df(stock_id, years=2)
     fundamental_tag = "平庸防守股"
     latest_eps = 0.0
@@ -501,21 +513,21 @@ def evaluate_stock(
             prev_eps = safe_float(prev_q.get("EPS", 0))
             prev_gross = safe_float(prev_q.get("OperatingIncomeGrossProfitRatio", 0))
             
-            # 自動判斷是不是比上一季好
+            # 自動 QoQ 趨勢對比
             if latest_eps > prev_eps:
                 eps_qoq_conclusion = f"🔥 獲利上升（上季 {prev_eps:.2f} → 本季 {latest_eps:.2f}）"
             else:
                 eps_qoq_conclusion = f"📉 獲利衰退（上季 {prev_eps:.2f} → 本季 {latest_eps:.2f}）"
 
             if latest_gross_margin > prev_gross:
-                gross_qoq_conclusion = f"📈 成本優化/毛利提高（上季 {prev_gross:.1f}% → 本季 {latest_gross_margin:.1f}%）"
+                gross_qoq_conclusion = f"增長（上季 {prev_gross:.1f}% → 本季 {latest_gross_margin:.1f}%）"
             else:
-                gross_qoq_conclusion = f"📉 成本上升/毛利下滑（上季 {prev_gross:.1f}% → 本季 {latest_gross_margin:.1f}%）"
+                gross_qoq_conclusion = f"衰退（上季 {prev_gross:.1f}% → 本季 {latest_gross_margin:.1f}%）"
         else:
             eps_qoq_conclusion = f"單季數據：{latest_eps:.2f}，無上季資料可比對"
             gross_qoq_conclusion = f"單季數據：{latest_gross_margin:.1f}%，無上季資料可比對"
 
-        # 戰略分類
+        # 根據趨勢進行實戰分類
         if latest_eps < -0.5:
             fundamental_tag = "🟥 高風險虧損股"
             fundamental_ok = False  
@@ -566,7 +578,7 @@ def evaluate_stock(
     R_pb = entry_pb - stop_pb
     rr1_pb = ((tp1_pb - entry_pb) / R_pb) if R_pb > 0 else 0.0
     rr2_pb = ((tp2_pb - entry_pb) / R_pb) if R_pb > 0 else 0.0
-    pb_tradeable = liq_ok and space_ok_pb and (rr1_pb >= 3.0) and fundamental_ok
+    pb_tradeable = liq_ok and space_ok_pb purchases and (rr1_pb >= 3.0) and fundamental_ok
 
     style = detect_style({
         "breakout_setup": breakout_setup,
@@ -647,7 +659,6 @@ def evaluate_stock(
         "trend_score": trend_score,
         "momentum_score": momentum_score,
         "liquidity_score": liquidity_score,
-        # 輸出新融合成之指標欄位
         "技術結論長評": tech_conclusion_long,
         "技術結論短評": tech_conclusion_short,
         "財報標籤": fundamental_tag,
@@ -790,11 +801,9 @@ def render_single_stock_result(result: dict):
     with top3:
         st.subheader(f":{result['m_color']}[{result['m_desc']}]")
 
-    # 改裝：直接貼出擺動指標融合後的技術結論
     st.markdown("### 🔮 技術面動能綜合判定（免看數據白話文）")
     st.info(result["技術結論長評"])
 
-    # 改裝：直接貼出基本面是否比之前好的 QoQ 結論
     st.markdown("### 📈 財報基本面動態趨勢（與上季對比）")
     f1, f2 = st.columns(2)
     with f1:
@@ -802,17 +811,23 @@ def render_single_stock_result(result: dict):
     with f2:
         st.markdown(f"**本業毛利軌跡**：\n\n{result['毛利率季度比對']}")
 
-    # 滿足需求：直接在主面板畫出歷史季度財報趨勢圖，不需要翻到後面看
+    # 滿足需求：在主面板直接畫出歷史季度財報趨勢圖
     df_fin_table = result["原始財報表格"]
     if df_fin_table is not None and not df_fin_table.empty:
         st.markdown("#### 📊 近幾季 EPS 成長趨勢圖（越走高代表公司越賺錢）")
-        # 轉換成適合 altair 畫圖的格式
         chart_fin = df_fin_table.copy()
         chart_fin["date"] = chart_fin["date"].astype(str)
+        
+        # 💡 【Altair 嚴格定義修復】：利用 alt.Tooltip 顯式加上資料型態字尾，杜絕型態缺失引發的異常阻斷
         fin_chart = alt.Chart(chart_fin).mark_bar(color="#4CAF50").encode(
             x=alt.X("date:O", title="財報公佈季度"),
             y=alt.Y("EPS:Q", title="每股盈餘 (EPS)"),
-            tooltip=["date", "EPS", "OperatingIncomeGrossProfitRatio"]
+            tooltip=[
+                alt.Tooltip("date:O", title="季度"),
+                alt.Tooltip("EPS:Q", title="每股盈餘 (EPS)"),
+                alt.Tooltip("OperatingIncomeGrossProfitRatio:Q", title="營業毛利率 (%)"),
+                alt.Tooltip("OperatingIncomeProfitRatio:Q", title="營業利益率 (%)")
+            ]
         ).properties(height=200)
         st.altair_chart(fin_chart, use_container_width=True)
 
@@ -1009,9 +1024,9 @@ with tab_b:
                 "股票名稱": res["stock_name"],
                 "財務體質標籤": res["財報標籤"],
                 "最新現價": round(res["current_price"], 2),
-                "技術動能判定": res["技術結論短評"],  # 雷達大表格只看融合結論短評，乾淨好讀
+                "技術動能判定": res["技術結論短評"],  
                 "最新季EPS": res["最新EPS"],
-                "EPS趨勢判定": "📈 獲利上升" if "🔥" in res["EPS季度比對"] else "📉 獲利衰退", # 讓雷達表格一目了然
+                "EPS趨勢判定": "📈 獲利上升" if "🔥" in res["EPS季度比對"] else "📉 獲利衰退", 
                 "毛利率": f"{res['最新毛利率']:.1f}%",
                 "型態分類": res["個股型態"],
                 "20日均額(億)": round(res["ma20_amount"], 2),
