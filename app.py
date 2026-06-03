@@ -92,7 +92,6 @@ def next_resistance_above(price: float, levels):
 
 
 def detect_style(result: dict) -> str:
-    # 建立安全的預設值保護，防止傳入字典缺少對應 Key 時崩潰
     brk_score = 0
     pb_score = 0
 
@@ -165,22 +164,7 @@ def judge_market_regime_from_df(df: pd.DataFrame) -> dict:
     }
 
 
-# ============ 4. Auth ============
-APP_PASSWORD = os.getenv("APP_PASSWORD", "") or st.secrets.get("APP_PASSWORD", "")
-if APP_PASSWORD and "authed" not in st.session_state:
-    st.session_state["authed"] = False
-
-if APP_PASSWORD and not st.session_state["authed"]:
-    st.title("🔐 系統登入")
-    pw = st.text_input("Access Password", type="password")
-    if st.button("Login"):
-        if pw == APP_PASSWORD:
-            st.session_state["authed"] = True
-            st.rerun()
-        else:
-            st.error("密碼錯誤")
-    st.stop()
-
+# ============ 4. Auth (已移除密碼驗證) ============
 FINMIND_TOKEN = os.getenv("FINMIND_TOKEN", "") or st.secrets.get("FINMIND_TOKEN", "")
 
 
@@ -400,7 +384,6 @@ def evaluate_stock(
     space_tick_buffer: int,
     live_price_override: float = None
 ):
-    # 1. 基礎技術面資料撈取
     df_raw = get_daily_df(stock_id, days=365)
     if df_raw is None or df_raw.empty:
         return None
@@ -423,7 +406,6 @@ def evaluate_stock(
     rt_y_price = float(hist_last["close"])
     m_code, m_desc, m_color = get_market_status_label(rt_success, last_trade_date_str)
 
-    # 2. 籌碼因子清洗 (三大法人近3日合計買賣超張數)
     inst_df = get_inst_df(stock_id, days=15)
     inst_3d_sum = 0.0
     if not inst_df.empty and "buy" in inst_df.columns and "sell" in inst_df.columns:
@@ -431,34 +413,28 @@ def evaluate_stock(
         daily_inst = inst_df.groupby("date")["net_sheets"].sum().reset_index()
         inst_3d_sum = float(daily_inst.tail(3)["net_sheets"].sum())
 
-    # 3. 基本面因子清洗 (最新月份營收年增率 YoY)
     rev_df = get_rev_df(stock_id, days=120)
     latest_yoy = 0.0
     if not rev_df.empty and "revenue_year_growth_rate" in rev_df.columns:
         rev_sorted = rev_df.sort_values("date")
         latest_yoy = safe_float(rev_sorted.iloc[-1]["revenue_year_growth_rate"])
 
-    # 4. 風控與部位參數計算
     ma20_val = float(hist_last["MA20"])
     atr = float(hist_last["ATR14"]) if not np.isnan(hist_last["ATR14"]) else current_price * 0.03
     t = tick_size(current_price)
     slip = float(slip_ticks) * t
     risk_amt = float(total_capital) * 10000 * (float(risk_per_trade) / 100)
 
-    # 5. 技術擺動指標狀態定義
     rsi_now = float(hist_last["RSI14"])
     adx_now = float(hist_last["ADX14"])
     plus_di = float(hist_last["PLUS_DI"])
     minus_di = float(hist_last["MINUS_DI"])
 
-    # 6. 【核心：多因子交叉比對 ＆ 白話文決策劇本噴發引擎】
     tech_conclusion_long = "⚖️ 擺動指標目前處於中性區，大資金尚未表態，短線缺乏爆發性動能。"
     tech_conclusion_short = "中性觀望"
 
-    # 劇本 A、B、C ＆ 斷線修復邏輯
     if adx_now < 20:
         if inst_3d_sum < 0 and latest_yoy < 0:
-            # 符合劇本 E 條件
             tech_conclusion_long = "❌ **【死水無底洞，請直接忽略】** 技術面死氣沉沉完全沒有攻擊動能，而且法人像逃難一樣天天倒貨，月營收也慘不忍睹。這種股票哪怕跌再深，進去也只是浪費資金的潛在時間成本，請直接忽略它！"
             tech_conclusion_short = "❌ 死水忽略"
         else:
@@ -467,7 +443,6 @@ def evaluate_stock(
             
     elif rsi_now >= 75:
         if inst_3d_sum > 0:
-            # 符合劇本 C 條件
             tech_conclusion_long = "🔥 **【極度過熱！主力硬幹妖股】** 短線技術指標已經高達 75 以上，追高被埋的風險巨大。但雷達警報發現，外資與投信完全不管指標死活，繼續瘋狂加碼硬幹！這屬於極高風險、高回報的妖股模式，如果想上車，千萬不能重倉，且手速要快、停損要設得極窄！"
             tech_conclusion_short = "🔥 妖股狂飆"
         else:
@@ -479,13 +454,10 @@ def evaluate_stock(
         tech_conclusion_short = "📉 恐慌超賣"
         
     elif plus_di > minus_di and adx_now >= 20:
-        # 多頭趨勢成形狀態
         if inst_3d_sum > 0 and latest_yoy > 20:
-            # 符合劇本 A 條件 (送分題)
             tech_conclusion_long = "🚀 **【黃金進攻訊號】** 這隻股票目前技術面強勢多頭，買盤動能飽滿。最漂亮的是法人在後面用真金白銀幫忙抬轎，基本面又有強勁營收撐腰！不論你想走『突破快市追擊』還是『拉回小波段』，這檔都是今天勝率極高的極品首選！"
             tech_conclusion_short = "🚀 完美多頭"
         elif inst_3d_sum < 0:
-            # 符合劇本 B 條件 (誘多陷阱)
             tech_conclusion_long = "⚠️ **【小心假突破！主力在出貨】** 日K線雖然看起來很漂亮、好像要發動大攻擊，但雷達抓到三大法人這幾天一邊拉抬股價、一邊瘋狂倒貨給散戶！這高度懷疑是個美麗的假突破陷阱，盤中千萬別追高，進去極容易接盤！"
             tech_conclusion_short = "⚠️ 假突破嫌疑"
         else:
@@ -493,24 +465,19 @@ def evaluate_stock(
             tech_conclusion_short = "🚀 多頭成形"
             
     elif minus_di > plus_di and adx_now >= 20:
-        # 空頭趨勢狀態 (補齊原本程式碼斷掉處)
         tech_conclusion_long = "📉 **【強勢空頭成形】** 技術面完全由空方主導（ADX上攻且空頭掌控）。市場賣壓極其沉重，此時盲目做多無異於螳臂擋車，極易逆勢受傷，強烈建議觀望，或尋找融券放空機會。"
         tech_conclusion_short = "📉 空頭成形"
 
-    # 劇本 D：拉回防守型獨立過濾 (當股價距離MA20不遠，且籌碼與基本面皆優時)
-    if tech_conclusion_short not in ["🚀 完美多頭", "⚠️ 假突破嫌疑", "🔥 妖股狂飆", "❌ 死水忽略"]:
+    if tech_conclusion_short not in ["🚀 完美多頭", "⚠️ 假突破嫌疑", "🔥 股狂飆", "❌ 死水忽略"]:
         if current_price >= ma20_val and (current_price - ma20_val) / ma20_val <= 0.04:
             if inst_3d_sum > 0 and latest_yoy > 15:
-                # 符合劇本 D 條件
                 tech_conclusion_long = "🛡️ **【高手最愛！拉回安全防守點】** 股價經歷短線修正，目前精準跌到 MA20 均線防守區，過熱指標被洗乾淨了。最棒的是，下跌期間法人在偷偷吃貨，營收也很好！這就是最標準的拉回極品，下檔有肉墊，適合分批佈局。"
                 tech_conclusion_short = "🛡️ 精準拉回"
 
-    # 7. 策略細節骨架計算 (保留原本 SOP 的風控輸出結構)
     pivot = ma20_val
     brk_setup = (current_price >= pivot) and (rsi_now < 70)
     pb_setup = (current_price < pivot) and (current_price >= ma20_val * 0.97)
 
-    # 簡單模擬壓力與支撐關卡 (實務上你可接入 Volume Profile 數據)
     levels = [ma20_val * 1.1, ma20_val * 1.2, ma20_val * 1.3]
     next_res = next_resistance_above(current_price, levels)
 
@@ -526,7 +493,6 @@ def evaluate_stock(
     s_pb = current_price - stop_pb
     rr1_pb = r_pb / s_pb if s_pb > 0 else 0
 
-    # 組合完整結果字典
     result = {
         "stock_id": stock_id,
         "stock_name": stock_name,
@@ -552,15 +518,13 @@ def evaluate_stock(
         "tech_conclusion_short": tech_conclusion_short
     }
 
-    # 呼叫風格判定
     result["style"] = detect_style(result)
     return result
 
 
-# ============ 7. Streamlit UI 範例示範 ============
+# ============ 7. Streamlit UI ============
 st.title("SOP v16 終極多因子雷達決策系統")
 
-# 模擬側邊欄輸入參數
 st.sidebar.header("⚙️ 全局風控參數")
 total_cap = st.sidebar.number_input("總本金 (萬元)", value=100.0)
 risk_pct = st.sidebar.slider("單筆最大風險 (%)", 0.5, 3.0, 1.0)
@@ -579,18 +543,15 @@ if st.sidebar.button("開始秒級雷達掃描"):
         )
         
         if res:
-            # 建立大字報儀表板
             col1, col2, col3, col4 = st.columns(4)
-            col1.metric("股價狀態", f"{res['current_price']} 元", f"來源: {res['tech_conclusion_short']}")
+            col1.metric("股價狀態", f"{res['current_price']} 元", f"狀態: {res['tech_conclusion_short']}")
             col2.metric("近3日法人買賣超", f"{res['inst_3d_sheets']:.0f} 張")
             col3.metric("最新營收年增率", f"{res['latest_revenue_yoy']:.2f} %")
             col4.metric("建議操盤風格", res["style"])
             
-            # 噴發白話文決策建議面板
             st.subheader("💡 終極雷達白話文操盤建議")
             st.info(res["tech_conclusion_long"])
             
-            # 細節表格防禦性呈現
             st.write("### 🔍 因子診斷後台數據")
             st.json(res)
         else:
