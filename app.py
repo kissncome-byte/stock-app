@@ -376,7 +376,7 @@ def evaluate_stock(
         daily_inst = inst_df.groupby("date")["net_sheets"].sum().reset_index()
         inst_3d_sum = float(daily_inst.tail(3)["net_sheets"].sum())
 
-    # 營收基本面 (💡 此處已完全修復 SyntaxError)
+    # 營收基本面
     rev_df = get_rev_df(stock_id, days=120)
     latest_yoy = 0.0
     if not rev_df.empty and "revenue_year_growth_rate" in rev_df.columns:
@@ -403,17 +403,18 @@ def evaluate_stock(
             gpm_prev = safe_float(prev_fin.get("OperatingIncomeGrossProfitRatio", 0.0))
             opm_prev = safe_float(prev_fin.get("OperatingIncomeProfitRatio", 0.0))
             
-            eps_up = eps_now > eps_prev
-            gpm_up = gpm_now > gpm_prev
-            opm_up = opm_now > opm_prev
-            up_count = sum([eps_up, gpm_up, opm_up])
+            # 💡 [核心修復] 建立完整的三向狀態判斷，防止 0.00% 互比時誤判為退步
+            gpm_text = "進步" if gpm_now > gpm_prev else "退步" if gpm_now < gpm_prev else "持平"
+            opm_text = "進步" if opm_now > opm_prev else "退步" if opm_now < opm_prev else "持平"
+            eps_text = "進步" if eps_now > eps_prev else "退步" if eps_now < eps_prev else "持平"
+            eps_lbl = "多賺" if eps_now > eps_prev else "少賺" if eps_now < eps_prev else "持平"
             
-            if up_count == 3:
+            if gpm_text == "進步" and opm_text == "進步" and eps_text == "進步":
                 fin_conclusion = f"📈 **【財報全面升級！比以前更好】** 最新一季的三大核心賺錢指標（EPS、毛利率、營業利益率）**全數超越上一季**！這意味著公司產品利潤變高（毛利率漲）、內部管銷風控得當（營益率噴），且幫股東賺到更多真金白銀（EPS增），體質極度強健！"
-            elif up_count == 0:
+            elif gpm_text == "退步" and opm_text == "退步" and eps_text == "退步":
                 fin_conclusion = f"📉 **【小心金玉其外！獲利能力全面退步】** 公司賺錢本領**出現全面性倒退**！毛利、營益率、EPS 同步低於前一季。如果這檔股票目前盤中炒得正熱，雷達強烈警告：這極有可能是『題材亂炒、基本面跟不上』的虛火盤，主力隨時可能拉高出貨，風控切記要抓得極緊！"
             else:
-                fin_conclusion = f"⚖️ **【橫盤拉鋸調整期！表現與前季互有勝負】** 賺錢能力正處於結構調整期。與上一季相比：毛利率『{'進步' if gpm_up else '退步'}』、營業利益率『{'進步' if opm_up else '退步'}』、每股 EPS『{'多賺' if eps_up else '少賺'}』。本業防守力還在，沒有全面惡化，屬於一般良性波動。"
+                fin_conclusion = f"⚖️ **【橫盤拉鋸調整期！表現與前季互有勝負】** 賺錢能力正處於結構調整期。與上一季相比：毛利率『{gpm_text}』、營業利益率『{opm_text}』、每股 EPS『{eps_lbl}』。本業防守力還在，沒有全面惡化，屬於一般良性波動。"
 
     # 技術面指標數據
     ma20_val = float(hist_last["MA20"])
@@ -450,7 +451,7 @@ def evaluate_stock(
             tech_conclusion_short = "⚠️ 短線過熱"
             
     elif rsi_now <= 30:
-        tech_conclusion_long = "📉 **【恐慌超賣區】** 股價極度超賣，市場出現恐慌性拋售，空頭宣洩中。雖然價格便宜，但目前尚未見到底部止跌訊號，暫不具備進場做多的攻擊條件，不可盲目伸手接刀。"
+        tech_conclusion_long = "📉 **【恐慌超賣區】** 股價極度超賣，市場出現恐慌性拋售，空頭宣洩中。雖然價格便宜，開目前尚未見到底部止跌訊號，暫不具備進場做多的攻擊條件，不可盲目伸手接刀。"
         tech_conclusion_short = "📉 恐慌超賣"
         
     elif plus_di > minus_di and adx_now >= 20:
@@ -603,7 +604,7 @@ with tab1:
 
                 box_brk, box_pb = st.columns(2)
                 with box_brk:
-                    st.markdown("### 🏃‍♂️ 【突破型策略】方案藍圖")
+                    st.markdown("### 跑 🏃‍♂️ 【突破型策略】方案藍圖")
                     st.markdown(f"* **現價進場點：** `{res['current_price']}` 元")
                     st.markdown(f"* **停利目標價：** `{res['target_brk']}` 元 (預期賺 `{res['target_brk'] - res['current_price']:.2f}` 元)")
                     st.markdown(f"* **防守停損點：** `{res['stop_brk']}` 元 (預期賠 `{res['current_price'] - res['stop_brk']:.2f}` 元)")
@@ -646,7 +647,8 @@ with tab2:
     # UI 選項：讓使用者決定大盤掃描範圍
     scan_scope = st.radio(
         "🎯 請選擇雷達自動掃描範圍：",
-        ["🔥 核心權值龍頭股 (自動精選市值前30大標的)", "🏭 依特定產業類股全自動橫掃"]
+        ["🔥 核心權值龍頭股 (自動精選市值前30大標的)", "🏭 依特定產業類股全自動橫掃"],
+        key="bulk_scan_scope"
     )
     
     selected_ind = None
