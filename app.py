@@ -12,7 +12,7 @@ import pytz
 from FinMind.data import DataLoader
 
 # ============ 1. Page Config ============
-st.set_page_config(page_title="SOP v16 終極多因子秒級雷達系統", layout="wide")
+st.set_page_config(page_title="SOP v16 多因子秒級雷達系統", layout="wide")
 
 # ============ 2. Global ============
 TZ = pytz.timezone("Asia/Taipei")
@@ -29,7 +29,6 @@ def safe_float(x, default=0.0):
 
 
 def tick_size(p: float) -> float:
-    """符合台灣證券交易所現行法規之升降單位規則"""
     if p >= 1000:
         return 5.0
     if p >= 500:
@@ -262,7 +261,6 @@ def get_rev_df(stock_id: str, days: int = 220):
 
 @st.cache_data(ttl=86400)
 def get_financial_statement_df(stock_id: str, years: int = 2):
-    """從 FinMind 獲取每季損益表核心指標並轉換格式"""
     api = get_api()
     start_date = (datetime.now() - timedelta(days=years * 365)).strftime("%Y-%m-%d")
     try:
@@ -298,7 +296,7 @@ def prepare_indicator_df(df: pd.DataFrame):
     x["OBV"] = (direction * x["vol"]).cumsum()
     x["OBV_MA10"] = x["OBV"].rolling(10).mean()
 
-    # ============ 新增：RSI 14 計算 ============
+    # RSI 14
     delta = x["close"].diff()
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
@@ -308,7 +306,7 @@ def prepare_indicator_df(df: pd.DataFrame):
     rs = avg_gain / avg_loss
     x["RSI14"] = 100 - (100 / (1 + rs))
 
-    # ============ 新增：DMI (DI+, DI-, ADX) 計算 ============
+    # DMI
     x["up_move"] = x["high"].diff()
     x["down_move"] = x["low"].shift(1) - x["low"]
     x["plus_dm"] = np.where((x["up_move"] > x["down_move"]) & (x["up_move"] > 0), x["up_move"], 0)
@@ -347,7 +345,6 @@ def compute_live_price(stock_id: str, hist_last_close: float, live_price_overrid
     rt_source = "歷史收盤"
     rt_type = "historical"
 
-    # ===== 引擎 A：TWSE MIS =====
     try:
         session = requests.Session()
         headers = {"User-Agent": "Mozilla/5.0"}
@@ -370,7 +367,6 @@ def compute_live_price(stock_id: str, hist_last_close: float, live_price_overrid
     except Exception:
         pass
 
-    # ===== 引擎 B：Yahoo 備援 =====
     if not rt_success:
         try:
             for suffix in [".TW", ".TWO"]:
@@ -435,11 +431,31 @@ def evaluate_stock(
     slip = float(slip_ticks) * t
     risk_amt = float(total_capital) * 10000 * (float(risk_per_trade) / 100)
 
-    # 技術面新增：RSI 與 DMI
+    # 獲取最新擺動技術指標
     rsi_now = float(hist_last["RSI14"])
     adx_now = float(hist_last["ADX14"])
     plus_di = float(hist_last["PLUS_DI"])
     minus_di = float(hist_last["MINUS_DI"])
+
+    # ====== 核心大改裝 1：將複雜指標融合成「白話結論描述」 ======
+    tech_conclusion_long = "⚖️ 擺動指標中性，目前短線無爆發性動能。"
+    tech_conclusion_short = "中性觀望"
+
+    if adx_now < 20:
+        tech_conclusion_long = "💤 處於死水盤整期（ADX低於20）。多空沒有方向，此時任何「突破型策略」失敗率極高，容易買了就被套。"
+        tech_conclusion_short = "💤 盤整死水"
+    elif rsi_now >= 75:
+        tech_conclusion_long = "⚠️ 股價極度過熱（RSI超買過高）！買盤短線推升到極限，追高被埋風險巨大，強烈建議等待拉回均線再考慮。"
+        tech_conclusion_short = "⚠️ 短線過熱"
+    elif rsi_now <= 30:
+        tech_conclusion_long = "📉 股價極度超賣（RSI過低）。市場恐慌性拋售，空頭宣洩中，暫不具備進場攻擊條件。"
+        tech_conclusion_short = "📉 恐慌超賣"
+    elif plus_di > minus_di and adx_now >= 20:
+        tech_conclusion_long = "🚀 強勢多頭趨勢成形（ADX上攻且多頭掌控）！買盤動能飽滿且有延續性，屬於最健康的攻擊盤，極度適合突破方案。"
+        tech_conclusion_short = "🚀 多頭成形"
+    elif minus_di > plus_di and adx_now >= 20:
+        tech_conclusion_long = "📉 強烈空頭浪潮來襲（空頭掌控戰場）。下方毫無支撐，絕不可盲目猜底或在均線下做多。"
+        tech_conclusion_short = "📉 空頭掌控"
 
     pivot = float(df.tail(60)["high"].max())
     res_120 = float(df.tail(120)["high"].max()) if len(df) >= 120 else pivot
@@ -459,17 +475,18 @@ def evaluate_stock(
 
     liq_ok = float(hist_last["MA20_Amount"]) >= float(liq_gate)
 
-    # 引入多因子技術濾網：突破時若 ADX 強烈 (趨勢成形) 且 RSI 未極度過熱，則突破勝率高
     breakout_setup = (current_price >= pivot) and obv_up and (rsi_now < 78)
     pullback_setup = ma20_slope_up and (ma20_val <= current_price <= ma20_val + 1.2 * atr)
 
-    # ============ 新增：核心基本面季度財報解析與自動標籤化 ============
+    # ====== 核心大改裝 2：財報基本面 QoQ 動態趨勢判斷 ======
     df_fin = get_financial_statement_df(stock_id, years=2)
     fundamental_tag = "平庸防守股"
     latest_eps = 0.0
     latest_gross_margin = 0.0
     latest_operating_margin = 0.0
-    fundamental_ok = True  # 基本面風控硬門檻
+    eps_qoq_conclusion = "缺少歷史數據進行比對"
+    gross_qoq_conclusion = "缺少歷史數據進行比對"
+    fundamental_ok = True  
 
     if df_fin is not None and not df_fin.empty:
         latest_q = df_fin.iloc[-1]
@@ -477,12 +494,31 @@ def evaluate_stock(
         latest_gross_margin = safe_float(latest_q.get("OperatingIncomeGrossProfitRatio", 0))
         latest_operating_margin = safe_float(latest_q.get("OperatingIncomeProfitRatio", 0))
 
-        # 判斷趨勢：是否有「虧轉盈」黑馬特質
-        prev_eps = safe_float(df_fin.iloc[-2].get("EPS", 0)) if len(df_fin) >= 2 else 0.0
+        prev_eps = 0.0
+        prev_gross = 0.0
+        if len(df_fin) >= 2:
+            prev_q = df_fin.iloc[-2]
+            prev_eps = safe_float(prev_q.get("EPS", 0))
+            prev_gross = safe_float(prev_q.get("OperatingIncomeGrossProfitRatio", 0))
+            
+            # 自動判斷是不是比上一季好
+            if latest_eps > prev_eps:
+                eps_qoq_conclusion = f"🔥 獲利上升（上季 {prev_eps:.2f} → 本季 {latest_eps:.2f}）"
+            else:
+                eps_qoq_conclusion = f"📉 獲利衰退（上季 {prev_eps:.2f} → 本季 {latest_eps:.2f}）"
 
+            if latest_gross_margin > prev_gross:
+                gross_qoq_conclusion = f"📈 成本優化/毛利提高（上季 {prev_gross:.1f}% → 本季 {latest_gross_margin:.1f}%）"
+            else:
+                gross_qoq_conclusion = f"📉 成本上升/毛利下滑（上季 {prev_gross:.1f}% → 本季 {latest_gross_margin:.1f}%）"
+        else:
+            eps_qoq_conclusion = f"單季數據：{latest_eps:.2f}，無上季資料可比對"
+            gross_qoq_conclusion = f"單季數據：{latest_gross_margin:.1f}%，無上季資料可比對"
+
+        # 戰略分類
         if latest_eps < -0.5:
             fundamental_tag = "🟥 高風險虧損股"
-            fundamental_ok = False  # 垃圾投機股直接阻斷雷達可交易號
+            fundamental_ok = False  
         elif latest_eps > 0 and prev_eps <= 0:
             fundamental_tag = "🚀 黑馬虧轉盈股"
         elif latest_eps > 1.5 and latest_gross_margin > 30:
@@ -525,7 +561,6 @@ def evaluate_stock(
     R_brk = entry_brk - stop_brk
     rr1_brk = ((tp1_brk - entry_brk) / R_brk) if R_brk > 0 else 0.0
     rr2_brk = ((tp2_brk - entry_brk) / R_brk) if R_brk > 0 else 0.0
-    # 升級：可交易號必須同時通過基本面風控合格驗證
     brk_tradeable = liq_ok and space_ok_brk and (rr1_brk >= 2.0) and fundamental_ok
 
     R_pb = entry_pb - stop_pb
@@ -612,16 +647,17 @@ def evaluate_stock(
         "trend_score": trend_score,
         "momentum_score": momentum_score,
         "liquidity_score": liquidity_score,
-        # 新增導出指標欄位
-        "rsi": rsi_now,
-        "adx": adx_now,
-        "plus_di": plus_di,
-        "minus_di": minus_di,
+        # 輸出新融合成之指標欄位
+        "技術結論長評": tech_conclusion_long,
+        "技術結論短評": tech_conclusion_short,
         "財報標籤": fundamental_tag,
         "最新EPS": latest_eps,
         "最新毛利率": latest_gross_margin,
         "最新利益率": latest_operating_margin,
-        "基本面合格": fundamental_ok
+        "EPS季度比對": eps_qoq_conclusion,
+        "毛利率季度比對": gross_qoq_conclusion,
+        "基本面合格": fundamental_ok,
+        "原始財報表格": df_fin
     }
 
 
@@ -658,7 +694,7 @@ if "radar_live_pool" not in st.session_state:
 
 
 # ============ 9. Main UI ============
-st.caption("Layer1 全市場動態因子快取 → Layer2 熱門產業權重歸納 → Layer3 財務×技術雙軌秒級即時監控。")
+st.caption("Layer1 全市場動態快取 → Layer2 熱門產業權重歸納 → Layer3 財務趨勢與技術白話因子監控。")
 
 with st.sidebar:
     st.header("⚙️ 實戰風控設定")
@@ -697,7 +733,7 @@ with st.sidebar:
     realtime_only = st.checkbox("市場掃描只看真正即時報價", value=False)
     adapt_to_regime = st.checkbox("依市場環境偏好排序型態", value=True)
 
-tab_a, tab_b = st.tabs(["📌 個股綜合因子診斷", "🔎 財務×技術雙軌秒級雷達"])
+tab_a, tab_b = st.tabs(["📌 個股白話因子診斷", "🔎 白話版秒級動態雷達"])
 
 
 # ============ 10. Render ============
@@ -746,62 +782,46 @@ def render_single_stock_result(result: dict):
     top1, top2, top3 = st.columns([2.2, 1, 1.5])
     with top1:
         st.header(f"{result['stock_name']} {result['stock_id']}")
-        st.subheader(f"戰略分類：{result['財報標籤']}")
-        st.caption(f"產業：{result['industry']} | 型態：{result['個股型態']} | 來源：{result['rt_source']}")
+        st.subheader(f"體質分類：{result['財報標籤']}")
+        st.caption(f"產業：{result['industry']} | 型態：{result['個股型態']}")
     with top2:
         diff = result["current_price"] - float(result["df"].iloc[-1]["close"])
         st.metric("目前現價", f"{result['current_price']:.2f}", delta=f"{diff:.2f}")
     with top3:
         st.subheader(f":{result['m_color']}[{result['m_desc']}]")
 
-    # 新增：視覺化財報儀表板
-    st.markdown("### 📊 季度基本面核心數據")
-    f1, f2, f3, f4 = st.columns(4)
-    f1.metric("最新季度 EPS", f"${result['最新EPS']:.2f}")
-    f2.metric("營業毛利率", f"{result['最新毛利率']:.1f}%")
-    f3.metric("營業利益率", f"{result['最新利益率']:.1f}%")
-    if result["基本面合格"]:
-        f4.success("🛡️ 基本面風控：合格")
-    else:
-        f4.error("🚨 基本面風控：拒絕交易")
+    # 改裝：直接貼出擺動指標融合後的技術結論
+    st.markdown("### 🔮 技術面動能綜合判定（免看數據白話文）")
+    st.info(result["技術結論長評"])
 
-    # 新增：視覺化擺動指標儀表板
-    st.markdown("### 🎛️ 進階技術指標因子")
-    t1, t2, t3 = st.columns(3)
-    t1.metric("RSI (14) 強弱度", f"{result['rsi']:.1f}", help="接近 30 屬超賣，超過 70~80 屬極度超買過熱。")
-    t2.metric("ADX (14) 趨勢強度", f"{result['adx']:.1f}", help="超過 20 代表趨勢成形，數字越大代表動能越狂熱。")
-    t3.write(f"➕ **DI+** : `{result['plus_di']:.1f}` \n\n ➖ **DI-** : `{result['minus_di']:.1f}`")
+    # 改裝：直接貼出基本面是否比之前好的 QoQ 結論
+    st.markdown("### 📈 財報基本面動態趨勢（與上季對比）")
+    f1, f2 = st.columns(2)
+    with f1:
+        st.markdown(f"**EPS 獲利軌跡**：\n\n{result['EPS季度比對']}")
+    with f2:
+        st.markdown(f"**本業毛利軌跡**：\n\n{result['毛利率季度比對']}")
 
-    st.markdown("### 🌦️ 市場環境判讀")
-    st.write(f"**市場環境**：{result['市場環境']} | **市場偏好型態**：{result['市場偏好型態']}")
-    st.write(f"**原因**：{result['regime_reason']}")
+    # 滿足需求：直接在主面板畫出歷史季度財報趨勢圖，不需要翻到後面看
+    df_fin_table = result["原始財報表格"]
+    if df_fin_table is not None and not df_fin_table.empty:
+        st.markdown("#### 📊 近幾季 EPS 成長趨勢圖（越走高代表公司越賺錢）")
+        # 轉換成適合 altair 畫圖的格式
+        chart_fin = df_fin_table.copy()
+        chart_fin["date"] = chart_fin["date"].astype(str)
+        fin_chart = alt.Chart(chart_fin).mark_bar(color="#4CAF50").encode(
+            x=alt.X("date:O", title="財報公佈季度"),
+            y=alt.Y("EPS:Q", title="每股盈餘 (EPS)"),
+            tooltip=["date", "EPS", "OperatingIncomeGrossProfitRatio"]
+        ).properties(height=200)
+        st.altair_chart(fin_chart, use_container_width=True)
 
-    st.markdown("### 🧬 價量型態深度整合解析")
-    c1, c2 = st.columns(2)
-    with c1:
-        if result["ma20_slope_up"]:
-            st.success("📈 **均線趨勢**：MA20 向上，具備多頭保護力道")
-        else:
-            st.warning("📉 **均線趨勢**：MA20 向下或走平，動能偏弱")
-
-        if result["obv_up"]:
-            st.success("🟢 **量能配合**：OBV 位於均線之上，買盤穩定")
-        else:
-            st.warning("⚪ **量能配合**：OBV 低於均線，資金退潮中")
-
-        if result["is_div"]:
-            st.error("⚠️ **型態警示**：出現量價背離！慎防假突破。")
-        elif result["vol_ratio"] > 1.5:
-            st.success(f"🔥 **攻擊量能**：今日成交量達均量 {result['vol_ratio']:.1f} 倍！")
-
-    with c2:
-        st.write(f"**突破 Setup**：{'✅成立' if result['breakout_setup'] else '❌不成立'}")
-        st.write(f"**拉回 Setup**：{'✅成立' if result['pullback_setup'] else '❌不成立'}")
-        st.write(f"**流動性**：{'✅合格' if result['liq_ok'] else '❌不足'} ({result['ma20_amount']:.2f}億)")
+    st.markdown("### 🌦️ 大盤環境判讀")
+    st.write(f"**目前市場氣氛**：{result['市場環境']} | **最適合的交易風格**：{result['市場偏好型態']}")
 
     st.markdown("### 🧠 Space Gate 壓力防禦門檻")
-    st.write(f"**Breakout Space**：{'✅' if result['space_ok_brk'] else '❌'} ｜距離下一壓力 `{fmt_space(result['space_to_res_brk'])}`")
-    st.write(f"**Pullback Space**：{'✅' if result['space_ok_pb'] else '❌'} ｜距離下一壓力 `{fmt_space(result['space_to_res_pb'])}`")
+    st.write(f"**Breakout Space**：{'✅安全' if result['space_ok_brk'] else '❌有壓力阻擋'} ｜距離下一壓力 `{fmt_space(result['space_to_res_brk'])}`")
+    st.write(f"**Pullback Space**：{'✅安全' if result['space_ok_pb'] else '❌有壓力阻擋'} ｜距離下一壓力 `{fmt_space(result['space_to_res_pb'])}`")
 
     st.divider()
     st.subheader("⚔️ 多階層風控下單交易計畫")
@@ -833,25 +853,10 @@ def render_single_stock_result(result: dict):
     lo = base.mark_line(color="#FF6D00").encode(y=alt.Y("OBV:Q", scale=alt.Scale(zero=False), title="OBV (橘)"))
     st.altair_chart(alt.layer(lma, lp, lo).resolve_scale(y="independent").interactive(), use_container_width=True)
 
-    df_inst = get_inst_df(result["stock_id"], days=60)
-    df_fin_table = get_financial_statement_df(result["stock_id"], years=2)
-    with st.expander("📋 詳細歷史大數據清單"):
-        ti, trr = st.tabs(["法人三大法人動態", "完整季度財報歷史"])
-        with ti:
-            if df_inst is not None and not df_inst.empty:
-                st.dataframe(df_inst.tail(10))
-            else:
-                st.write("無資料")
-        with trr:
-            if df_fin_table is not None and not df_fin_table.empty:
-                st.dataframe(df_fin_table.tail(8))
-            else:
-                st.write("無資料")
-
 
 # ===================== TAB B: Market Radar =====================
 with tab_b:
-    st.subheader("多因子財務×技術雙軌動態監控")
+    st.subheader("財務趨勢與技術白話因子秒級雷達")
 
     info_df = get_finmind_universe()
     industry_options = (
@@ -956,7 +961,6 @@ with tab_b:
 
                         layer2_df = layer2_df.head(int(deep_scan_limit)).copy()
 
-                        # 將清洗出來的高淨值個股推入雷達秒級監控池
                         st.session_state["radar_live_pool"] = {}
                         for _, r in layer2_df.iterrows():
                             st.session_state["radar_live_pool"][r["stock_id"]] = r["result_obj"]
@@ -975,10 +979,8 @@ with tab_b:
 
         deep_rows = []
         for sid, cached in list(st.session_state["radar_live_pool"].items()):
-            # 盤中極速模擬：對池內個股注入隨機跳動報價
             mock_tick_price = cached["current_price"] * random.uniform(0.996, 1.004)
 
-            # 純記憶體極速運算 (排除重新請求歷史K線與財報的網路開銷)
             res = evaluate_stock(
                 stock_id=sid,
                 total_capital=total_capital,
@@ -1005,11 +1007,11 @@ with tab_b:
             deep_rows.append({
                 "股票代號": res["stock_id"],
                 "股票名稱": res["stock_name"],
-                "基本面戰略標籤": res["財報標籤"],
+                "財務體質標籤": res["財報標籤"],
                 "最新現價": round(res["current_price"], 2),
-                "RSI(14)": round(res["rsi"], 1),
-                "ADX(14)": round(res["adx"], 1),
+                "技術動能判定": res["技術結論短評"],  # 雷達大表格只看融合結論短評，乾淨好讀
                 "最新季EPS": res["最新EPS"],
+                "EPS趨勢判定": "📈 獲利上升" if "🔥" in res["EPS季度比對"] else "📉 獲利衰退", # 讓雷達表格一目了然
                 "毛利率": f"{res['最新毛利率']:.1f}%",
                 "型態分類": res["個股型態"],
                 "20日均額(億)": round(res["ma20_amount"], 2),
@@ -1026,7 +1028,6 @@ with tab_b:
         if out.empty:
             return
 
-        # 高級權重動態排序
         out["tier_rank"] = out["tier"].map({"可交易": 1, "強候選": 2, "觀察": 3})
         out["quote_rank"] = out["rt_type"].map({"realtime": 1, "delayed": 2, "historical": 3})
         out = out.sort_values(
@@ -1037,7 +1038,6 @@ with tab_b:
         st.markdown(f"### 🦅 實時秒級策略監控看板 (同步重新演算中)")
         st.caption(f"🔄 刷新時間：{datetime.now(TZ).strftime('%H:%M:%S')} | 監控池總計：{len(out)} 檔")
 
-        # 渲染完全解耦的訊號輸出表格
         st.subheader("🥇 【戰略核心】滿足財務與技術雙軌：可交易訊號觸發")
         a_df = out[out["tier"] == "可交易"].drop(columns=["tier_rank", "quote_rank", "tier", "preferred_bonus", "rt_type"])
         if a_df.empty:
@@ -1052,7 +1052,6 @@ with tab_b:
         else:
             st.dataframe(b_df.head(int(top_show)), use_container_width=True, hide_index=True)
 
-        # 互動接入點
         pick_list = out["股票代號"].head(20).tolist()
         if pick_list:
             picked = st.selectbox("🎯 點擊直接捕獲雷達池個股導入單股分析面板", pick_list)
@@ -1061,7 +1060,6 @@ with tab_b:
                 st.session_state["stock_input"] = picked
                 st.rerun()
 
-    # 渲染
     render_live_radar_fragment()
 
 
