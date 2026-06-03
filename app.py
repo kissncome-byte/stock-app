@@ -218,9 +218,12 @@ def prepare_indicator_df(df: pd.DataFrame):
         return None
 
     x = df.copy()
+    
+    # [1] MA & ATR
     x["ATR14"] = (x["high"] - x["low"]).rolling(14).mean()
     x["MA20"] = x["close"].rolling(20).mean()
 
+    # [2] VOL 量能指標
     if "amount" in x.columns:
         x["MA20_Amount"] = (x["amount"] / 1e8).rolling(20).mean()
     else:
@@ -230,6 +233,7 @@ def prepare_indicator_df(df: pd.DataFrame):
     x["OBV"] = (direction * x["vol"]).cumsum()
     x["OBV_MA10"] = x["OBV"].rolling(10).mean()
 
+    # [3] RSI 相對強弱
     delta = x["close"].diff()
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
@@ -239,6 +243,7 @@ def prepare_indicator_df(df: pd.DataFrame):
     rs = avg_gain / avg_loss
     x["RSI14"] = 100 - (100 / (1 + rs))
 
+    # [4] DMI 趨勢指標
     x["up_move"] = x["high"].diff()
     x["down_move"] = x["low"].shift(1) - x["low"]
     x["plus_dm"] = np.where((x["up_move"] > x["down_move"]) & (x["up_move"] > 0), x["up_move"], 0)
@@ -262,7 +267,7 @@ def prepare_indicator_df(df: pd.DataFrame):
     x["DX"] = ((x["PLUS_DI"] - x["MINUS_DI"]).abs() / di_sum) * 100
     x["ADX14"] = x["DX"].rolling(14).mean()
 
-    # MACD 指標精算結構
+    # [5] MACD 指標精算
     x["EMA12"] = x["close"].ewm(span=12, adjust=False).mean()
     x["EMA26"] = x["close"].ewm(span=26, adjust=False).mean()
     x["MACD_DIF"] = x["EMA12"] - x["EMA26"]
@@ -378,7 +383,7 @@ def evaluate_stock(
         rev_sorted = rev_df.sort_values("date")
         latest_yoy = safe_float(rev_sorted.iloc[-1]["revenue_year_growth_rate"])
 
-    # 季報財報前後期對比
+    # 財報季報數據
     fin_df = get_financial_statement_df(stock_id, years=2)
     eps_now, eps_prev = 0.0, 0.0
     gpm_now, gpm_prev = 0.0, 0.0
@@ -408,9 +413,9 @@ def evaluate_stock(
             elif up_count == 0:
                 fin_conclusion = f"📉 **【小心金玉其外！獲利能力全面退步】** 公司賺錢本領**出現全面性倒退**！毛利、營益率、EPS 同步低於前一季。如果這檔股票目前盤中炒得正熱，雷達強烈警告：這極有可能是『題材亂炒、基本面跟不上』的虛火盤，主力隨時可能拉高出貨，風控切記要抓得極緊！"
             else:
-                fin_conclusion = f"⚖️ **【橫盤拉鋸調整期！表現與前季互有勝負】** 賺錢能力正處於結構調整期。與上一季相比：毛利率『{"進步" if gpm_up else "退步"}』、營業利益率『{"進步" if opm_up else "退步"}』、每股 EPS『{"多賺" if eps_up else "少賺"}』。本業防守力還在，沒有全面惡化，屬於一般良性波動。"
+                fin_conclusion = f"⚖️ **【橫盤拉鋸調整期！表現與前季互有勝負】** 賺錢能力正處於結構調整期。與上一季相比：毛利率『{'進步' if gpm_up else '退步'}』、營業利益率『{'進步' if opm_up else '退步'}』、每股 EPS『{'多賺' if eps_up else '少賺'}』。本業防守力還在，沒有全面惡化，屬於一般良性波動。"
 
-    # 技術指標
+    # 技術面指標數據
     ma20_val = float(hist_last["MA20"])
     atr = float(hist_last["ATR14"]) if not np.isnan(hist_last["ATR14"]) else current_price * 0.03
     t = tick_size(current_price)
@@ -453,7 +458,7 @@ def evaluate_stock(
             tech_conclusion_long = "🚀 **【黃金進攻訊號】** 這隻股票目前技術面強勢多頭，買盤動能飽滿。最漂亮的是法人在後面用真金白銀幫忙抬轎，基本面又有強勁營收撐腰！不論你想走『突破快市追擊』還是『拉回小波段』，這檔都是今天勝率極高的極品首選！"
             tech_conclusion_short = "🚀 完美多頭"
         elif inst_3d_sum < 0:
-            tech_conclusion_long = "⚠️ **【小心假突破！主力在出貨】** 日K線雖然看起來很漂亮、好像要發動大攻擊，打個雷達抓到三大法人這幾天一邊拉抬股價、一邊瘋狂倒貨給散戶！這高度懷疑是個美麗的假突破陷阱，盤中千萬別追高，進去極容易接盤！"
+            tech_conclusion_long = "⚠️ **【小心假突破！主力在出貨】** 日K線雖然看起來很漂亮、好像要發動大攻擊，但雷達抓到三大法人這幾天一邊拉抬股價、一邊瘋狂倒貨給散戶！這高度懷疑是個美麗的假突破陷阱，盤中千萬別追高，進去極容易接盤！"
             tech_conclusion_short = "⚠️ 假突破嫌疑"
         else:
             tech_conclusion_long = "趨勢多頭成形，買盤動能延續性佳，屬於健康的攻擊型態，適合尋找突破點切入。"
@@ -469,7 +474,7 @@ def evaluate_stock(
                 tech_conclusion_long = "🛡️ **【高手最愛！拉回安全防守點】** 股價經歷短線修正，目前精準跌到 MA20 均線防守區，過熱指標被洗乾淨了。最棒的是，下跌期間法人在偷偷吃貨，營收也很好！這就是最標準的拉回極品，下檔有肉墊，適合分批佈局。"
                 tech_conclusion_short = "🛡️ 精準拉回"
 
-    # 價位精算
+    # 風控價格演算
     pivot = ma20_val
     brk_setup = (current_price >= pivot) and (rsi_now < 70)
     pb_setup = (current_price < pivot) and (current_price >= ma20_val * 0.97)
@@ -522,7 +527,9 @@ def evaluate_stock(
         "fin_conclusion": fin_conclusion,
         "macd_dif": macd_dif,
         "macd_sig": macd_sig,
-        "macd_hist": macd_hist
+        "macd_hist": macd_hist,
+        "rsi_now": rsi_now,
+        "adx_now": adx_now
     }
 
     result["style"] = detect_style(result)
@@ -536,47 +543,105 @@ st.sidebar.header("⚙️ 全局風控參數")
 total_cap = st.sidebar.number_input("總本金 (萬元)", value=100.0)
 risk_pct = st.sidebar.slider("單筆最大風險 (%)", 0.5, 3.0, 1.0)
 
-# 💡 使用分頁建立多功能選股模組
-tab1, tab2 = st.tabs(["🔍 單股詳細深度診斷", "🚀 大盤多股批量雷達"])
+# 建立雙功能主要分頁（單股診斷 ＆ 批量雷達）
+tab1, tab2 = st.tabs(["🔍 單股詳細資料深度診斷", "🚀 大盤多股批量雷達"])
 
 with tab1:
-    target_stock = st.text_input("輸入股票代碼進行健檢", value="2330").strip()
+    target_stock = st.text_input("輸入股票代碼進行多因子健檢", value="2330").strip()
     if st.button("開始單股雷達掃描"):
-        with st.spinner("多因子數據處理中..."):
+        with st.spinner("多因子融合矩陣計算中..."):
             res = evaluate_stock(target_stock, total_cap, risk_pct, 500, 1, 1.5, 3)
+            
             if res:
+                # 頂部儀表板
                 col1, col2, col3, col4 = st.columns(4)
                 col1.metric("即時股價", f"{res['current_price']} 元", f"狀態: {res['tech_conclusion_short']}")
                 col2.metric("近3日法人買賣超", f"{res['inst_3d_sheets']:.0f} 張")
                 col3.metric("最新營收年增率", f"{res['latest_revenue_yoy']:.2f} %")
                 col4.metric("建議操盤風格", res["style"])
                 
+                # 白話文操盤建議
                 st.subheader("💡 終極雷達白話文操盤建議")
                 st.info(res["tech_conclusion_long"])
                 
-                st.subheader("📊 季度核心基本面體檢")
+                # 💡 [修復回歸] 盤中五大技術分析因子全面診斷
+                st.subheader("📈 盤中五大技術分析因子診斷")
+                tech_col1, tech_col2, tech_col3, tech_col4, tech_col5 = st.columns(5)
+                
+                macd_trend = "🔺 多頭擴張" if res['macd_hist'] > 0 else "🔻 空頭修正"
+                tech_col1.metric("MACD 柱狀體 (Hist)", f"{res['macd_hist']:.3f}", macd_trend)
+                tech_col2.metric("RSI(14) 強弱度", f"{res['rsi_now']:.2f}", "超買 >70 | 超賣 <30")
+                tech_col3.metric("20日均線支撐 (MA20)", f"{res['pivot']:.1f} 元", f"現價乖離: {((res['current_price']-res['pivot'])/res['pivot']*100):.1f}%")
+                tech_col4.metric("DMI 趨勢動能 (ADX)", f"{res['adx_now']:.1f}", "有趨勢 >20 | 死水 <20")
+                tech_col5.metric("14日真實波動度 (ATR)", f"{res['atr']:.2f} 元", f"Tick大小: {res['tick_size']}")
+                
+                # 💡 [修復回歸] 季度基本面核心財務大體檢區（包含前季對比與進退步標籤）
+                st.subheader("📊 季度核心基本面體檢 (最新季 vs 前一季)")
                 st.success(res["fin_conclusion"])
                 
+                f_col1, f_col2, f_col3 = st.columns(3)
+                def get_trend_tag(now, prev):
+                    return "🔺 進步" if now > prev else "🔻 退步" if now < prev else "➖ 持平"
+                    
+                f_col1.metric("每股盈餘 (EPS)", f"{res['eps_now']:.2f} 元", f"前季: {res['eps_prev']:.2f} | {get_trend_tag(res['eps_now'], res['eps_prev'])}")
+                f_col2.metric("營業毛利率", f"{res['gpm_now']:.2f} %", f"前季: {res['gpm_prev']:.2f} | {get_trend_tag(res['gpm_now'], res['gpm_prev'])}")
+                f_col3.metric("營業利益率", f"{res['opm_now']:.2f} %", f"前季: {res['opm_prev']:.2f} | {get_trend_tag(res['opm_now'], res['opm_prev'])}")
+                
+                # 💡 [全新重寫] 風報比操作量尺——畫面視覺化理解區
                 st.subheader("🎯 交易藍圖與精算風控價位")
-                b1, b2 = st.columns(2)
-                with b1:
-                    st.markdown("### 🏃‍♂️ 【突破型策略】")
-                    st.write(f"* 目標價: `{res['target_brk']}` | 停損價: `{res['stop_brk']}` | 風報比: `{res['rr1_brk']:.2f}`")
-                with b2:
-                    st.markdown("### 🛡️ 【拉回型策略】")
-                    st.write(f"* 目標價: `{res['target_pb']}` | 停損價: `{res['stop_pb']}` | 風報比: `{res['rr1_pb']:.2f}`")
+                
+                # 畫面上直接印出風報比（賺賠比）的容易理解說明書
+                with st.expander("📘 什麼是「風報比」？盤中要怎麼看大於多少有意義？（點開看心法）"):
+                    st.markdown("""
+                    * **公式原理：** `風報比 = 停利空間 (預期能賺的肉) ÷ 停損空間 (打算承擔的風險)`
+                    * **🔴 小於 1.5【性價比極低】**：代表你拿 10 元的風險，只能換到不到 15 元的利潤。這種交易屬於『割肉換皮』，長久下來一定賠錢，**系統會強制封鎖不推薦**。
+                    * **🟡 1.5 ~ 2.0【及格點位】**：**突破型策略**的及格底線。因為突破追擊的勝率一般在 40% 左右，風報比大於 1.5 就能保證抓到一次大行情可以抵消假突破的損失。
+                    * **🟢 大於 2.0【黃金點位】**：**拉回型策略**的完美狀態。用 1 元的風險去博 2 元以上的利潤，性價比極高，屬於典型的『高勝率、高報酬』好生意！
+                    """)
+
+                box_brk, box_pb = st.columns(2)
+                with box_brk:
+                    st.markdown("### 🏃‍♂️ 【突破型策略】方案藍圖")
+                    st.markdown(f"* **現價進場點：** `{res['current_price']}` 元")
+                    st.markdown(f"* **停利目標價：** `{res['target_brk']}` 元 (預期賺 `{res['target_brk'] - res['current_price']:.2f}` 元)")
+                    st.markdown(f"* **防守停損點：** `{res['stop_brk']}` 元 (預期賠 `{res['current_price'] - res['stop_brk']:.2f}` 元)")
+                    
+                    # 畫面視覺指標
+                    rr_val = res['rr1_brk']
+                    if rr_val < 1.5:
+                        st.error(f"❌ 當前風報比: **{rr_val:.2f}** (🔴 慘不忍睹：空間太小，強追高風險！)")
+                    elif rr_val < 2.0:
+                        st.warning(f"🟡 當前風報比: **{rr_val:.2f}** (🟡 勉強及格：符合突破快市標準。)")
+                    else:
+                        st.success(f"🚀 當前風報比: **{rr_val:.2f}** (🟢 極具優勢：上方海闊天空！)")
+                        
+                with box_pb:
+                    st.markdown("### 🛡️ 【拉回型策略】方案藍圖")
+                    st.markdown(f"* **理想買入點：** `{res['current_price']}` 元")
+                    st.markdown(f"* **短線停利價：** `{res['target_pb']}` 元 (預期賺 `{res['target_pb'] - res['current_price']:.2f}` 元)")
+                    st.markdown(f"* **破位停損點：** `{res['stop_pb']}` 元 (預期賠 `{res['current_price'] - res['stop_pb']:.2f}` 元)")
+                    
+                    # 畫面視覺指標
+                    rr_pb_val = res['rr1_pb']
+                    if rr_pb_val < 2.0:
+                        st.error(f"❌ 當前風報比: **{rr_pb_val:.2f}** (🔴 肉不夠多：距離壓力太近，建議放棄！)")
+                    else:
+                        st.success(f"🚀 當前風報比: **{rr_pb_val:.2f}** (🟢 黃金點位：回檔防守肉厚，性價比高！)")
+
+                # 底層原始數據
+                st.write("### 🔍 因子診斷後台原始 JSON 數據")
+                st.json(res)
             else:
-                st.error("查無資料。")
+                st.error("找不到該股票歷史資料，請確認代碼。")
 
 with tab2:
-    st.subheader("🛸 多因子批量篩選雷達")
-    st.markdown("請在下方輸入你想集體掃描的股票 pool（用逗號隔開），系統會自動過濾出符合條件的標的：")
+    st.subheader("🛸 多因子多股批量篩選雷達")
+    st.markdown("在下方輸入你想**打包集體掃描的股票名單**，系統會幫你清洗出最符合風報比、技術面、基本面的清單：")
     
-    # 預設一些核心權值與熱門股方便你測試
     default_pool = "2330, 2317, 2454, 2308, 2382, 2324, 2881, 2882"
-    scan_pool_str = st.text_area("自訂掃描股票池", value=default_pool)
+    scan_pool_str = st.text_area("股票池（代碼請用逗號隔開）", value=default_pool)
     
-    if st.button("啟動批量核心掃描"):
+    if st.button("啟動批量核心雷達掃描"):
         stock_list = [s.strip() for s in scan_pool_str.split(",") if s.strip()]
         all_results = []
         
@@ -588,15 +653,17 @@ with tab2:
                     all_results.append({
                         "代碼": res["stock_id"],
                         "名稱": res["stock_name"],
-                        "即時價": res["current_price"],
-                        "操作風格": res["style"],
-                        "雷達診斷": res["tech_conclusion_short"],
+                        "即時現價": res["current_price"],
+                        "核心風格": res["style"],
+                        "技術體檢": res["tech_conclusion_short"],
                         "法人3日買賣(張)": res["inst_3d_sheets"],
-                        "營收YoY(%)": res["latest_revenue_yoy"],
+                        "月營收YoY(%)": res["latest_revenue_yoy"],
+                        "最新季EPS": res["eps_now"],
+                        "前季EPS": res["eps_prev"],
                         "突破風報比": round(res["rr1_brk"], 2),
                         "拉回風報比": round(res["rr1_pb"], 2),
-                        "突破可交易": "✅ 可嘗試" if res["brk_tradeable"] else "❌ 空間不足",
-                        "拉回可交易": "✅ 可嘗試" if res["pb_tradeable"] else "❌ 空間不足"
+                        "突破型評估": "🟢 值得一試" if res["brk_tradeable"] else "❌ 封鎖放棄",
+                        "拉回型評估": "🟢 值得一試" if res["pb_tradeable"] else "❌ 封鎖放棄"
                     })
             except Exception:
                 pass
@@ -604,16 +671,13 @@ with tab2:
             
         if all_results:
             scan_df = pd.DataFrame(all_results)
-            st.success(f"🎉 批量掃描完成！從 {len(stock_list)} 檔股票中成功捕捉因子特徵。")
+            st.success(f"🎉 批量篩選完成！成功掃描 {len(stock_list)} 檔標的。")
             
-            # 使用選股濾網讓使用者自行勾選
-            st.markdown("### 🏆 雷達推薦進場選股清單")
-            tradeable_only = st.checkbox("🎯 只顯示風報比及格、符合可交易條件的精選標的")
-            
+            tradeable_only = st.checkbox("🎯 只幫我篩選出風報比及格、符合可操盤標準的賺錢機會")
             if tradeable_only:
-                filtered_df = scan_df[(scan_df["突破可交易"] == "✅ 可嘗試") | (scan_df["拉回可交易"] == "✅ 可嘗試")]
+                filtered_df = scan_df[(scan_df["突破型評估"] == "🟢 值得一試") | (scan_df["拉回型評估"] == "🟢 值得一試")]
                 st.dataframe(filtered_df, use_container_width=True)
             else:
                 st.dataframe(scan_df, use_container_width=True)
         else:
-            st.error("未能成功讀取任何股票，請檢查代碼或 API 連線。")
+            st.error("未能成功讀取任何標的數據，請確認 API 連線狀態。")
