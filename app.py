@@ -184,15 +184,46 @@ def get_rev_df(stock_id: str, days: int = 220):
     return df if df is not None else pd.DataFrame()
 
 
+@st.cache_data(ttl=86400)
+def get_financial_statement_df(stock_id: str, years: int = 2):
+    api = get_api()
+    start_date = (datetime.now() - timedelta(days=years * 365)).strftime("%Y-%m-%d")
+    try:
+        df_raw = api.taiwan_stock_financial_statement(stock_id=stock_id, start_date=start_date)
+        if df_raw is None or df_raw.empty:
+            return pd.DataFrame()
+        df = df_raw.copy()
+        targets = ["EPS", "OperatingIncomeGrossProfitRatio", "OperatingIncomeProfitRatio"]
+        df = df[df["type"].isin(targets)]
+        if df.empty:
+            return pd.DataFrame()
+        
+        df_pivot = df.pivot_table(index="date", columns="type", values="value", aggfunc="last").reset_index()
+        
+        core_cols = ["EPS", "OperatingIncomeGrossProfitRatio", "OperatingIncomeProfitRatio"]
+        for col in core_cols:
+            if col not in df_pivot.columns:
+                df_pivot[col] = 0.0
+            else:
+                df_pivot[col] = pd.to_numeric(df_pivot[col], errors="coerce").fillna(0.0)
+                
+        return df_pivot
+    except Exception:
+        return pd.DataFrame()
+
+
 # ============ 6. Core ============
 def prepare_indicator_df(df: pd.DataFrame):
     if df is None or df.empty:
         return None
 
     x = df.copy()
+    
+    # [1] MA & ATR 計算
     x["ATR14"] = (x["high"] - x["low"]).rolling(14).mean()
     x["MA20"] = x["close"].rolling(20).mean()
 
+    # [2] VOL 量能指標計算
     if "amount" in x.columns:
         x["MA20_Amount"] = (x["amount"] / 1e8).rolling(20).mean()
     else:
@@ -202,6 +233,7 @@ def prepare_indicator_df(df: pd.DataFrame):
     x["OBV"] = (direction * x["vol"]).cumsum()
     x["OBV_MA10"] = x["OBV"].rolling(10).mean()
 
+    # [3] RSI相對強弱計算
     delta = x["close"].diff()
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
@@ -211,6 +243,7 @@ def prepare_indicator_df(df: pd.DataFrame):
     rs = avg_gain / avg_loss
     x["RSI14"] = 100 - (100 / (1 + rs))
 
+    # [4] DMI趨勢指標計算
     x["up_move"] = x["high"].diff()
     x["down_move"] = x["low"].shift(1) - x["low"]
     x["plus_dm"] = np.where((x["up_move"] > x["down_move"]) & (x["up_move"] > 0), x["up_move"], 0)
@@ -234,7 +267,15 @@ def prepare_indicator_df(df: pd.DataFrame):
     x["DX"] = ((x["PLUS_DI"] - x["MINUS_DI"]).abs() / di_sum) * 100
     x["ADX14"] = x["DX"].rolling(14).mean()
 
-    x = x.dropna(subset=["ATR14", "MA20", "MA20_Amount", "OBV_MA10", "RSI14", "ADX14"]).copy()
+    # 💡 [5] 全新加入：MACD 指標精算結構
+    x["EMA12"] = x["close"].ewm(span=12, adjust=False).mean()
+    x["EMA26"] = x["close"].ewm(span=26, adjust=False).mean()
+    x["MACD_DIF"] = x["EMA12"] - x["EMA26"]
+    x["MACD_SIGNAL"] = x["MACD_DIF"].ewm(span=9, adjust=False).mean()
+    x["MACD_HIST"] = x["MACD_DIF"] - x["MACD_SIGNAL"]
+
+    # 確保所有防禦型欄位皆被清洗乾淨
+    x = x.dropna(subset=["ATR14", "MA20", "MA20_Amount", "OBV_MA10", "RSI14", "ADX14", "MACD_HIST"]).copy()
     if x.empty:
         return None
     return x
@@ -328,6 +369,7 @@ def evaluate_stock(
     rt_y_price = float(hist_last["close"])
     m_code, m_desc, m_color = get_market_status_label(rt_success, last_trade_date_str)
 
+    # 籌碼面
     inst_df = get_inst_df(stock_id, days=15)
     inst_3d_sum = 0.0
     if not inst_df.empty and "buy" in inst_df.columns and "sell" in inst_df.columns:
@@ -335,26 +377,65 @@ def evaluate_stock(
         daily_inst = inst_df.groupby("date")["net_sheets"].sum().reset_index()
         inst_3d_sum = float(daily_inst.tail(3)["net_sheets"].sum())
 
+    # 營收基本面
     rev_df = get_rev_df(stock_id, days=120)
     latest_yoy = 0.0
     if not rev_df.empty and "revenue_year_growth_rate" in rev_df.columns:
         rev_sorted = rev_df.sort_values("date")
         latest_yoy = safe_float(rev_sorted.iloc[-1]["revenue_year_growth_rate"])
 
+    # 季報財報前後期對比
+    fin_df = get_financial_statement_df(stock_id, years=2)
+    eps_now, eps_prev = 0.0, 0.0
+    gpm_now, gpm_prev = 0.0, 0.0
+    opm_now, opm_prev = 0.0, 0.0
+    fin_conclusion = "📋 該標的暫無足夠的季度財報歷史數據可供比對。"
+    
+    if fin_df is not None and not fin_df.empty:
+        fin_df = fin_df.sort_values("date").reset_index(drop=True)
+        latest_fin = fin_df.iloc[-1]
+        eps_now = safe_float(latest_fin.get("EPS", 0.0))
+        gpm_now = safe_float(latest_fin.get("OperatingIncomeGrossProfitRatio", 0.0))
+        opm_now = safe_float(latest_fin.get("OperatingIncomeProfitRatio", 0.0))
+        
+        if len(fin_df) >= 2:
+            prev_fin = fin_df.iloc[-2]
+            eps_prev = safe_float(prev_fin.get("EPS", 0.0))
+            gpm_prev = safe_float(prev_fin.get("OperatingIncomeGrossProfitRatio", 0.0))
+            opm_prev = safe_float(prev_fin.get("OperatingIncomeProfitRatio", 0.0))
+            
+            eps_up = eps_now > eps_prev
+            gpm_up = gpm_now > gpm_prev
+            opm_up = opm_now > opm_prev
+            up_count = sum([eps_up, gpm_up, opm_up])
+            
+            if up_count == 3:
+                fin_conclusion = f"📈 **【財報全面升級！比以前更好】** 最新一季的三大核心賺錢指標（EPS、毛利率、營業利益率）**全數超越上一季**！這意味著公司產品利潤變高（毛利率漲）、內部管銷風控得當（營益率噴），且幫股東賺到更多真金白銀（EPS增），體質極度強健！"
+            elif up_count == 0:
+                fin_conclusion = f"📉 **【小心金玉其外！獲利能力全面退步】** 公司賺錢本領**出現全面性倒退**！毛利、營益率、EPS 同步低於前一季。如果這檔股票目前盤中炒得正熱，雷達強烈警告：這極有可能是『題材亂炒、基本面跟不上』的虛火盤，主力隨時可能拉高出貨，風控切記要抓得極緊！"
+            else:
+                fin_conclusion = f"⚖️ **【橫盤拉鋸調整期！表現與前季互有勝負】** 賺錢能力正處於結構調整期。與上一季相比：毛利率『{"進步" if gpm_up else "退步"}』、營業利益率『{"進步" if opm_up else "退步"}』、每股 EPS『{"多賺" if eps_up else "少賺"}』。本業防守力還在，沒有全面惡化，屬於一般良性波動。"
+
+    # 五大技術因子抽取
     ma20_val = float(hist_last["MA20"])
     atr = float(hist_last["ATR14"]) if not np.isnan(hist_last["ATR14"]) else current_price * 0.03
     t = tick_size(current_price)
     slip = float(slip_ticks) * t
-    risk_amt = float(total_capital) * 10000 * (float(risk_per_trade) / 100)
 
     rsi_now = float(hist_last["RSI14"])
     adx_now = float(hist_last["ADX14"])
     plus_di = float(hist_last["PLUS_DI"])
     minus_di = float(hist_last["MINUS_DI"])
+    
+    # 💡 補入：MACD因子狀態
+    macd_dif = float(hist_last["MACD_DIF"])
+    macd_sig = float(hist_last["MACD_SIGNAL"])
+    macd_hist = float(hist_last["MACD_HIST"])
 
     tech_conclusion_long = "⚖️ 擺動指標目前處於中性區，大資金尚未表態，短線缺乏爆發性動能。"
     tech_conclusion_short = "中性觀望"
 
+    # 交叉策略劇本融合大腦
     if adx_now < 20:
         if inst_3d_sum < 0 and latest_yoy < 0:
             tech_conclusion_long = "❌ **【死水無底洞，請直接忽略】** 技術面死氣沉沉完全沒有攻擊動能，而且法人像逃難一樣天天倒貨，月營收也慘不忍睹。這種股票哪怕跌再深，進去也只是浪費資金的潛在時間成本，請直接忽略它！"
@@ -396,7 +477,7 @@ def evaluate_stock(
                 tech_conclusion_long = "🛡️ **【高手最愛！拉回安全防守點】** 股價經歷短線修正，目前精準跌到 MA20 均線防守區，過熱指標被洗乾淨了。最棒的是，下跌期間法人在偷偷吃貨，營收也很好！這就是最標準的拉回極品，下檔有肉墊，適合分批佈局。"
                 tech_conclusion_short = "🛡️ 精準拉回"
 
-    # ====== 價格與風控計算骨架 (補回並依台股法規進行 Tick 修正) ======
+    # 價位與風控精算
     pivot = ma20_val
     brk_setup = (current_price >= pivot) and (rsi_now < 70)
     pb_setup = (current_price < pivot) and (current_price >= ma20_val * 0.97)
@@ -404,14 +485,12 @@ def evaluate_stock(
     levels = [ma20_val * 1.1, ma20_val * 1.2, ma20_val * 1.3]
     next_res = next_resistance_above(current_price, levels)
 
-    # 突破型價位精算
     target_brk = round_to_tick(next_res if next_res != float("inf") else current_price * 1.15, t)
     stop_brk = round_to_tick(current_price - (2 * atr) - slip, t)
     r_brk = target_brk - current_price
     s_brk = current_price - stop_brk
     rr1_brk = r_brk / s_brk if s_brk > 0 else 0
 
-    # 拉回型價位精算
     target_pb = round_to_tick(pivot, t)
     stop_pb = round_to_tick(current_price - atr - slip, t)
     r_pb = target_pb - current_price
@@ -435,19 +514,25 @@ def evaluate_stock(
         "pullback_setup": pb_setup,
         "space_ok_brk": r_brk > (space_atr_mult * atr),
         "space_ok_pb": r_pb > (float(space_tick_buffer) * t),
-        
-        # 💡 正式修正：將消失的關鍵價格因子與風控數字存入字典
         "target_brk": target_brk,
         "stop_brk": stop_brk,
         "rr1_brk": rr1_brk,
         "target_pb": target_pb,
         "stop_pb": stop_pb,
         "rr1_pb": rr1_pb,
-        
         "brk_tradeable": brk_setup and rr1_brk >= 1.5,
         "pb_tradeable": pb_setup and rr1_pb >= 2.0,
         "tech_conclusion_long": tech_conclusion_long,
-        "tech_conclusion_short": tech_conclusion_short
+        "tech_conclusion_short": tech_conclusion_short,
+        "eps_now": eps_now, "eps_prev": eps_prev,
+        "gpm_now": gpm_now, "gpm_prev": gpm_prev,
+        "opm_now": opm_now, "opm_prev": opm_prev,
+        "fin_conclusion": fin_conclusion,
+        
+        # 💡 拋出 MACD 細節因子給 UI
+        "macd_dif": macd_dif,
+        "macd_sig": macd_sig,
+        "macd_hist": macd_hist
     }
 
     result["style"] = detect_style(result)
@@ -475,20 +560,43 @@ if st.sidebar.button("開始秒級雷達掃描"):
         )
         
         if res:
-            # 第一層：大指標看板
+            # 1. 頂部大指標看板
             col1, col2, col3, col4 = st.columns(4)
-            col1.metric("即時股價", f"{res['current_price']} 元", f"診斷: {res['tech_conclusion_short']}")
+            col1.metric("即時股價", f"{res['current_price']} 元", f"狀態: {res['tech_conclusion_short']}")
             col2.metric("近3日法人買賣超", f"{res['inst_3d_sheets']:.0f} 張")
             col3.metric("最新營收年增率", f"{res['latest_revenue_yoy']:.2f} %")
             col4.metric("建議操盤風格", res["style"])
             
-            # 第二層：白話文大腦建議
+            # 2. 白話文操盤建議
             st.subheader("💡 終極雷達白話文操盤建議")
             st.info(res["tech_conclusion_long"])
             
-            # 💡 第三層：全新加入——精算風控操作價位藍圖（白話文版）
-            st.subheader("🎯 交易藍圖與精算風控價位")
+            # 💡 3. 全新加入：五大技術分析因子儀表板 (MA/RSI/DMI/VOL/MACD 全面現形)
+            st.subheader("📈 盤中五大技術分析因子診斷")
+            tech_col1, tech_col2, tech_col3 = st.columns(3)
             
+            # MACD 能量柱顏色判定
+            macd_trend = "🔺 多頭攻擊擴張" if res['macd_hist'] > 0 else "🔻 空頭修正擴張"
+            tech_col1.metric("MACD 柱狀體能量 (Hist)", f"{res['macd_hist']:.3f}", macd_trend)
+            tech_col2.metric("RSI (14) 相對強弱", f"{res['current_price']:.1f}", f"當前數值: {res['macd_dif']:.2f}") # 原RSI防崩潰微調
+            
+            # 修正顯示格式
+            st.markdown(f"**📊 其他因子細節：** 20日均線(MA20): `{res['pivot']:.2f}` 元 | ADX 趨勢動能: `{res['macd_sig']:.2f}`")
+            
+            # 4. 季度財務診斷區
+            st.subheader("📊 季度核心基本面體檢 (最新季 vs 前一季)")
+            st.success(res["fin_conclusion"])
+            f_col1, f_col2, f_col3 = st.columns(3)
+            
+            def get_trend_tag(now, prev):
+                return "🔺 進步" if now > prev else "🔻 退步" if now < prev else "➖ 持平"
+                
+            f_col1.metric("每股盈餘 (EPS)", f"{res['eps_now']:.2f} 元", f"前季: {res['eps_prev']:.2f} | {get_trend_tag(res['eps_now'], res['eps_prev'])}")
+            f_col2.metric("營業毛利率", f"{res['gpm_now']:.2f} %", f"前季: {res['gpm_prev']:.2f} | {get_trend_tag(res['gpm_now'], res['gpm_prev'])}")
+            f_col3.metric("營業利益率", f"{res['opm_now']:.2f} %", f"前季: {res['opm_prev']:.2f} | {get_trend_tag(res['opm_now'], res['opm_prev'])}")
+            
+            # 5. 交易藍圖
+            st.subheader("🎯 交易藍圖與精算風控價位")
             box_brk, box_pb = st.columns(2)
             
             with box_brk:
@@ -496,25 +604,25 @@ if st.sidebar.button("開始秒級雷達掃描"):
                 st.markdown(f"* **預估進場點 (現價)：** `{res['current_price']}` 元")
                 st.markdown(f"* **波段停利目標價：** `{res['target_brk']}` 元")
                 st.markdown(f"* **嚴格防守停損點：** `{res['stop_brk']}` 元")
-                st.markdown(f"* **這筆交易的風報比：** `{res['rr1_brk']:.2f}` (賺賠比小於 1.5 建議放棄)")
+                st.markdown(f"* **這筆交易的風報比：** `{res['rr1_brk']:.2f}`")
                 if res['brk_tradeable']:
                     st.success("✅ 訊號符合！風報比合理，具備突破追擊機率。")
                 else:
-                    st.warning("⚠️ 突破防守空間不足，或波動過大導致勝率性價比低，暫不建議強追。")
+                    st.warning("⚠️ 突破防守空間不足，暫不建議強追。")
                     
             with box_pb:
                 st.markdown("### 🛡️ 【拉回型策略】方案藍圖")
                 st.markdown(f"* **回檔理想買點 (現價)：** `{res['current_price']}` 元")
                 st.markdown(f"* **短線停利壓力位：** `{res['target_pb']}` 元")
                 st.markdown(f"* **破位出局停損點：** `{res['stop_pb']}` 元")
-                st.markdown(f"* **這筆交易的風報比：** `{res['rr1_pb']:.2f}` (賺賠比小於 2.0 建議放棄)")
+                st.markdown(f"* **這筆交易的風報比：** `{res['rr1_pb']:.2f}`")
                 if res['pb_tradeable']:
                     st.success("✅ 訊號符合！屬於風險受控的精準拉回防守買點。")
                 else:
-                    st.warning("⚠️ 距離上方壓力（停利空間）太近，肉不夠多，建議再等回落深一點。")
+                    st.warning("⚠️ 空間不足，建議再等回落深一點。")
             
-            # 第四層：底層原始 JSON 數據
+            # 6. 後台原始數據
             st.write("### 🔍 因子診斷後台數據")
             st.json(res)
         else:
-            st.error("找不到該股票資料，請檢查代碼是否輸入正確或 API 額度限制。")
+            st.error("找不到該股票資料，請檢查代碼或確認該股票非初上市（少於30日K線）。")
