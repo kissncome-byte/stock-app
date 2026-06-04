@@ -290,7 +290,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     df_raw = get_daily_df(stock_id, days=365)
     if df_raw is None or df_raw.empty: return None
 
-    # ======= 【BUG 1 修正】：提前獲取即時價格，並動態注入 DataFrame 以防指標時間差失真 =======
+    # ======= 提前獲取即時價格，並動態注入 DataFrame 以防指標時間差失真 =======
     hist_last_raw = df_raw.iloc[-1]
     hist_last_close = float(hist_last_raw["close"])
     hist_last_vol = float(hist_last_raw["vol"])
@@ -363,7 +363,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
         inst_daily = inst_df.groupby("date")["net_sheets"].sum().reset_index().sort_values("date")
         if not inst_daily.empty: inst_3d_sum = float(inst_daily.tail(3)["net_sheets"].sum())
 
-    # ======= 【BUG 2 修正】：營收安全性防禦，若缺欄位則啟動防護手動算回 YoY =======
+    # 營收安全性防禦，若缺欄位則啟動防護手動算回 YoY
     rev_df = get_rev_df(stock_id, days=365)
     latest_yoy, latest_rev_month, latest_rev_value, has_revenue_data = 0.0, "尚無公告", 0.0, False
     if not rev_df.empty and "revenue" in rev_df.columns:
@@ -386,7 +386,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
             latest_rev_value = float(rev_last_row["revenue"]) / 100000000.0
             has_revenue_data = True
 
-    # ======= 【升級 1】：財報對比季節解耦（由上季 QoQ 更改為去年同期 YoY） =======
+    # 財報對比季節解耦（由上季 QoQ 更改為去年同期 YoY）
     fin_df = get_financial_statement_df(stock_id, years=2)
     eps_now, eps_prev, gpm_now, gpm_prev, opm_now, opm_prev = 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
     fin_conclusion = "📋 該標的暫無足夠季度財報歷史數據對比。"
@@ -423,7 +423,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
             eps_lbl = "多賺" if eps_now > eps_prev else "少賺" if eps_now < eps_prev else "持平"
             fin_conclusion = f"⚖️ **【數據有限採按季比】** 毛利率『{gpm_text}』、營益率『{opm_text}』、EPS『{eps_lbl}』。"
 
-    # ======= 【畫面優化】：精簡即時新聞輿情定論文字，防止排版破裂爆行 =======
+    # 精簡即時新聞輿情定論文字，防止排版破裂爆行
     news_summary, news_color = "🟡 多空平衡", "gray"
     news_analysis_report = "⚪ 暫無最新重要輿情分析資訊。"
     news_raw_list = []
@@ -464,7 +464,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     else:
         news_summary, news_color = "⚪ 雷達略過", "gray"
 
-    # ======= 【升級 2】：技術動能動態超買閾值分流（大象股 75 / 衛星飆股 85） =======
+    # 技術動能動態超買閾值分流（大象股 75 / 衛星飆股 85）
     tech_conclusion_short = "中性觀望"
     tech_conclusion_long = "⚖️ 擺動指標目前處於中性橫盤區，大資金尚未表態，短線缺乏爆發性動能。"
     
@@ -556,7 +556,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
 
     pool_allocation = total_capital * 0.8 if is_heavyweight else total_capital * 0.2
     
-    # ======= 【風控優化】：每筆最大損失金額以「總本金」為基底精算，拒絕黑馬池雙重縮水 =======
+    # 每筆最大損失金額以「總本金」為基底精算
     risk_money = total_capital * (risk_per_trade / 100) * 10000 
     
     loss_per_share_brk = (current_price - stop_brk) if (current_price - stop_brk) > 0 else 0.01
@@ -573,6 +573,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     max_lots_by_pool_pb = int((pool_allocation * 10000 / current_price) / 1000) if current_price > 0 else 0
     if suggested_lots_pb > max_lots_by_pool_pb: suggested_lots_pb = max_lots_by_pool_pb
 
+    # ======= 【修復核心】：在回傳字典中，補上外層 UI 需要的過熱門檻數值 =======
     return {
         "stock_id": stock_id, "stock_name": stock_name, "industry": industry,
         "current_price": current_price, "current_vol": current_vol, "vol_ma20": vol_ma20_val,
@@ -592,7 +593,8 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
         "diag_fundamentals": diag_fundamentals, "diag_chips": diag_chips, "diag_technicals": diag_technicals,
         "is_turnaround_dark_horse": is_turnaround_dark_horse, "turnaround_reason": turnaround_reason,
         "news_summary": news_summary, "news_color": news_color, "news_analysis_report": news_analysis_report, "news_raw_list": news_raw_list,
-        "is_heavyweight": is_heavyweight, "has_financial_data": has_financial_data
+        "is_heavyweight": is_heavyweight, "has_financial_data": has_financial_data,
+        "rsi_overbought_tmsh": rsi_overbought_tmsh
     }
 
 # ============ 7. 全域基礎資料初始化 ============
@@ -701,7 +703,7 @@ with tab1:
                 col_m1.metric("即時現價", f"{res['current_price']} 元", f"核心決策: {res['invest_status'][:4]}...")
                 col_m2.metric("盤中即時量 / 20日均量", f"{res['current_vol']:.0f} 張", f"均量: {res['vol_ma20']:.0f} 張")
                 col_m3.metric(f"最新公告月營收 ({res['latest_rev_month']})", f"{res['latest_revenue_yoy']:.1f} %", f"單月營收: {res['latest_rev_value']:.1f} 億")
-                col_m4.metric("即時新聞輿情定論", res["news_summary"]) # 4字內精簡定論，100%不塞爆畫面
+                col_m4.metric("即時新聞輿情定論", res["news_summary"])
                 
                 # AI 核心輿情重點診斷艙
                 st.markdown("### 📰 AI 核心輿情重點診斷艙")
@@ -781,14 +783,14 @@ with tab1:
                     if res['rr1_brk'] >= 1.5 or res['rr1_pb'] >= 2.0:
                         reasons.append(f"**期望值划算 (風報比優勢)**：預期上漲利潤顯著大於防守停損風險，數學勝率天平傾斜。")
                     else:
-                        reasons.append(f"**幾何利潤空間受限**：雖趨勢偏多，但現價距壓力位太近，風報比不具高性價比。")
+                        reasons.append(f"**幾何利潤空間受限**：雖趨勢偏多，脫離主升段或距壓力位太近，風報比不具高性價比。")
 
                 action_advice = ""
                 if res['status_color'] == 'green' or res['status_color'] == 'purple':
                     if res['brk_tradeable'] or res['pb_tradeable']:
                         action_advice = "🟢 **建議堅決執行布局**：所有核心權重因子完美共振！請對照下方『精算交易藍圖』，依照系統建議的風控張數分批或直接進場，嚴設停損。"
                     else:
-                        action_advice = "🟡 **耐心等候更好點位**：基本面與籌碼極佳，但現價風報比不划算。建議掛單在下方的『均線拉回低吸點』，等候黃金點位。"
+                        action_advice = "🟡 **耐心等候更好點位**：基本面與籌碼極佳，但現價風報比不化算。建議掛單在下方的『均線拉回低吸點』，等候黃金點位。"
                 elif res['status_color'] == 'blue':
                     action_advice = "⚖️ **建議溫和試單 / 分批低吸**：多頭雛形已現，但總體動能未全開。進場資金減半，切忌重倉一次追高，利用拉回策略低吸。"
                 elif res['status_color'] == 'orange':
@@ -817,7 +819,7 @@ with tab1:
                 st.subheader("🎯 精算交易藍圖與風控部位張數建議")
                 box_brk, box_pb = st.columns(2)
                 with box_brk:
-                    st.markdown("### 跑動追擊 【突破/起漲策略】藍圖")
+                    st.markdown("### 🏃‍♂️ 【突破/起漲策略】藍圖")
                     st.markdown(f"* **建議突破進場點：** `{res['current_price']}` 元")
                     st.markdown(f"* **預估停利目標價：** `{res['target_brk']}` 元")
                     st.markdown(f"* **防守撤退停損點：** `{res['stop_brk']}` 元")
@@ -829,7 +831,7 @@ with tab1:
                     if res['rr1_brk'] < 1.5: st.error(f"❌ 當前風報比: {res['rr1_brk']:.2f} (空間不足，不符期望值)")
                     else: st.success(f"🚀 當前風報比: {res['rr1_brk']:.2f} (🟢 符合進攻點幾何期望值)")
                 with box_pb:
-                    st.markdown("### 穩健防守 【均線拉回低吸策略】藍圖")
+                    st.markdown("### 🛡️ 【均線拉回低吸策略】藍圖")
                     st.markdown(f"* **理想低吸買入點：** `{res['current_price']}` 元")
                     st.markdown(f"* **短線預期停利價：** `{res['target_pb']}` 元")
                     st.markdown(f"* **破位防守停損點：** `{res['stop_pb']}` 元")
@@ -841,10 +843,11 @@ with tab1:
                     if res['rr1_pb'] < 2.0: st.error(f"❌ 當前風報比: {res['rr1_pb']:.2f} (拉回防守利潤空間過窄)")
                     else: st.success(f"🚀 當前風報比: {res['rr1_pb']:.2f} (🟢 理想低吸高性價比點位)")
 
+                # ======= 【BUG 修復處】：將原本報錯的 rsi_overbought_tmsh 改由字典 res 呼叫 =======
                 st.subheader("📊 盤中核心量化基礎指標")
                 tech_col1, tech_col2, tech_col3, tech_col4, tech_col5 = st.columns(5)
                 tech_col1.metric("MACD 柱狀體 (Hist)", f"{res['macd_hist']:.3f}", "🔺 多頭擴張" if res['macd_hist'] > 0 else "🔻 空頭修正")
-                tech_col2.metric("RSI(14) 強弱度", f"{res['rsi_now']:.1f}", f"過熱門檻: {rsi_overbought_tmsh}")
+                tech_col2.metric("RSI(14) 強弱度", f"{res['rsi_now']:.1f}", f"過熱門檻: {res['rsi_overbought_tmsh']}")
                 tech_col3.metric("20日生命均線 (MA20)", f"{res['pivot']:.1f} 元", f"20D前高: {res['real_resistance']:.1f}元")
                 tech_col4.metric("DMI 趨勢動能 (ADX)", f"{res['adx_now']:.1f}", "壓縮鎖碼" if res['is_compressed'] else "常態發散")
                 tech_col5.metric("14日真實波動度 (ATR)", f"{res['atr']:.2f} 元", f"開火爆量: {'是' if res['vol_spike'] else '否'}")
