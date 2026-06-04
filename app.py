@@ -214,11 +214,12 @@ def get_financial_statement_df(stock_id: str, years: int = 2):
 def get_realtime_news_df(stock_id: str, stock_name: str):
     news_list = []
     try:
-        # 獨立建立請求，不共用大盤 Session 防止被阻擋
-        query = f"{stock_id} {stock_name}"
+        # 1. 搜尋字串加入 when:14d，強制 Google 只搜尋最近 14 天內的新聞
+        query = f"{stock_id} {stock_name} when:14d"
         url = f"https://news.google.com/rss/search?q={requests.utils.quote(query)}&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
         r = requests.get(url, headers=headers, timeout=5)
+        
         if r.status_code == 200:
             root = ET.fromstring(r.content)
             for item in root.findall('.//item'):
@@ -228,7 +229,17 @@ def get_realtime_news_df(stock_id: str, stock_name: str):
                 source = item.find('source').text if item.find('source') is not None else "財經新聞"
                 if " - " in title: title = title.rsplit(" - ", 1)[0]
                 news_list.append({"date": pub_date, "title": title, "source": source, "link": link})
+                
+        if news_list:
+            df = pd.DataFrame(news_list)
+            # 2. 將 RSS 的字串時間轉換為真正的時間格式，並嚴格按照「由新到舊」排序
+            df["parsed_date"] = pd.to_datetime(df["date"], errors="coerce")
+            df = df.sort_values(by="parsed_date", ascending=False).drop(columns=["parsed_date"])
+            return df
+            
     except Exception: pass
+    
+    return pd.DataFrame(news_list)
     return pd.DataFrame(news_list)
 
 # ============ 6. Math & Technical Processing Engine ============
