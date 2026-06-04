@@ -1,16 +1,16 @@
 import os
 import time
-import random
 import requests
 import certifi
 import pandas as pd
 import numpy as np
 import streamlit as st
-import altair as alt
 from datetime import datetime, timedelta
 import pytz
 import concurrent.futures
+import xml.etree.ElementTree as ET
 from FinMind.data import DataLoader
+from streamlit.runtime.scriptrunner import add_script_run_ctx
 
 # ============ 1. Page Config ============
 st.set_page_config(page_title="SOP v17 高精準多因子個股深度診斷系統", layout="wide")
@@ -106,20 +106,32 @@ def analyze_news_sentiment(title: str) -> tuple:
     return "🟡 中性消息", "gray"
 
 
+# ============ 4. Auth, API Initialization & Shared Connection ============
+FINMIND_TOKEN = os.getenv("FINMIND_TOKEN", "") or st.secrets.get("FINMIND_TOKEN", "")
+
+@st.cache_resource
+def get_requests_session():
+    """全域共用的 Session，避免頻繁重建連線提升併發效率"""
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    })
+    return session
+
 def compute_live_data(stock_id: str, hist_last_close: float, hist_last_vol: float, live_price_override: float = None):
     if live_price_override is not None and live_price_override > 0:
         return live_price_override, hist_last_vol * 1.2, True, "模擬串流", "realtime"
 
     rt_price, rt_vol, rt_success = None, None, False
     rt_source, rt_type = "歷史收盤", "historical"
+    session = get_requests_session()
 
+    # 1. 嘗試從台灣證交所 API 獲取盤中即時數據
     try:
-        session = requests.Session()
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-        session.get("https://mis.twse.com.tw/stock/index.jsp", headers=headers, timeout=2, verify=certifi.where())
+        session.get("https://mis.twse.com.tw/stock/index.jsp", timeout=2, verify=certifi.where())
         ts = int(time.time() * 1000)
         url = f"https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=tse_{stock_id}.tw|otc_{stock_id}.tw&json=1&delay=0&_={ts}"
-        r = session.get(url, headers=headers, timeout=2, verify=certifi.where())
+        r = session.get(url, timeout=2, verify=certifi.where())
 
         if r.status_code == 200:
             data = r.json()
@@ -135,11 +147,16 @@ def compute_live_data(stock_id: str, hist_last_close: float, hist_last_vol: floa
                     rt_source, rt_type = "TWSE 即時", "realtime"
     except Exception: pass
 
+    # 2. 若證交所失敗，改用備份方案 Yahoo Finance
     if not rt_success:
         try:
+            yahoo_headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+            }
             for suffix in [".TW", ".TWO"]:
                 url = f"https://query2.finance.yahoo.com/v8/finance/chart/{stock_id}{suffix}"
-                r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=2, verify=certifi.where())
+                r = requests.get(url, headers=yahoo_headers, timeout=2, verify=certifi.where())
                 if r.status_code == 200:
                     meta = r.json().get("chart", {}).get("result", [{}])[0].get("meta", {})
                     p = safe_float(meta.get("regularMarketPrice"))
@@ -153,10 +170,6 @@ def compute_live_data(stock_id: str, hist_last_close: float, hist_last_vol: floa
         except Exception: pass
 
     return (rt_price if rt_success else hist_last_close), (rt_vol if (rt_success and rt_vol > 0) else hist_last_vol), rt_success, rt_source, rt_type
-
-
-# ============ 4. Auth & API Initialization ============
-FINMIND_TOKEN = os.getenv("FINMIND_TOKEN", "") or st.secrets.get("FINMIND_TOKEN", "")
 
 
 # ============ 5. Cached Data Layer ============
@@ -241,11 +254,11 @@ def get_financial_statement_df(stock_id: str, years: int = 2):
 @st.cache_data(ttl=300)
 def get_realtime_news_df(stock_id: str, stock_name: str):
     news_list = []
+    session = get_requests_session()
     try:
-        import xml.etree.ElementTree as ET
         query = f"{stock_id} {stock_name}"
         url = f"https://news.google.com/rss/search?q={requests.utils.quote(query)}&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
-        r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=4)
+        r = session.get(url, timeout=4)
         if r.status_code == 200:
             root = ET.fromstring(r.content)
             for item in root.findall('.//item'):
@@ -264,7 +277,7 @@ def prepare_indicator_df(df: pd.DataFrame):
     if df is None or df.empty: return None
     x = df.copy().sort_values("date").reset_index(drop=True)
     
-    # 標準威爾德平滑法技術指標計算 (對齊主流看盤軟體)
+    # 標準威爾德平滑法技術指標計算
     close_prev = x["close"].shift(1)
     tr1 = x["high"] - x["low"]
     tr2 = (x["high"] - close_prev).abs()
@@ -309,24 +322,24 @@ def prepare_indicator_df(df: pd.DataFrame):
     return x
 
 
-def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, slip_ticks: int):
+def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, slip_ticks: int, fetch_news: bool = True):
     df_raw = get_daily_df(stock_id, days=365)
     if df_raw is None or df_raw.empty: return None
 
     df = prepare_indicator_df(df_raw)
     if df is None or df.empty: return None
 
-    info_df = get_stock_info_df()
-    match = info_df[info_df["stock_id"] == stock_id]
+    info_df_local = get_stock_info_df()
+    match = info_df_local[info_df_local["stock_id"] == stock_id]
     stock_name = match["stock_name"].values[0] if not match.empty else "指定標的"
     industry = match["industry_category"].values[0] if not match.empty else "未知板塊"
 
     hist_last = df.iloc[-1]
     last_trade_date_str = str(hist_last["date"])
 
-    # 根據歷史成交建置金額自動化判定是否為大象權值龍頭
+    # 自動化判定是否為大象權值龍頭 (將門檻微調至 20 億避免高週轉中小型股干擾)
     recent_amount_ma = df["amount"].tail(20).mean()
-    is_heavyweight = recent_amount_ma > 1500000000  # 日均成交額大於15億新台幣視為大象權值股
+    is_heavyweight = recent_amount_ma > 2000000000  
     
     if is_heavyweight:
         vol_multiplier = 1.25     
@@ -342,7 +355,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     )
     m_code, m_desc, m_color = get_market_status_label(rt_success, last_trade_date_str)
 
-    # 籌碼防禦性縱深檢查
+    # 籌碼防禦性檢查
     inst_df = get_inst_df(stock_id, days=20)
     inst_3d_sum = 0.0
     if not inst_df.empty and "buy" in inst_df.columns and "sell" in inst_df.columns and "date" in inst_df.columns:
@@ -352,7 +365,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
         if not inst_daily.empty:
             inst_3d_sum = float(inst_daily.tail(3)["net_sheets"].sum())
 
-    # 🚀【全面性縱深防護】徹底杜絕不存在欄位引起的 KeyError
+    # 營收安全獲取
     rev_df = get_rev_df(stock_id, days=365)
     latest_yoy = 0.0
     latest_rev_month = "尚無公告"
@@ -375,7 +388,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
             latest_rev_value = float(rev_last_row["revenue"]) / 100000000.0
             has_revenue_data = True
 
-    # 財報季度防禦性體檢
+    # 財報季度體檢
     fin_df = get_financial_statement_df(stock_id, years=2)
     eps_now, eps_prev, gpm_now, gpm_prev, opm_now, opm_prev = 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
     fin_conclusion = "📋 該標的暫無足夠季度財報歷史數據（非個股或部分特殊標的）。"
@@ -409,17 +422,20 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
             else:
                 fin_conclusion = f"⚖️ **【橫盤調整期】** 結構互有勝負：毛利『{gpm_text}』、營益率『{opm_text}』、EPS『{eps_lbl}』。"
 
-    # 修復手滑錯字「門」的新聞情緒分析
-    news_df = get_realtime_news_df(stock_id, stock_name)
+    # 新聞情緒分析
     news_summary, news_color = "🟡 中性消息", "gray"
-    if not news_df.empty and "title" in news_df.columns:
-        pos_cnt, neg_cnt = 0, 0
-        for title in news_df["title"].tail(6).tolist():
-            lbl, _ = analyze_news_sentiment(title)
-            if "利多" in lbl: pos_cnt += 1
-            elif "利空" in lbl: neg_cnt += 1
-        if pos_cnt > neg_cnt: news_summary, news_color = "🟢 即時輿情偏多", "green"
-        elif neg_cnt > pos_cnt: news_summary, news_color = "🔴 即時輿情偏空", "red"
+    if fetch_news:
+        news_df = get_realtime_news_df(stock_id, stock_name)
+        if not news_df.empty and "title" in news_df.columns:
+            pos_cnt, neg_cnt = 0, 0
+            for title in news_df["title"].tail(6).tolist():
+                lbl, _ = analyze_news_sentiment(title)
+                if "利多" in lbl: pos_cnt += 1
+                elif "利空" in lbl: neg_cnt += 1
+            if pos_cnt > neg_cnt: news_summary, news_color = "🟢 即時輿情偏多", "green"
+            elif neg_cnt > pos_cnt: news_summary, news_color = "🔴 即時輿情偏空", "red"
+    else:
+        news_summary, news_color = "⚪ 批次雷達略過新聞", "gray"
 
     # 量化技術指標物理量
     ma20_val = float(hist_last["MA20"])
@@ -487,7 +503,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
             else:
                 turnaround_reason = f"🔮 **【大轉折：營收懸崖式暴增！】** 最新月營收 YoY 拔地而起高達 {latest_yoy:.1f}%，新產能或新訂單大灌頂！"
 
-    # 基本面體檢與動態分文生成
+    # 基本面評分
     if has_revenue_data:
         if latest_yoy >= 25:
             f_score += 20
@@ -548,7 +564,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     else:
         invest_status, status_color, status_emoji = "❌ 結構轉弱：不值投入", "red", "🚨"
 
-    # 交易藍圖精算與動態風控部位計算
+    # 交易藍圖精算
     brk_setup = (current_price >= real_resistance * 0.98) and (rsi_now < 73)
     pb_setup = (current_price < real_resistance) and (current_price >= ma20_val * 0.98)
 
@@ -561,7 +577,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     stop_pb = round_to_tick(current_price - atr - slip, t)
     rr1_pb = (target_pb - current_price) / (current_price - stop_pb) if (current_price - stop_pb) > 0 else 0
 
-    # 核心與衛星雙軌資金部位限額分配
+    # 資金池動態分配
     pool_allocation = total_capital * 0.8 if is_heavyweight else total_capital * 0.2
     risk_money = pool_allocation * (risk_per_trade / 100) * 10000 
     
@@ -590,11 +606,20 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
         "invest_status": invest_status, "status_color": status_color, "status_emoji": status_emoji,
         "diag_fundamentals": diag_fundamentals, "diag_chips": diag_chips, "diag_technicals": diag_technicals,
         "is_turnaround_dark_horse": is_turnaround_dark_horse, "turnaround_reason": turnaround_reason,
-        "news_summary": news_summary, "news_color": news_color, "is_heavyweight": is_heavyweight
+        "news_summary": news_summary, "news_color": news_color, "is_heavyweight": is_heavyweight,
+        "has_financial_data": has_financial_data
     }
 
 
-# ============ 7. Streamlit UI Layer ============
+# ============ 7. 全域基礎資料初始化 ============
+info_df = get_stock_info_df()
+if not info_df.empty and "industry_category" in info_df.columns:
+    all_industries = sorted(info_df["industry_category"].dropna().unique().tolist())
+else:
+    all_industries = ["半導體業", "電子零組件業", "光電業", "金融保險", "電腦及週邊設備業", "航運業"]
+
+
+# ============ 8. Streamlit UI Layer ============
 st.sidebar.header("⚙️ 核心-衛星雙軌風控系統")
 total_cap = st.sidebar.number_input("總資產配置本金 (萬元)", value=100.0)
 risk_pct = st.sidebar.slider("單筆最大可承受風險 (%)", 0.5, 3.0, 1.0)
@@ -610,25 +635,29 @@ st.sidebar.markdown(f"""
 * 🛡️ **每筆最大損失金額：** `{total_cap * (risk_pct / 100) * 10000:.0f}` 元
 """)
 
+if st.sidebar.button("🧹 清除系統快取數據"):
+    st.cache_data.clear()
+    st.toast("系統快取已全數清理，下次查詢將同步最新實時市場因子！")
+
 tab1, tab2 = st.tabs(["🔍 核心個股「值不值投入」深度診斷", "🛸 大盤全自動多執行緒雷達"])
 
 with tab1:
     target_stock = st.text_input("請輸入要進行分析的股票代碼（支援個股、ETF與大盤類別防禦診斷）", value="2330").strip()
     if st.button("開始個股雷達全因子診斷"):
         with st.spinner("多因子數據縱深交叉分析中..."):
-            res = evaluate_stock(target_stock, total_cap, risk_pct, 1)
+            res = evaluate_stock(target_stock, total_cap, risk_pct, 1, fetch_news=True)
             
             if res:
                 res["style"] = detect_style(res)
                 
-                # ============ UI 改造區塊 A：雙軌操盤性格卡 (資產分流直覺化) ============
+                # 1. 頂層：雙軌操盤性格卡
                 if res['is_heavyweight']:
                     st.markdown(f"""
                     <div style="background-color:#E3F2FD; padding:18px; border-radius:12px; border-left:8px solid #1E88E5; margin-bottom:15px;">
                         <h3 style="color:#0D47A1; margin:0; font-size:20px;">🏛️ 【 核心大象劇本：航空母艦穩健戰 】</h3>
                         <p style="color:#1565C0; font-size:14px; margin-top:6px; margin-bottom:0;">
                             <b>現正監控：{res['stock_name']} ({res['stock_id']}) · {res['industry']}</b><br>
-                            指標特性：此標的最近成交建置總金額大於15億新台幣，屬於市場超級巨獸，流動性極大。進場莫著急，重點看月線(MA20)防守與法人金流臉色！
+                            指標特性：此標的屬於市場超級巨獸（成交額大），流動性極大。進場莫著急，重點看月線(MA20)防守與法人金流臉色！
                         </p>
                     </div>
                     """, unsafe_allow_html=True)
@@ -643,11 +672,10 @@ with tab1:
                     </div>
                     """, unsafe_allow_html=True)
 
-                # 特戰大黑馬警報
                 if res["invest_status"] == "🔮 特戰訊號：轉折爆發黑馬股":
                     st.balloons()
                 
-                # ============ UI 改造區塊 B：三力多空量化紅綠燈矩陣 ============
+                # 2. 中層：三力多空量化紅綠燈矩陣
                 st.markdown("#### 🚦 三力多空量化紅綠燈矩陣")
                 matrix_col1, matrix_col2, matrix_col3, matrix_col4 = st.columns(4)
 
@@ -660,13 +688,13 @@ with tab1:
                 matrix_col3.markdown(f"**3. 👥 籌碼面大人**\n\n{c_light}")
                 matrix_col4.markdown(f"**4. 📈 技術面時機**\n\n{t_light}")
 
-                # ============ UI 改造區塊 C：一針見血矛盾定論 ============
+                # 3. 下層：一針見血矛盾定論
                 if res['status_color'] == "red" and res['rr1_brk'] >= 1.5:
                     st.markdown(f"""
                     <div style="background-color:#FFEBEE; padding:15px; border-radius:8px; border-left:5px solid #F44336; margin-top:10px; margin-bottom:15px;">
                         <span style="color:#B71C1C; font-weight:bold; font-size:16px;">🚨 【操盤手一針見血定論：空間極美，但勝率極低！】</span><br>
                         <span style="color:#B71C1C; font-size:14px;">
-                            雖然技術線型走到了突破前高點，計算出的<b>風報比高達 {res['rr1_brk']:.2f} 倍</b>（幾何空間很划算），但是你看看上方的紅綠燈！此時<b>基本面核心燃料或籌碼面大人正在大舉外逃</b>。這極有可能是主力刻意做圖、誘多誘騙散戶的<b>假突破套牢陷阱</b>。這場交易請直接「放棄」，不盲目要鉤。
+                            雖然技術線型走到了突破前高點，計算出的<b>風報比高達 {res['rr1_brk']:.2f} 倍</b>，但是此時<b>基本面核心燃料或籌碼面大人正在大舉外逃</b>。這極有可能是誘多的<b>假突破陷阱</b>。請直接「放棄」。
                         </span>
                     </div>
                     """, unsafe_allow_html=True)
@@ -675,7 +703,7 @@ with tab1:
                     <div style="background-color:#E8F5E9; padding:15px; border-radius:8px; border-left:5px solid #4CAF50; margin-top:10px; margin-bottom:15px;">
                         <span style="color:#1B5E20; font-weight:bold; font-size:16px;">🚀 【操盤手一針見血定論：黃金訊號，方向與空間完美共振！】</span><br>
                         <span style="color:#1B5E20; font-size:14px;">
-                            核心體質強健（法人大買、營收或利潤大噴），技術面同時具備極佳的風報比防守優勢。這不是盲目豪賭，而是具備基本面護城河支持的<b>真金白銀波段發動點</b>，請堅決執行下方計劃。
+                            核心體質強健，技術面同時具備極佳的風報比防守優勢。這是具備基本面護城河支持的<b>真金白銀波段發動點</b>，請堅決執行下方計劃。
                         </span>
                     </div>
                     """, unsafe_allow_html=True)
@@ -684,13 +712,34 @@ with tab1:
 
                 st.markdown("---")
                 
-                # 面板基本數值顯示
+                # 4. 個股基本交易資料面板
+                st.subheader("🏢 盤中即時交易數據與輿情面板")
                 col_m1, col_m2, col_m3, col_m4 = st.columns(4)
                 col_m1.metric("即時現價", f"{res['current_price']} 元", f"核心決策: {res['invest_status']}")
                 col_m2.metric("盤中即時量 / 20日均量", f"{res['current_vol']:.0f} 張", f"均量: {res['vol_ma20']:.0f} 張")
                 col_m3.metric(f"最新公告月營收 ({res['latest_rev_month']})", f"{res['latest_revenue_yoy']:.2f} %", f"單月營收: {res['latest_rev_value']:.2f} 億")
                 col_m4.metric("即時新聞輿情狀態", res["news_summary"])
                 
+                # 5. 實質籌碼面與季度財報數據面板
+                st.subheader("👥 實質籌碼動能與季度財報體檢 (核心數值)")
+                col_d1, col_d2, col_d3, col_d4 = st.columns(4)
+                
+                chip_trend = "🔺 法人吸籌" if res['inst_3d_sheets'] > 0 else "🔻 法人拋售" if res['inst_3d_sheets'] < 0 else "➖ 持平"
+                col_d1.metric("近 3 日三大法人合計買賣超", f"{res['inst_3d_sheets']:.0f} 張", chip_trend)
+                
+                def get_trend_tag(now, prev): return "🔺 進步" if now > prev else "🔻 退步" if now < prev else "➖ 持平"
+                
+                if res['has_financial_data']:
+                    col_d2.metric("最新每股盈餘 (EPS)", f"{res['eps_now']:.2f} 元", f"前季: {res['eps_prev']:.2f} | {get_trend_tag(res['eps_now'], res['eps_prev'])}")
+                    col_d3.metric("最新營業毛利率 (GPM)", f"{res['gpm_now']:.2f} %", f"前季: {res['gpm_prev']:.2f} | {get_trend_tag(res['gpm_now'], res['gpm_prev'])}")
+                    col_d4.metric("最新營業利益率 (OPM)", f"{res['opm_now']:.2f} %", f"前季: {res['opm_prev']:.2f} | {get_trend_tag(res['opm_now'], res['opm_prev'])}")
+                else:
+                    col_d2.metric("最新每股盈餘 (EPS)", "不適用", "非個股商品")
+                    col_d3.metric("最新營業毛利率 (GPM)", "不適用", "非個股商品")
+                    col_d4.metric("最新營業利益率 (OPM)", "不適用", "非個股商品")
+                
+                st.success(res["fin_conclusion"])
+
                 # 白話文詳細診斷展開面板
                 with st.expander("🔍 點開查看全因子完整白話文深度診斷報告", expanded=False):
                     c_f, c_i, c_t = st.columns(3)
@@ -740,8 +789,6 @@ with tab1:
                 tech_col4.metric("DMI 趨勢動能 (ADX)", f"{res['adx_now']:.1f}", "壓縮鎖碼" if res['is_compressed'] else "常態發散")
                 tech_col5.metric("14日真實波動度 (ATR)", f"{res['atr']:.2f} 元", f"開火爆量: {'是' if res['vol_spike'] else '否'}")
 
-                st.write("### 🔍 後台全維度量化 JSON 原始欄位數據")
-                st.json(res)
             else:
                 st.error("找不到該代碼的市場數據，請確認是否輸入錯誤（如為ETF或指數，部分欄位將相容性降維診斷）。")
 
@@ -750,12 +797,12 @@ with tab2:
     
     scan_scope = st.radio(
         "🎯 請選擇雷達自動掃描範圍：",
-        ["🔥 核心成交權值焦點股池（日成交金額前15大龍頭）", "🏭 依特定產業類股全自動橫掃"],
+        ["🔥 核心成交權值焦點股池（日成交金額前15大龍頭）", "🏭 依特定產業類股全自動橫橫掃"],
         key="bulk_scan_scope"
     )
     
     selected_ind = None
-    if scan_scope == "🏭 依特定產業類股全自動橫掃":
+    if scan_scope == "🏭 依特定產業類股全自動橫橫掃":
         selected_ind = st.selectbox("選擇要攻擊的產業板塊：", all_industries, index=all_industries.index("半導體業") if "半導體業" in all_industries else 0)
 
     if st.button("🚀 啟動高速並發雷達大盤掃描"):
@@ -769,14 +816,20 @@ with tab2:
         progress_bar = st.progress(0)
         status_text = st.empty()
         
+        # 使用 Streamlit Context 綁定執行緒，防止 Session 狀態丟失
         def worker(sid):
-            try: return evaluate_stock(sid, total_cap, risk_pct, 1)
+            try: return evaluate_stock(sid, total_cap, risk_pct, 1, fetch_news=False)
             except Exception: return None
 
         status_text.text(f"⚡ 高速並發線程池啟動，正在處理 {len(stock_list)} 檔標的量化矩陣...")
         
         with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
-            future_to_sid = {executor.submit(worker, sid): sid for sid in stock_list}
+            future_to_sid = {}
+            for sid in stock_list:
+                future = executor.submit(worker, sid)
+                add_script_run_ctx(future)
+                future_to_sid[future] = sid
+                
             for idx, future in enumerate(concurrent.futures.as_completed(future_to_sid)):
                 res = future.result()
                 if res:
