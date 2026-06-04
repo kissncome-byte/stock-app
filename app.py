@@ -323,14 +323,22 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
         inst_daily = inst_df.groupby("date")["net_sheets"].sum().reset_index().sort_values("date")
         if not inst_daily.empty: inst_3d_sum = float(inst_daily.tail(3)["net_sheets"].sum())
 
+# 營收安全獲取
     rev_df = get_rev_df(stock_id, days=365)
     latest_yoy, latest_rev_month, latest_rev_value, has_revenue_data = 0.0, "尚無公告", 0.0, False
     if not rev_df.empty and "revenue" in rev_df.columns:
         rev_clean = rev_df.copy()
+        
+        # 安全防禦：如果 API 沒給 YoY 欄位，手動補上 0.0 避免崩潰
+        if "revenue_year_growth_rate" not in rev_clean.columns:
+            rev_clean["revenue_year_growth_rate"] = 0.0
+            
         rev_clean["revenue"] = pd.to_numeric(rev_clean["revenue"].astype(str).str.replace(",", ""), errors="coerce")
-        rev_clean["revenue_year_growth_rate"] = pd.to_numeric(rev_clean.get("revenue_year_growth_rate", "0").astype(str).str.replace("%", ""), errors="coerce")
+        rev_clean["revenue_year_growth_rate"] = pd.to_numeric(rev_clean["revenue_year_growth_rate"].astype(str).str.replace("%", ""), errors="coerce")
+        
         rev_clean = rev_clean.dropna(subset=["revenue_year_growth_rate", "revenue"])
         rev_clean = rev_clean[rev_clean["revenue"] > 0].sort_values("date")
+        
         if not rev_clean.empty:
             rev_last_row = rev_clean.iloc[-1]
             latest_yoy = float(rev_last_row["revenue_year_growth_rate"])
