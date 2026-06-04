@@ -212,6 +212,22 @@ def get_financial_statement_df(stock_id: str, years: int = 2):
         return pd.DataFrame()
 
 
+# 💡 [全新快取] 消息面即時新聞抽取組件
+@st.cache_data(ttl=900)
+def get_news_df(stock_id: str, days: int = 30):
+    api = get_api()
+    start_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+    try:
+        df = api.taiwan_stock_news(stock_id=stock_id, start_date=start_date)
+        return df if df is not None else pd.DataFrame()
+    except Exception:
+        try:
+            df = api.get_data(dataset="TaiwanStockNews", data_id=stock_id, start_date=start_date)
+            return df if df is not None else pd.DataFrame()
+        except Exception:
+            return pd.DataFrame()
+
+
 # ============ 6. Core ============
 def prepare_indicator_df(df: pd.DataFrame):
     if df is None or df.empty:
@@ -383,7 +399,7 @@ def evaluate_stock(
         rev_sorted = rev_df.sort_values("date")
         latest_yoy = safe_float(rev_sorted.iloc[-1]["revenue_year_growth_rate"])
 
-    # 財報季報數據
+    # 財報季報數據前後期精密驗證（包含相等/持平狀態修正）
     fin_df = get_financial_statement_df(stock_id, years=2)
     eps_now, eps_prev = 0.0, 0.0
     gpm_now, gpm_prev = 0.0, 0.0
@@ -403,7 +419,6 @@ def evaluate_stock(
             gpm_prev = safe_float(prev_fin.get("OperatingIncomeGrossProfitRatio", 0.0))
             opm_prev = safe_float(prev_fin.get("OperatingIncomeProfitRatio", 0.0))
             
-            # 💡 [核心修復] 建立完整的三向狀態判斷，防止 0.00% 互比時誤判為退步
             gpm_text = "進步" if gpm_now > gpm_prev else "退步" if gpm_now < gpm_prev else "持平"
             opm_text = "進步" if opm_now > opm_prev else "退步" if opm_now < opm_prev else "持平"
             eps_text = "進步" if eps_now > eps_prev else "退步" if eps_now < eps_prev else "持平"
@@ -451,7 +466,7 @@ def evaluate_stock(
             tech_conclusion_short = "⚠️ 短線過熱"
             
     elif rsi_now <= 30:
-        tech_conclusion_long = "📉 **【恐慌超賣區】** 股價極度超賣，市場出現恐慌性拋售，空頭宣洩中。雖然價格便宜，開目前尚未見到底部止跌訊號，暫不具備進場做多的攻擊條件，不可盲目伸手接刀。"
+        tech_conclusion_long = "📉 **【恐慌超賣區】** 股價極度超賣，市場出現恐慌性拋售，空頭宣洩中。雖然價格便宜，但目前尚未見到底部止跌訊號，暫不具備進場做多的攻擊條件，不可盲目伸手接刀。"
         tech_conclusion_short = "📉 恐慌超賣"
         
     elif plus_di > minus_di and adx_now >= 20:
@@ -604,7 +619,7 @@ with tab1:
 
                 box_brk, box_pb = st.columns(2)
                 with box_brk:
-                    st.markdown("### 跑 🏃‍♂️ 【突破型策略】方案藍圖")
+                    st.markdown("### 🏃‍♂️ 【突破型策略】方案藍圖")
                     st.markdown(f"* **現價進場點：** `{res['current_price']}` 元")
                     st.markdown(f"* **停利目標價：** `{res['target_brk']}` 元 (預期賺 `{res['target_brk'] - res['current_price']:.2f}` 元)")
                     st.markdown(f"* **防守停損點：** `{res['stop_brk']}` 元 (預期賠 `{res['current_price'] - res['stop_brk']:.2f}` 元)")
@@ -628,6 +643,34 @@ with tab1:
                         st.error(f"❌ 當前風報比: **{rr_pb_val:.2f}** (🔴 空間不足：距離壓力太近，建議放棄！)")
                     else:
                         st.success(f"🚀 當前風報比: **{rr_pb_val:.2f}** (🟢 黃金點位：回檔防守肉厚，性價比高！)")
+
+                # 💡 [全新加入] 盤中即時核心消息面追蹤面盤 (附發布時間與來源出處)
+                st.subheader("📰 盤中即時消息面追蹤")
+                news_df = get_news_df(res['stock_id'], days=30)
+                if news_df is not None and not news_df.empty:
+                    cols = news_df.columns.tolist()
+                    date_col = 'date' if 'date' in cols else cols[0]
+                    title_col = 'news_title' if 'news_title' in cols else 'title' if 'title' in cols else cols[2] if len(cols) > 2 else cols[0]
+                    source_col = 'news_source' if 'news_source' in cols else 'source' if 'source' in cols else ''
+                    link_col = 'news_link' if 'news_link' in cols else 'link' if 'link' in cols else ''
+                    
+                    # 排序確保最新消息置頂，抓取前8條
+                    news_df = news_df.sort_values(by=date_col, ascending=False).head(8)
+                    
+                    for _, row in news_df.iterrows():
+                        n_date = str(row[date_col])
+                        n_title = str(row[title_col])
+                        n_source = str(row[source_col]) if source_col and pd.notna(row[source_col]) else "財經即時通"
+                        n_link = str(row[link_col]) if link_col and pd.notna(row[link_col]) and str(row[link_col]).startswith("http") else None
+                        
+                        st.markdown(f"⏱️ **發布時間：** `{n_date}` | 📢 **新聞出處：** `{n_source}`")
+                        if n_link:
+                            st.markdown(f"👉 **[{n_title}]({n_link})**")
+                        else:
+                            st.markdown(f"👉 **{n_title}**")
+                        st.write("---")
+                else:
+                    st.info("📋 盤中安全掃描：此標的近 30 日內暫無重大的即時公告或媒體新聞發布。")
 
                 # 底層原始數據
                 st.write("### 🔍 因子診斷後台原始 JSON 數據")
