@@ -214,8 +214,9 @@ def get_financial_statement_df(stock_id: str, years: int = 2):
 def get_realtime_news_df(stock_id: str, stock_name: str):
     news_list = []
     try:
-        # 💡 修正 3：拿掉 stock_id，只用 stock_name 搜尋，新聞數量會暴增！並設定 when:7d 確保時效性
-        query = f"{stock_name} when:7d"
+        # 💡 修正 1：把 when:7d 改成 when:1d 或 when:24h。強迫 Google 捨棄歷史熱門，只給「最新」！
+        # 同時把 stock_id 加回去輔助，避免同名公司干擾
+        query = f"{stock_name} {stock_id} when:1d"
         url = f"https://news.google.com/rss/search?q={requests.utils.quote(query)}&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
         r = requests.get(url, headers=headers, timeout=5)
@@ -232,11 +233,18 @@ def get_realtime_news_df(stock_id: str, stock_name: str):
                 
         if news_list:
             df = pd.DataFrame(news_list)
-            df["parsed_date"] = pd.to_datetime(df["date"], errors="coerce")
+            # 💡 修正 2：明確指定 utc=True，然後轉回台北時區，確保顯示的是今天的正確時間
+            df["parsed_date"] = pd.to_datetime(df["date"], errors="coerce", utc=True).dt.tz_convert('Asia/Taipei')
+            
+            # 💡 修正 3：把混亂的 GMT 字串覆蓋成乾淨的台灣時間字串 (例如：2026-06-04 10:30)
+            df["date"] = df["parsed_date"].dt.strftime('%Y-%m-%d %H:%M')
+            
+            # 照真實時間排序，最新的在最上面
             df = df.sort_values(by="parsed_date", ascending=False).drop(columns=["parsed_date"])
             return df
             
-    except Exception: pass
+    except Exception as e: 
+        pass
     
     return pd.DataFrame(news_list)
 # ============ 6. Math & Technical Processing Engine ============
