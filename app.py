@@ -265,7 +265,6 @@ def get_financial_statement_df(stock_id: str, years: int = 2):
             return pd.DataFrame()
         df = df_raw.copy()
         
-        # 💡 [修正核心] 改為撈取原始財務金額項目，而非比例名稱
         targets = ["EPS", "Revenue", "GrossProfit", "OperatingIncome"]
         df = df[df["type"].isin(targets)]
         if df.empty:
@@ -441,7 +440,7 @@ def evaluate_stock(
         rev_sorted = rev_df.sort_values("date")
         latest_yoy = safe_float(rev_sorted.iloc[-1]["revenue_year_growth_rate"])
 
-    # 💡 [全新重構] 財報季報數據底層：利用原始金額，就地即時精算毛利率與營益率
+    # 財報季報數據
     fin_df = get_financial_statement_df(stock_id, years=2)
     eps_now, eps_prev = 0.0, 0.0
     gpm_now, gpm_prev = 0.0, 0.0
@@ -451,7 +450,6 @@ def evaluate_stock(
     if fin_df is not None and not fin_df.empty:
         fin_df = fin_df.sort_values("date").reset_index(drop=True)
         
-        # 盤中即時換算比例因子 (防呆營收為0)
         for idx in range(len(fin_df)):
             rev_amt = safe_float(fin_df.loc[idx, "Revenue"])
             gp_amt = safe_float(fin_df.loc[idx, "GrossProfit"])
@@ -618,6 +616,7 @@ with tab1:
             res = evaluate_stock(target_stock, total_cap, risk_pct, 500, 1, 1.5, 3)
             
             if res:
+                # 頂部大徽章
                 st.markdown(f"## 🏢 {res['stock_name']} ({res['stock_id']}) · `{res['industry']}`")
                 
                 col1, col2, col3, col4 = st.columns(4)
@@ -637,6 +636,27 @@ with tab1:
                 tech_col3.metric("20日均線支撐 (MA20)", f"{res['pivot']:.1f} 元", f"現價乖離: {((res['current_price']-res['pivot'])/res['pivot']*100):.1f}%")
                 tech_col4.metric("DMI 趨勢動能 (ADX)", f"{res['adx_now']:.1f}", "有趨勢 >20 | 死水 <20")
                 tech_col5.metric("14日真實波動度 (ATR)", f"{res['atr']:.2f} 元", f"Tick大小: {res['tick_size']}")
+
+                # 💡 [全新加回與擴充] 📦 月營收與法人籌碼動能盾牌詳細診斷面板
+                st.subheader("📦 月營收與法人籌碼動能盾牌")
+                c_rev, c_inst = st.columns(2)
+                with c_rev:
+                    st.markdown("### 🏢 月營收成長動能 (YoY)")
+                    if res['latest_revenue_yoy'] > 20:
+                        st.success(f"🟢 **最新營收年增率：{res['latest_revenue_yoy']:.2f}%**\n\n營收爆發成長！這家公司本業吸金速度極快，屬於典型的高成長強勢股，具備強大的基本面突破底氣。")
+                    elif res['latest_revenue_yoy'] >= 0:
+                        st.info(f"🟡 **最新營收年增率：{res['latest_revenue_yoy']:.2f}%**\n\n營收表現穩健持平。公司營運狀況穩定，沒有衰退危機，適合搭配『拉回型策略』在均線附近防守佈局。")
+                    else:
+                        st.error(f"🔴 **最新營收年增率：{res['latest_revenue_yoy']:.2f}%**\n\n警報！營收陷入衰退。本業動能開始失速，若此時股價在盤中強行突破，高機率是主力在出貨，千萬不要盲目追高！")
+                        
+                with c_inst:
+                    st.markdown("### 👥 三大法人籌碼追蹤 (3日合計)")
+                    if res['inst_3d_sheets'] > 500:
+                        st.success(f"🟢 **近3日法人合計買超：{res['inst_3d_sheets']:.0f} 張**\n\n主力部隊用真金白銀在後面幫忙抬轎！籌碼高度集中，盤中技術面一旦突破，動能延續性會非常強。")
+                    elif res['inst_3d_sheets'] >= -500:
+                        st.info(f"🟡 **近3日法人合計買賣超：{res['inst_3d_sheets']:.0f} 張**\n\n法人籌碼處於觀望拉鋸狀態，大資金尚未明顯表態，目前走勢主要由內資或盤中散戶情緒主導。")
+                    else:
+                        st.error(f"🔴 **近3日法人合計賣超：{res['inst_3d_sheets']:.0f} 張**\n\n危險！主力在大力倒貨。雖然日K可能看起來要發動，但法人正在逢高集體逃跑，提防『假突破、真埋人』的陷阱！")
                 
                 st.subheader("📊 季度核心基本面體檢 (最新季 vs 前一季)")
                 st.success(res["fin_conclusion"])
@@ -650,7 +670,7 @@ with tab1:
                 st.subheader("🎯 交易藍圖與精算風控價位")
                 box_brk, box_pb = st.columns(2)
                 with box_brk:
-                    st.markdown("### 🏃‍♂️ 【突破型策略】方案藍圖")
+                    st.markdown("### 跑 🏃‍♂️ 【突破型策略】方案藍圖")
                     st.markdown(f"* **現價進場點：** `{res['current_price']}` 元")
                     st.markdown(f"* **停利目標價：** `{res['target_brk']}` 元")
                     st.markdown(f"* **防守停損點：** `{res['stop_brk']}` 元")
@@ -782,4 +802,4 @@ with tab2:
             else:
                 st.dataframe(scan_df, use_container_width=True, hide_index=True)
         else:
-            st.error("未能成功讀取任何標的數據，請確認 API 連線狀態。")
+            st.error("未能成功讀取 any 標的數據，請確認 API 連線狀態。")
