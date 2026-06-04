@@ -462,7 +462,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
             tech_conclusion_short = "🛡️ 精準拉回"
             tech_conclusion_long = "🛡️ **【高手低吸點】** 股價修正至 MA20 均線防守區，過熱指標已洗淨，且下跌期間法人偷偷吃貨。"
 
-    # ============ 4. 雙軌精準診斷加權引擎 ============
+  # ============ 4. 雙軌精準診斷加權引擎 ============
     f_score, i_score, t_score = 0, 0, 0
     diag_fundamentals, diag_chips, diag_technicals = [], [], []
     is_turnaround_dark_horse = False
@@ -473,4 +473,421 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
         revenue_rocket = latest_yoy >= 40.0 if has_revenue_data else False
         if eps_turn_around or revenue_rocket:
             is_turnaround_dark_horse = True
-            if eps_turn_around: turnaround_reason = f"🔮 **【大轉折：轉虧為盈】** 過去虧損，最新一季 EPS 成功扭虧為盈（{eps_prev:.
+            if eps_turn_around: turnaround_reason = f"🔮 **【大轉折：轉虧為盈】** 過去虧損，最新一季 EPS 成功扭虧為盈（{eps_prev:.2f} ➔ {eps_now:.2f}），具備巨大想像空間！"
+            else: turnaround_reason = f"🔮 **【大轉折：營收暴增】** 最新月營收 YoY 拔地而起高達 {latest_yoy:.1f}%，新產能或訂單大灌頂！"
+
+    if has_revenue_data:
+        if latest_yoy >= 25: f_score += 20; diag_fundamentals.append(f"🟢 **營收極度強勁**：最新月營收年增達 {latest_yoy:.1f}%，產業天花板尚未到來。")
+        elif latest_yoy >= 10: f_score += 10; diag_fundamentals.append(f"🟡 **營收溫和成長**：最新月營收年增 {latest_yoy:.1f}%，表現平穩。")
+        else: diag_fundamentals.append(f"🔴 **營收動能失速**：最新月營收年增僅 {latest_yoy:.1f}%，小心成長型題材鈍化。")
+    else: diag_fundamentals.append("⚪ **營收數據不適用**：該標的未公告或不適用一般月營收分析。")
+
+    if has_financial_data:
+        if gpm_now > gpm_prev and opm_now > opm_prev: f_score += 20; diag_fundamentals.append("🟢 **定價權極強（雙率雙升）**：毛利率與營益率皆超越上季，轉嫁成本能力一流。")
+        elif gpm_now < gpm_prev and opm_now < opm_prev: diag_fundamentals.append("🔴 **本業獲利倒退（雙率雙降）**：毛利率與營益率雙衰退，陷入削價競爭亮紅燈！")
+        else: f_score += 10; diag_fundamentals.append("⚖️ **獲利結構調整**：毛利與營益率互有勝負，本業防守力一般。")
+    else: diag_fundamentals.append("⚪ **季度財報不適用**：暫無季度獲利三率歷史對比數據。")
+
+    if inst_3d_sum > 800: i_score += 30; diag_chips.append(f"🟢 **法人瘋狂抬轎**：近3日法人集體灌入 {inst_3d_sum:.0f} 張，籌碼朝大戶口袋鎖死。")
+    elif inst_3d_sum < -800: diag_chips.append(f"🔴 **法人大舉出貨**：近3日法人瘋狂調節 {abs(inst_3d_sum):.0f} 張，大舉倒貨給散戶，切勿接刀！")
+    else: i_score += 15; diag_chips.append(f"🟡 **籌碼處於拉鋸**：法人短線無大幅單邊動作（{inst_3d_sum:.0f} 張），由內資散戶情緒主導。")
+
+    if rsi_now > 75: diag_technicals.append(f"🔴 **技術面極度超買**：RSI 達 {rsi_now:.1f}，短線引擎過熱，追高性價比極低，提防修正！")
+    elif 50 <= rsi_now <= 68: t_score += 20; diag_technicals.append(f"🟢 **多頭蓄勢區**：RSI {rsi_now:.1f} 處於健康發散區，多頭推進有序。")
+    else: t_score += 10; diag_technicals.append(f"🟡 **動能陷入膠著**：RSI 處於 {rsi_now:.1f} 擺動區，多空短線拉鋸。")
+    if current_price <= ma20_val * 1.03 and current_price >= ma20_val * 0.98: t_score += 10; diag_technicals.append("🟢 **貼近黃金防守區**：現價距離生命線(MA20)極近，下檔有鐵板支撐。")
+
+    total_score = f_score + i_score + t_score
+    if is_turnaround_dark_horse: invest_status, status_color, status_emoji = "🔮 特戰訊號：轉折爆發黑馬股", "purple", "🔮"
+    elif total_score >= 75: invest_status, status_color, status_emoji = "🔥 砸大資金極品買點", "green", "🚀"
+    elif total_score >= 45:
+        if rsi_now > 75: invest_status, status_color, status_emoji = "⚠️ 暫勿投入：短線過熱", "orange", "⏳"
+        else: invest_status, status_color, status_emoji = "🟢 分批布局強勢股", "blue", "⚖️"
+    else: invest_status, status_color, status_emoji = "❌ 結構轉弱：不值投入", "red", "🚨"
+
+    # ============ 5. 交易藍圖精算 ============
+    brk_setup = (current_price >= real_resistance * 0.98) and (rsi_now < 73)
+    pb_setup = (current_price < real_resistance) and (current_price >= ma20_val * 0.98)
+
+    target_brk = round_to_tick(current_price + (target_atr_ratio * atr), t)
+    stop_brk = round_to_tick(real_resistance - (1.5 * atr) - slip, t)
+    if stop_brk >= current_price: stop_brk = round_to_tick(current_price - (1.0 * atr), t)
+    rr1_brk = (target_brk - current_price) / (current_price - stop_brk) if (current_price - stop_brk) > 0 else 0
+
+    target_pb = round_to_tick(real_resistance, t)
+    stop_pb = round_to_tick(current_price - atr - slip, t)
+    rr1_pb = (target_pb - current_price) / (current_price - stop_pb) if (current_price - stop_pb) > 0 else 0
+
+    pool_allocation = total_capital * 0.8 if is_heavyweight else total_capital * 0.2
+    risk_money = pool_allocation * (risk_per_trade / 100) * 10000 
+    
+    loss_per_share_brk = (current_price - stop_brk) if (current_price - stop_brk) > 0 else 0.01
+    suggested_lots_brk = int((risk_money / loss_per_share_brk) / 1000) if loss_per_share_brk > 0 else 0
+    if is_turnaround_dark_horse: suggested_lots_brk = int(suggested_lots_brk * 0.5) 
+    
+    loss_per_share_pb = (current_price - stop_pb) if (current_price - stop_pb) > 0 else 0.01
+    suggested_lots_pb = int((risk_money / loss_per_share_pb) / 1000) if loss_per_share_pb > 0 else 0
+
+    return {
+        "stock_id": stock_id, "stock_name": stock_name, "industry": industry,
+        "current_price": current_price, "current_vol": current_vol, "vol_ma20": vol_ma20_val,
+        "market_desc": m_desc, "market_color": m_color, "pivot": ma20_val, "real_resistance": real_resistance,
+        "atr": atr, "tick_size": t, "inst_3d_sheets": inst_3d_sum,
+        "latest_revenue_yoy": latest_yoy, "latest_rev_month": latest_rev_month, "latest_rev_value": latest_rev_value,
+        "breakout_setup": brk_setup, "pullback_setup": pb_setup,
+        "target_brk": target_brk, "stop_brk": stop_brk, "rr1_brk": rr1_brk, "suggested_lots_brk": suggested_lots_brk,
+        "target_pb": target_pb, "stop_pb": stop_pb, "rr1_pb": rr1_pb, "suggested_lots_pb": suggested_lots_pb,
+        "brk_tradeable": (brk_setup or tech_conclusion_short == "🚀 準備起漲") and rr1_brk >= 1.5,
+        "pb_tradeable": pb_setup and rr1_pb >= 2.0,
+        "tech_conclusion_long": tech_conclusion_long, "tech_conclusion_short": tech_conclusion_short,
+        "eps_now": eps_now, "eps_prev": eps_prev, "gpm_now": gpm_now, "gpm_prev": gpm_prev, "opm_now": opm_now, "opm_prev": opm_prev,
+        "fin_conclusion": fin_conclusion, "macd_hist": macd_hist, "rsi_now": rsi_now, "adx_now": adx_now,
+        "is_compressed": is_compressed, "vol_spike": vol_spike, "style": "",
+        "invest_status": invest_status, "status_color": status_color, "status_emoji": status_emoji,
+        "diag_fundamentals": diag_fundamentals, "diag_chips": diag_chips, "diag_technicals": diag_technicals,
+        "is_turnaround_dark_horse": is_turnaround_dark_horse, "turnaround_reason": turnaround_reason,
+        "news_summary": news_summary, "news_color": news_color, "news_analysis_report": news_analysis_report, "news_raw_list": news_raw_list,
+        "is_heavyweight": is_heavyweight, "has_financial_data": has_financial_data
+    }
+
+
+# ============ 7. 全域基礎資料初始化 ============
+info_df = get_stock_info_df()
+if not info_df.empty and "industry_category" in info_df.columns:
+    all_industries = sorted(info_df["industry_category"].dropna().unique().tolist())
+else:
+    all_industries = ["半導體業", "電子零組件業", "光電業", "金融保險", "電腦及週邊設備業", "航運業"]
+
+
+# ============ 8. Streamlit UI Layer ============
+st.sidebar.header("⚙️ 核心-衛星雙軌風控系統")
+total_cap = st.sidebar.number_input("總資產配置本金 (萬元)", value=100.0)
+risk_pct = st.sidebar.slider("單筆最大可承受風險 (%)", 0.5, 3.0, 1.0)
+
+core_cap_pool = total_cap * 0.8
+sat_cap_pool = total_cap * 0.2
+
+st.sidebar.markdown(f"""
+---
+### 📊 資金池動態配額
+* 🏛️ **核心權值大象池(80%)：** `{core_cap_pool:.1f}` 萬元
+  > 💡 **核心大象：** 日均成交額大於 20 億的超級龍頭股，流動性極佳、走勢穩健。適合佈局大資金，進出主看月線 (MA20) 防守與法人籌碼動向。
+* 🚀 **衛星突擊飆股池(20%)：** `{sat_cap_pool:.1f}` 萬元
+  > 💡 **衛星黑馬：** 中高波動的中小型股，籌碼易被主力鎖定。爆發力強但也伴隨高風險，適合快進快出，破線須嚴格停損不留戀。
+* 🛡️ **每筆最大損失金額：** `{total_cap * (risk_pct / 100) * 10000:.0f}` 元
+""")
+
+if st.sidebar.button("🧹 清除系統快取數據"):
+    st.cache_data.clear()
+    st.toast("系統快取已全數清理，下次查詢將同步最新實時市場因子！")
+
+tab1, tab2 = st.tabs(["🔍 核心個股「值不值投入」深度診斷", "🛸 大盤全自動多執行緒雷達"])
+
+with tab1:
+    target_stock = st.text_input("請輸入要進行分析的股票代碼（支援個股、ETF與大盤類別防禦診斷）", value="2330").strip()
+    if st.button("開始個股雷達全因子診斷"):
+        with st.spinner("多因子數據縱深交叉分析中..."):
+            res = evaluate_stock(target_stock, total_cap, risk_pct, 1, fetch_news=True)
+            
+            if res:
+                res["style"] = detect_style(res)
+                
+                # 1. 頂層：雙軌操盤性格卡
+                if res['is_heavyweight']:
+                    st.markdown(f"""
+                    <div style="background-color:#E3F2FD; padding:18px; border-radius:12px; border-left:8px solid #1E88E5; margin-bottom:15px;">
+                        <h3 style="color:#0D47A1; margin:0; font-size:20px;">🏛️ 【 核心大象劇本：航空母艦穩健戰 】</h3>
+                        <p style="color:#1565C0; font-size:14px; margin-top:6px; margin-bottom:0;">
+                            <b>現正監控：{res['stock_name']} ({res['stock_id']}) · {res['industry']}</b><br>
+                            指標特性：此標的屬於市場超級巨獸（成交額大），流動性極大。進場莫著急，重點看月線(MA20)防守與法人金流臉色！
+                        </p>
+                    </div>
+                    """, unsafe_allow_html=True)
+                else:
+                    st.markdown(f"""
+                    <div style="background-color:#F3E5F5; padding:18px; border-radius:12px; border-left:8px solid #8E24AA; margin-bottom:15px;">
+                        <h3 style="color:#4A148C; margin:0; font-size:20px;">⚡ 【 衛星黑馬劇本：戰鬥機閃擊戰 】</h3>
+                        <p style="color:#6A1B9A; font-size:14px; margin-top:6px; margin-bottom:0;">
+                            <b>現正監控：{res['stock_name']} ({res['stock_id']}) · {res['industry']}</b><br>
+                            指標特性：此標的屬於中高波動中小型股，主力與分點籌碼容易高度鎖碼。戰術是快進快出，不對就跑，跌破停損絕不留戀！
+                        </p>
+                    </div>
+                    """, unsafe_allow_html=True)
+
+                if res["invest_status"] == "🔮 特戰訊號：轉折爆發黑馬股":
+                    st.balloons()
+                
+                # 2. 中層：三力多空量化紅綠燈矩陣
+                st.markdown("#### 🚦 三力多空量化紅綠燈矩陣")
+                matrix_col1, matrix_col2, matrix_col3, matrix_col4 = st.columns(4)
+                f_light = res["diag_fundamentals"][0] if res["diag_fundamentals"] else "⚪ 數據不足"
+                c_light = res["diag_chips"][0] if res["diag_chips"] else "⚪ 數據不足"
+                t_light = res["diag_technicals"][0] if res["diag_technicals"] else "⚪ 數據不足"
+                matrix_col1.metric("1. 戰術分流歸屬", "🏛️ 核心大象" if res['is_heavyweight'] else "🚀 衛星黑馬")
+                matrix_col2.markdown(f"**2. 🏢 基本面燃料**\n\n{f_light}")
+                matrix_col3.markdown(f"**3. 👥 籌碼面大人**\n\n{c_light}")
+                matrix_col4.markdown(f"**4. 📈 技術面時機**\n\n{t_light}")
+
+                # 3. 下層：一針見血矛盾定論
+                if res['status_color'] == "red" and res['rr1_brk'] >= 1.5:
+                    st.markdown(f"""
+                    <div style="background-color:#FFEBEE; padding:15px; border-radius:8px; border-left:5px solid #F44336; margin-top:10px; margin-bottom:15px;">
+                        <span style="color:#B71C1C; font-weight:bold; font-size:16px;">🚨 【操盤手一針見血定論：空間極美，但勝率極低！】</span><br>
+                        <span style="color:#B71C1C; font-size:14px;">
+                            雖然技術線型走到了突破前高點，計算出的<b>風報比高達 {res['rr1_brk']:.2f} 倍</b>，但是此時<b>基本面核心燃料或籌碼面大人正在大舉外逃</b>。這極有可能是誘多的<b>假突破陷阱</b>。請直接「放棄」。
+                        </span>
+                    </div>
+                    """, unsafe_allow_html=True)
+                elif res['status_color'] == "green":
+                    st.markdown(f"""
+                    <div style="background-color:#E8F5E9; padding:15px; border-radius:8px; border-left:5px solid #4CAF50; margin-top:10px; margin-bottom:15px;">
+                        <span style="color:#1B5E20; font-weight:bold; font-size:16px;">🚀 【操盤手一針見血定論：黃金訊號，方向與空間完美共振！】</span><br>
+                        <span style="color:#1B5E20; font-size:14px;">
+                            核心體質強健，技術面同時具備極佳的風報比防守優勢。這是具備基本面護城河支持的<b>真金白銀波段發動點</b>，請堅決執行下方計劃。
+                        </span>
+                    </div>
+                    """, unsafe_allow_html=True)
+                else:
+                    st.markdown(f"""> ⚖️ **【操盤手一針見血定論】**：{res['tech_conclusion_long']}""")
+
+                st.markdown("---")
+                
+                # 4. 個股基本交易資料面板
+                st.subheader("🏢 盤中即時交易數據面板")
+                col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+                col_m1.metric("即時現價", f"{res['current_price']} 元", f"核心決策: {res['invest_status']}")
+                col_m2.metric("盤中即時量 / 20日均量", f"{res['current_vol']:.0f} 張", f"均量: {res['vol_ma20']:.0f} 張")
+                col_m3.metric(f"最新公告月營收 ({res['latest_rev_month']})", f"{res['latest_revenue_yoy']:.2f} %", f"單月營收: {res['latest_rev_value']:.2f} 億")
+                col_m4.metric("即時新聞輿情定論", res["news_summary"])
+                
+                # AI 核心輿情重點診斷艙
+                st.markdown("### 📰 AI 核心輿情重點診斷艙")
+                st.info(res["news_analysis_report"])
+                
+                if res["news_raw_list"]:
+                    st.markdown("#### 🔍 焦點穿透式消息日誌")
+                    for news in res["news_raw_list"]:
+                        lbl_tag, lbl_color = analyze_news_sentiment(news["title"])
+                        st.markdown(f"""
+                        <div style="padding: 10px; margin-bottom: 8px; border-radius: 6px; background-color: #FAFAFA; border-left: 4px solid {lbl_color};">
+                            <span style="font-size:12px; color:gray;">[{news['date'][:16]}] ({news['source']})</span> — <b>{lbl_tag}</b><br>
+                            <a href="{news['link']}" target="_blank" style="text-decoration: none; color: #1E88E5; font-size:14px;">{news['title']} 🔗</a>
+                        </div>
+                        """, unsafe_allow_html=True)
+
+                # 5. 實質籌碼面與季度財報數據面板
+                st.subheader("👥 實質籌碼動能與季度財報體檢 (核心數值)")
+                col_d1, col_d2, col_d3, col_d4 = st.columns(4)
+                chip_trend = "🔺 法人吸籌" if res['inst_3d_sheets'] > 0 else "🔻 法人拋售" if res['inst_3d_sheets'] < 0 else "➖ 持平"
+                col_d1.metric("近 3 日三大法人合計買賣超", f"{res['inst_3d_sheets']:.0f} 張", chip_trend)
+                
+                def get_trend_tag(now, prev): return "🔺 進步" if now > prev else "🔻 退步" if now < prev else "➖ 持平"
+                
+                if res['has_financial_data']:
+                    col_d2.metric("最新每股盈餘 (EPS)", f"{res['eps_now']:.2f} 元", f"前季: {res['eps_prev']:.2f} | {get_trend_tag(res['eps_now'], res['eps_prev'])}")
+                    col_d3.metric("最新營業毛利率 (GPM)", f"{res['gpm_now']:.2f} %", f"前季: {res['gpm_prev']:.2f} | {get_trend_tag(res['gpm_now'], res['gpm_prev'])}")
+                    col_d4.metric("最新營業利益率 (OPM)", f"{res['opm_now']:.2f} %", f"前季: {res['opm_prev']:.2f} | {get_trend_tag(res['opm_now'], res['opm_prev'])}")
+                else:
+                    col_d2.metric("最新每股盈餘 (EPS)", "不適用", "非個股商品")
+                    col_d3.metric("最新營業毛利率 (GPM)", "不適用", "非個股商品")
+                    col_d4.metric("最新營業利益率 (OPM)", "不適用", "非個股商品")
+                
+                st.success(res["fin_conclusion"])
+
+                with st.expander("🔍 點開查看全因子完整白話文深度診斷報告", expanded=False):
+                    c_f, c_i, c_t = st.columns(3)
+                    with c_f:
+                        st.markdown("#### 🏢 基本面深度診斷")
+                        for item in res["diag_fundamentals"]: st.markdown(item)
+                    with c_i:
+                        st.markdown("#### 👥 籌碼面大戶追蹤")
+                        for item in res["diag_chips"]: st.markdown(item)
+                    with c_t:
+                        st.markdown("#### 📈 技術面時機精選")
+                        for item in res["diag_technicals"]: st.markdown(item)
+
+                st.markdown("---")
+                
+                # ============ 全新設計：AI 綜合決策總結與行動指南 ============
+                st.markdown("## 🌟 AI 綜合決策總結與行動指南")
+                reasons = []
+                
+                if res['has_financial_data'] and res['latest_revenue_yoy'] >= 15:
+                    reasons.append(f"**實質基本面強撐**：營收年增達 {res['latest_revenue_yoy']:.1f}%，且具備成長動能。")
+                elif res['has_financial_data'] and res['gpm_now'] < res['gpm_prev'] and res['opm_now'] < res['opm_prev']:
+                    reasons.append(f"**本業獲利衰退**：毛利率與營益率雙降，基本面亮紅燈，提防虛假題材。")
+                    
+                if res['inst_3d_sheets'] > 500:
+                    reasons.append(f"**大人真金白銀進駐**：近 3 日三大法人大買 {res['inst_3d_sheets']:.0f} 張，籌碼趨勢集中。")
+                elif res['inst_3d_sheets'] < -500:
+                    reasons.append(f"**籌碼面潰散警報**：法人大舉倒貨 {abs(res['inst_3d_sheets']):.0f} 張，上檔面臨沉重拋壓。")
+                else:
+                    reasons.append(f"**籌碼動向觀望**：法人無明顯單邊大額進出，由內資或散戶情緒主導。")
+                    
+                if res['tech_conclusion_short'] in ["🚀 準備起漲", "🚀 完美多頭", "🛡️ 精準拉回"]:
+                    reasons.append(f"**技術與動能共振**：處於『{res['tech_conclusion_short'][2:]}』狀態，均線多頭且具備攻擊或防守優勢。")
+                elif res['rsi_now'] > 75:
+                    reasons.append(f"**指標極度超買**：RSI 高達 {res['rsi_now']:.1f}，短線過熱追高容易套牢。")
+                elif "空頭" in res['tech_conclusion_short'] or "死水" in res['tech_conclusion_short']:
+                    reasons.append(f"**趨勢疲弱無力**：均線結構偏空或陷入死水盤整，缺乏上漲催化劑。")
+
+                if "利空" in res['news_summary']:
+                    reasons.append(f"**輿情逆風**：市場充斥利空消息，需提防恐慌性多殺多。")
+                
+                if res['status_color'] in ['green', 'blue', 'purple']:
+                    if res['rr1_brk'] >= 1.5 or res['rr1_pb'] >= 2.0:
+                        reasons.append(f"**風報比優勢 (空間划算)**：上漲預期利潤大於防守停損的風險，符合數學期望值。")
+                    else:
+                        reasons.append(f"**幾何空間受限**：雖然趨勢偏多，但距離上方壓力過近，潛在利潤空間不足。")
+
+                action_advice = ""
+                if res['status_color'] == 'green' or res['status_color'] == 'purple':
+                    if res['brk_tradeable'] or res['pb_tradeable']:
+                        action_advice = "🟢 **強烈建議進場佈局**：所有核心因子皆完美共振！請直接參考下方的『精算交易藍圖』，依照系統建議的風控張數執行突破或拉回策略，並嚴設停損。"
+                    else:
+                        action_advice = "🟡 **耐心等候更好點位**：雖然標的極佳，但目前現價的風報比不夠划算（離壓力太近或離支撐太遠）。建議掛單在下方的『均線拉回低吸』理想買入點等候。"
+                elif res['status_color'] == 'blue':
+                    action_advice = "⚖️ **建議溫和試單 / 分批低吸**：具備多頭雛形，但動能或籌碼尚未完全爆發。若要進場，建議資金減半，採用下方的『均線拉回低吸策略』，不宜重倉追高。"
+                elif res['status_color'] == 'orange':
+                    action_advice = "⏳ **切勿盲目追高，持有者可視情況停利**：動能已嚴重過熱。空手者此時進場極容易買在短線高點；若已有部位，建議可適度獲利了結一半鎖住利潤。"
+                else:
+                    action_advice = "🚨 **嚴格避開 / 尋找其他標的**：核心結構破壞（基本面衰退或法人大賣），或是面臨假突破陷阱。請把資金留在手中，或使用 Tab 2 的雷達尋找其他更安全的黃金標的。"
+
+                bg_color = "#E8F5E9" if res['status_color'] == "green" else "#E3F2FD" if res['status_color'] == "blue" else "#FFF3E0" if res['status_color'] == "orange" else "#F3E5F5" if res['status_color'] == "purple" else "#FFEBEE"
+                border_color = "#4CAF50" if res['status_color'] == "green" else "#2196F3" if res['status_color'] == "blue" else "#FF9800" if res['status_color'] == "orange" else "#9C27B0" if res['status_color'] == "purple" else "#F44336"
+                
+                st.markdown(f"""
+                <div style="background-color:{bg_color}; padding:20px; border-radius:10px; border-left:8px solid {border_color}; margin-bottom:20px;">
+                    <h3 style="margin-top:0; color:{border_color}; font-size:22px;">📌 最終綜合判定：{res['invest_status']}</h3>
+                    <p style="font-size: 16px; font-weight: bold; margin-bottom: 8px; color: #333;">💡 系統決策考量因子：</p>
+                    <ul style="font-size: 15px; line-height: 1.8; color: #444;">
+                        {''.join([f"<li>{r}</li>" for r in reasons])}
+                    </ul>
+                    <hr style="border-top: 1px dashed {border_color}; margin: 18px 0;">
+                    <p style="font-size: 16px; font-weight: bold; margin-bottom: 8px; color: #333;">🎯 具體行動建議：</p>
+                    <p style="font-size: 15px; margin: 0; line-height: 1.6; color: #222;">
+                        {action_advice}
+                    </p>
+                </div>
+                """, unsafe_allow_html=True)
+                # ========================================================
+
+                st.subheader("🎯 精算交易藍圖與風控部位張數建議")
+                box_brk, box_pb = st.columns(2)
+                with box_brk:
+                    st.markdown("### 🏃‍♂️ 【突破/起漲追擊策略】藍圖")
+                    st.markdown(f"* **建議突破進場點：** `{res['current_price']}` 元")
+                    st.markdown(f"* **預估停利目標價：** `{res['target_brk']}` 元")
+                    st.markdown(f"* **防守撤退停損點：** `{res['stop_brk']}` 元")
+                    if res['status_color'] == "red":
+                        st.markdown(f"* **💡 系統建議購買張數：** <span style='color:gray; font-size:18px; font-weight:bold;'>0</span> 張 (因核心決策結構崩壞，策略強制關閉)", unsafe_allow_html=True)
+                    else:
+                        st.markdown(f"* **💡 系統建議購買張數：** <span style='color:red; font-size:18px; font-weight:bold;'>{res['suggested_lots_brk']}</span> 張", unsafe_allow_html=True)
+                    
+                    if res['rr1_brk'] < 1.5: st.error(f"❌ 當前風報比: {res['rr1_brk']:.2f} (利潤空間不足/不符期望值)")
+                    else: st.success(f"🚀 當前風報比: {res['rr1_brk']:.2f} (🟢 符合進攻點幾何空間)")
+                with box_pb:
+                    st.markdown("### 🛡️ 【均線拉回低吸策略】藍圖")
+                    st.markdown(f"* **理想買入點：** `{res['current_price']}` 元")
+                    st.markdown(f"* **短線停利價：** `{res['target_pb']}` 元")
+                    st.markdown(f"* **破位防守停損點：** `{res['stop_pb']}` 元")
+                    if res['status_color'] == "red":
+                        st.markdown(f"* **💡 系統建議購買張數：** <span style='color:gray; font-size:18px; font-weight:bold;'>0</span> 張 (因核心決策結構崩壞，策略強制關閉)", unsafe_allow_html=True)
+                    else:
+                        st.markdown(f"* **💡 系統建議購買張數：** <span style='color:green; font-size:18px; font-weight:bold;'>{res['suggested_lots_pb']}</span> 張", unsafe_allow_html=True)
+                    
+                    if res['rr1_pb'] < 2.0: st.error(f"❌ 當前風報比: {res['rr1_pb']:.2f} (拉回空間過窄)")
+                    else: st.success(f"🚀 當前風報比: {res['rr1_pb']:.2f} (🟢 理想低吸性價比點位)")
+
+                st.subheader("📊 盤中核心量化基礎指標")
+                tech_col1, tech_col2, tech_col3, tech_col4, tech_col5 = st.columns(5)
+                tech_col1.metric("MACD 柱狀體 (Hist)", f"{res['macd_hist']:.3f}", "🔺 多頭擴張" if res['macd_hist'] > 0 else "🔻 空頭修正")
+                tech_col2.metric("RSI(14) 強弱度(標準平滑)", f"{res['rsi_now']:.2f}", "超買 >70 | 超賣 <30")
+                tech_col3.metric("20日均線支撐 (MA20)", f"{res['pivot']:.1f} 元", f"20D前高壓力: {res['real_resistance']:.1f}元")
+                tech_col4.metric("DMI 趨勢動能 (ADX)", f"{res['adx_now']:.1f}", "壓縮鎖碼" if res['is_compressed'] else "常態發散")
+                tech_col5.metric("14日真實波動度 (ATR)", f"{res['atr']:.2f} 元", f"開火爆量: {'是' if res['vol_spike'] else '否'}")
+
+            else:
+                st.error("找不到該代碼的市場數據，請確認是否輸入錯誤（如為ETF或指數，部分欄位將相容性降維診斷）。")
+
+with tab2:
+    st.subheader("🛸 大盤核心權值板塊高速並發自動掃描雷達")
+    
+    scan_scope = st.radio(
+        "🎯 請選擇雷達自動掃描範圍：",
+        ["🔥 核心成交權值焦點股池（日成交金額前15大龍頭）", "🏭 依特定產業類股全自動橫橫掃"],
+        key="bulk_scan_scope"
+    )
+    
+    selected_ind = None
+    if scan_scope == "🏭 依特定產業類股全自動橫橫掃":
+        selected_ind = st.selectbox("選擇要攻擊的產業板塊：", all_industries, index=all_industries.index("半導體業") if "半導體業" in all_industries else 0)
+
+    if st.button("🚀 啟動高速並發雷達大盤掃描"):
+        if scan_scope == "🔥 核心成交權值焦點股池（日成交金額前15大龍頭）":
+            stock_list = ["2330", "2317", "2454", "2382", "3711", "2308", "2357", "2881", "2882", "2603", "2609", "3231", "2449", "3017", "3037"]
+        else:
+            stock_list = info_df[info_df["industry_category"] == selected_ind]["stock_id"].tolist()
+            if len(stock_list) > 40: stock_list = stock_list[:40]
+            
+        all_results = []
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        # 💡 優化 1：先在主執行緒取得 Streamlit Context
+        ctx = get_script_run_ctx()
+        
+        def worker(sid):
+            # 💡 優化 2：在 Worker 內部綁定 Context，讓 @st.cache_data 能在子執行緒正常運作
+            add_script_run_ctx(ctx=ctx)
+            try: 
+                return evaluate_stock(sid, total_cap, risk_pct, 1, fetch_news=False)
+            except Exception: 
+                return None
+
+        status_text.text(f"⚡ 高速並發線程池啟動，正在處理 {len(stock_list)} 檔標的量化矩陣...")
+        
+        # 💡 優化 3：將 max_workers 稍微調高至 12，針對純網路 I/O 請求提升併發吞吐量
+        with concurrent.futures.ThreadPoolExecutor(max_workers=12) as executor:
+            # 💡 優化 4：使用字典推導式 (Dictionary Comprehension) 讓程式碼更乾淨
+            future_to_sid = {executor.submit(worker, sid): sid for sid in stock_list}
+                
+            for idx, future in enumerate(concurrent.futures.as_completed(future_to_sid)):
+                res = future.result()
+                if res:
+                    all_results.append({
+                        "代碼": res["stock_id"], "名稱": res["stock_name"], "現價": res["current_price"],
+                        "戰術池": "🏛️ 核心大象" if res["is_heavyweight"] else "🚀 衛星黑馬",
+                        "核心決策定論": res["invest_status"], "技術動能狀態": res["tech_conclusion_short"],
+                        "法人3日(張)": res["inst_3d_sheets"], "營收YoY(%)": res["latest_revenue_yoy"],
+                        "單月營收(億)": round(res["latest_rev_value"], 2),
+                        "突破風報比": round(res["rr1_brk"], 2), "建議張數(突破)": res["suggested_lots_brk"],
+                        "拉回風報比": round(res["rr1_pb"], 2), "建議張數(拉回)": res["suggested_lots_pb"],
+                        "突破型建議": "🟢 值得進攻" if res["brk_tradeable"] else "❌ 風報比不及格",
+                        "拉回型建議": "🟢 值得低吸" if res["pb_tradeable"] else "❌ 空間不足"
+                    })
+                # 更新進度條
+                progress_bar.progress((idx + 1) / len(stock_list))
+                
+        status_text.empty()
+        
+        if all_results:
+            scan_df = pd.DataFrame(all_results)
+            st.success(f"🎉 掃描完成！已成功分析 {len(all_results)} 檔標的。")
+            
+            tradeable_only = st.checkbox("🎯 只篩選顯示目前具有實質安全邊際與優勢買點（極品/黑馬/風報比及格）的黃金個股")
+            if tradeable_only:
+                filtered_df = scan_df[
+                    (scan_df["核心決策定論"].str.contains("極品")) | 
+                    (scan_df["核心決策定論"].str.contains("黑馬")) | 
+                    (scan_df["突破型建議"] == "🟢 值得進攻") | 
+                    (scan_df["拉回型建議"] == "🟢 值得低吸")
+                ]
+                if not filtered_df.empty:
+                    st.dataframe(filtered_df.sort_values(by=["突破風報比"], ascending=False), use_container_width=True, hide_index=True)
+                else:
+                    st.warning("😭 當前大盤環境因子掃描完畢，目前暫無任何符合標準的極品訊號標的。")
+            else:
+                st.dataframe(scan_df, use_container_width=True, hide_index=True)
+        else:
+            st.error("未能成功讀取任何標的數據，請檢查 FinMind 連線狀態。")
