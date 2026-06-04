@@ -129,6 +129,63 @@ def analyze_news_sentiment(title: str) -> tuple:
         return "🟡 中性消息", "gray"
 
 
+# 💡 [重大修復] 把之前漏掉的即時報價引擎重新編排歸位，徹底消滅 NameError
+def compute_live_price(stock_id: str, hist_last_close: float, live_price_override: float = None):
+    if live_price_override is not None and live_price_override > 0:
+        return live_price_override, True, "雷達模擬串流", "realtime"
+
+    rt_price = None
+    rt_success = False
+    rt_source = "歷史收盤"
+    rt_type = "historical"
+
+    try:
+        session = requests.Session()
+        headers = {"User-Agent": "Mozilla/5.0"}
+        session.get("https://mis.twse.com.tw/stock/index.jsp", headers=headers, timeout=2, verify=certifi.where())
+        ts = int(time.time() * 1000)
+        url = f"https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=tse_{stock_id}.tw|otc_{stock_id}.tw&json=1&delay=0&_={ts}"
+        r = session.get(url, headers=headers, timeout=2, verify=certifi.where())
+
+        if r.status_code == 200:
+            data = r.json()
+            if "msgArray" in data and len(data["msgArray"]) > 0:
+                info = data["msgArray"][0]
+                z = safe_float(info.get("z"))
+                tv = safe_float(info.get("tv"))
+                if z > 0 and tv > 0:
+                    rt_price = z
+                    rt_success = True
+                    rt_source = "TWSE 即時成交"
+                    rt_type = "realtime"
+    except Exception:
+        pass
+
+    if not rt_success:
+        try:
+            for suffix in [".TW", ".TWO"]:
+                url = f"https://query2.finance.yahoo.com/v8/finance/chart/{stock_id}{suffix}"
+                r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=2, verify=certifi.where())
+                if r.status_code == 200:
+                    meta = r.json().get("chart", {}).get("result", [{}])[0].get("meta", {})
+                    p = safe_float(meta.get("regularMarketPrice"))
+                    if p > 0:
+                        rt_price = p
+                        rt_success = True
+                        rt_source = f"Yahoo 價格 {suffix}"
+                        rt_type = "delayed"
+                        break
+        except Exception:
+            pass
+
+    final_price = rt_price if rt_success else hist_last_close
+    if not rt_success:
+        rt_source = "歷史收盤"
+        rt_type = "historical"
+
+    return final_price, rt_success, rt_source, rt_type
+
+
 # ============ 4. Auth (已移除密碼驗證) ============
 FINMIND_TOKEN = os.getenv("FINMIND_TOKEN", "") or st.secrets.get("FINMIND_TOKEN", "")
 
@@ -275,7 +332,7 @@ def get_realtime_news_df(stock_id: str, stock_name: str):
     return pd.DataFrame(news_list)
 
 
-# ============ 6. Core (💡 調整宣告順序，徹底消滅 NameError) ============
+# ============ 6. Core ============
 def prepare_indicator_df(df: pd.DataFrame):
     if df is None or df.empty:
         return None
@@ -363,6 +420,7 @@ def evaluate_stock(
     hist_last = df.iloc[-1]
     last_trade_date_str = str(hist_last["date"])
 
+    # 💡 呼叫處對齊，上面已經完全補齊此函數定義
     current_price, rt_success, rt_source, rt_type = compute_live_price(
         stock_id, float(hist_last["close"]), live_price_override=live_price_override
     )
@@ -411,7 +469,7 @@ def evaluate_stock(
             elif gpm_text == "退步" and opm_text == "退步" and eps_text == "退步":
                 fin_conclusion = f"📉 **【小心金玉其外！獲利能力全面退步】** 公司賺錢本領**出現全面性倒退**！毛利、營益率、EPS 同步低於前一季。如果這檔股票目前盤中炒得正熱，雷達強烈警告：這極有可能是『題材亂炒、基本面跟不上』的虛火盤，主力隨時可能拉高出貨，風控切記要抓得極緊！"
             else:
-                fin_conclusion = f"⚖️ **【橫盤拉鋸調整期！表現與前季互有勝負】** 賺錢能力正處於結構調整期。與上一季相比：毛利率『{gpm_text}』、營業利益率『{opm_text}』、每股 EPS『{eps_lbl}』。本業防守力還在，沒有全面惡化，屬於一般良性波動。"
+                fin_conclusion = f"⚖️ **【橫盤拉鋸調整期！表現與前季互有勝負】** 賺錢能力正處於結構調整期。與上一季相比：毛利率『{gpm_text}』、營業利益率『{opm_text}』、每股 EPS『{eps_lbl}』。本業防守力還在，沒有全面惡化，屬一般良性波動。"
 
     ma20_val = float(hist_last["MA20"])
     atr = float(hist_last["ATR14"]) if not np.isnan(hist_last["ATR14"]) else current_price * 0.03
@@ -600,22 +658,46 @@ with tab1:
                     else:
                         st.success(f"🚀 當前風報比: **{res['rr1_pb']:.2f}** (🟢 理想低吸點)")
 
-                # 💡 [重大升級] 消息面重組：重點整理＋全面收納隱藏連結
+                # 💡 [全新重構] 消息面重組：自動化重點摘要與大腦結論生成
                 st.subheader("📰 盤中即時消息面解讀")
                 news_df = get_realtime_news_df(res['stock_id'], res['stock_name'])
                 if news_df is not None and not news_df.empty:
-                    # 精選最新 8 則消息
-                    news_df = news_df.head(8)
-                    for _, row in news_df.iterrows():
+                    # 1. 建立量化多空統計摘要
+                    num_pos = 0
+                    num_neg = 0
+                    num_neu = 0
+                    news_head = news_df.head(8)
+                    
+                    for _, row in news_head.iterrows():
+                        _, s_col = analyze_news_sentiment(row['title'])
+                        if s_col == "green": num_pos += 1
+                        elif s_col == "red": num_neg += 1
+                        else: num_neu += 1
+                    
+                    # 呈現即時消息重點摘要
+                    st.markdown("#### 📋 盤中核心消息重點摘要")
+                    st.markdown(f"* ⚡ 雷達偵測到盤中最新 `{len(news_head)}` 則財經媒體要聞，大數據權值分類：🟢 **即時利多 `{num_pos}` 則** | 🔴 **即時利空 `{num_neg}` 則** | 🟡 **中性常規公告 `{num_neu}` 則**。")
+                    
+                    # 2. 自動判斷消息面大腦結論
+                    st.markdown("#### 🎯 消息面多空綜合操盤結論")
+                    if num_pos > num_neg and num_pos >= 2:
+                        st.success("🚀 **【偏多訊號】消息面利多頻傳，盤中買盤熱度高！** 大量正面報導容易引發游資及散戶在盤中跟風追價。這種局勢高度有利於配合『突破型策略』進行快市順勢追擊，肉厚汁多！")
+                    elif num_neg > num_pos and num_neg >= 2:
+                        st.error("⚠️ **【偏空警告】利空罩頂！提防盤中爆發拋售潮！** 負面關鍵詞密集跳出，市場恐慌情緒正在釀。此時哪怕個股技術線型再漂亮，也要高度提防假突破陷阱，絕對不宜追高，想玩只能克制雙手等回檔！")
+                    elif num_pos > 0 and num_neg > 0:
+                        st.warning("⚖️ **【震盪洗盤】多空消息劇烈拉鋸，市場分歧巨大！** 好壞題材同時交織（例如外資調降評等但營收創新高）。這種狀態極易導致盤中上下甩尾洗盤，操作難度極高，風控必須卡死！")
+                    else:
+                        st.info("📋 **【中性平穩】消息面風平浪靜，無重大题材。** 目前均為例行性常規公告。盤中走勢將回歸『技術面（MA20）與籌碼法人進出』的純量化主導，缺乏話題帶動的爆發性動能。")
+                    
+                    # 3. 新聞列表收納（網址全部折疊隱藏，有需要再點開）
+                    st.markdown("#### 🔍 即時新聞備查列表（點開看詳情）")
+                    for _, row in news_head.iterrows():
                         sentiment_text, sentiment_color = analyze_news_sentiment(row['title'])
-                        
-                        # 核心優化：將標題與時間作為折疊大標，連結藏在內部，介面不雜亂
                         with st.expander(f"⏱️ {row['date']} | 📢 {row['source']} | :{sentiment_color}[**{sentiment_text}**] ── {row['title']}"):
-                            st.markdown(f"**📌 消息重點：** {row['title']}")
-                            st.markdown(f"**🎯 雷達診斷：** :{sentiment_color}[**{sentiment_text}**]")
-                            st.markdown(f"**⏰ 觀測時間：** `{row['date']}` (來源: {row['source']})")
+                            st.markdown(f"**📌 新聞原文：** {row['title']}")
+                            st.markdown(f"**⏰ 發布時間：** `{row['date']}` (來源媒體: {row['source']})")
                             if row['link'] and str(row['link']).startswith("http"):
-                                st.markdown(f"🔗 [點我點開原網址查看詳細報導]({row['link']})")
+                                st.markdown(f"🔗 [點我展開查看媒體詳細原始報導]({row['link']})")
                 else:
                     st.info("📋 盤中安全掃描：此標的當下暫無即時媒體快訊發布。")
 
@@ -632,12 +714,12 @@ with tab2:
     
     scan_scope = st.radio(
         "🎯 請選擇雷達自動掃描範圍：",
-        ["🔥 核心權值龍頭股 (自動精選市值前30大標的)", "🏭 依特定產業類股全自動橫橫掃"],
+        ["🔥 核心權值龍頭股 (自動精選市值前30大標的)", "🏭 依特定產業類股全自動橫掃"],
         key="bulk_scan_scope"
     )
     
     selected_ind = None
-    if scan_scope == "🏭 依特定產業類股全自動橫橫掃":
+    if scan_scope == "🏭 依特定產業類股全自動橫掃":
         selected_ind = st.selectbox("選擇要轟炸的產業板塊：", all_industries, index=all_industries.index("半導體業") if "半導體業" in all_industries else 0)
 
     if st.button("🚀 啟動全自動雷達大盤掃描"):
