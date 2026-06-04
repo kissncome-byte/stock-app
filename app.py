@@ -114,6 +114,22 @@ def detect_style(result: dict) -> str:
     return "拉回型"
 
 
+# 💡 [全新加入] 消息面即時多空因子量化診斷引擎
+def analyze_news_sentiment(title: str) -> tuple:
+    pos_words = ['創新高', '大賺', '暴增', '飆', '大成長', '利多', '優於預期', '加碼', '看旺', '強勢', '獲利', '突破', '轉盈', '充沛', '加持', '買超', '爆發', '新高']
+    neg_words = ['衰退', '虧損', '重挫', '低於預期', '縮水', '跌破', '警告', '利空', '下滑', '疲弱', '裁員', '大跌', '慘', '賣壓', '修正', '賣超', '暴跌', '逆風']
+    
+    pos_score = sum(1 for w in pos_words if w in title)
+    neg_score = sum(1 for w in neg_words if w in title)
+    
+    if pos_score > neg_score:
+        return "🟢 即時利多", "green"
+    elif neg_score > pos_score:
+        return "🔴 即時利空", "red"
+    else:
+        return "🟡 中性消息", "gray"
+
+
 # ============ 4. Auth (已移除密碼驗證) ============
 FINMIND_TOKEN = os.getenv("FINMIND_TOKEN", "") or st.secrets.get("FINMIND_TOKEN", "")
 
@@ -212,146 +228,56 @@ def get_financial_statement_df(stock_id: str, years: int = 2):
         return pd.DataFrame()
 
 
-# 💡 [全新快取] 消息面即時新聞抽取組件
-@st.cache_data(ttl=900)
-def get_news_df(stock_id: str, days: int = 30):
-    api = get_api()
-    start_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+# 盤中秒級即時新聞流網路引擎
+@st.cache_data(ttl=300)
+def get_realtime_news_df(stock_id: str, stock_name: str):
+    news_list = []
     try:
-        df = api.taiwan_stock_news(stock_id=stock_id, start_date=start_date)
-        return df if df is not None else pd.DataFrame()
+        import xml.etree.ElementTree as ET
+        query = f"{stock_id} {stock_name}"
+        url = f"https://news.google.com/rss/search?q={requests.utils.quote(query)}&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
+        r = requests.get(url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}, timeout=4)
+        if r.status_code == 200:
+            root = ET.fromstring(r.content)
+            for item in root.findall('.//item'):
+                title = item.find('title').text if item.find('title') is not None else ""
+                link = item.find('link').text if item.find('link') is not None else ""
+                pub_date = item.find('pubDate').text if item.find('pubDate') is not None else ""
+                source_el = item.find('source')
+                source = source_el.text if source_el is not None else "即時財經快訊"
+                
+                if " - " in title:
+                    title = title.rsplit(" - ", 1)[0]
+                    
+                news_list.append({
+                    "date": pub_date,
+                    "title": title,
+                    "source": source,
+                    "link": link
+                })
     except Exception:
+        pass
+        
+    if not news_list:
         try:
-            df = api.get_data(dataset="TaiwanStockNews", data_id=stock_id, start_date=start_date)
-            return df if df is not None else pd.DataFrame()
+            api = get_api()
+            start_date = (datetime.now() - timedelta(days=14)).strftime("%Y-%m-%d")
+            df = api.taiwan_stock_news(stock_id=stock_id, start_date=start_date)
+            if df is not None and not df.empty:
+                for _, row in df.iterrows():
+                    news_list.append({
+                        "date": str(row.get("date", "盤中即時")),
+                        "title": str(row.get("news_title", row.get("title", "重大公告"))),
+                        "source": str(row.get("news_source", row.get("source", "FinMind"))),
+                        "link": str(row.get("news_link", row.get("link", "")))
+                    })
         except Exception:
-            return pd.DataFrame()
+            pass
+            
+    return pd.DataFrame(news_list)
 
 
 # ============ 6. Core ============
-def prepare_indicator_df(df: pd.DataFrame):
-    if df is None or df.empty:
-        return None
-
-    x = df.copy()
-    
-    # [1] MA & ATR
-    x["ATR14"] = (x["high"] - x["low"]).rolling(14).mean()
-    x["MA20"] = x["close"].rolling(20).mean()
-
-    # [2] VOL 量能指標
-    if "amount" in x.columns:
-        x["MA20_Amount"] = (x["amount"] / 1e8).rolling(20).mean()
-    else:
-        x["MA20_Amount"] = (x["close"] * x["vol"] / 1e8).rolling(20).mean()
-
-    direction = np.where(x["close"].diff() > 0, 1, np.where(x["close"].diff() < 0, -1, 0))
-    x["OBV"] = (direction * x["vol"]).cumsum()
-    x["OBV_MA10"] = x["OBV"].rolling(10).mean()
-
-    # [3] RSI 相對強弱
-    delta = x["close"].diff()
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
-    avg_gain = gain.rolling(14).mean()
-    avg_loss = loss.rolling(14).mean()
-    avg_loss = np.where(avg_loss == 0, 0.00001, avg_loss)
-    rs = avg_gain / avg_loss
-    x["RSI14"] = 100 - (100 / (1 + rs))
-
-    # [4] DMI 趨勢指標
-    x["up_move"] = x["high"].diff()
-    x["down_move"] = x["low"].shift(1) - x["low"]
-    x["plus_dm"] = np.where((x["up_move"] > x["down_move"]) & (x["up_move"] > 0), x["up_move"], 0)
-    x["minus_dm"] = np.where((x["down_move"] > x["up_move"]) & (x["down_move"] > 0), x["down_move"], 0)
-
-    x["tr1"] = x["high"] - x["low"]
-    x["tr2"] = (x["high"] - x["close"].shift(1)).abs()
-    x["tr3"] = (x["low"] - x["close"].shift(1)).abs()
-    x["TR"] = x[["tr1", "tr2", "tr3"]].max(axis=1)
-
-    tr_14 = x["TR"].rolling(14).sum()
-    tr_14 = np.where(tr_14 == 0, 0.00001, tr_14)
-    plus_dm_14 = x["plus_dm"].rolling(14).sum()
-    minus_dm_14 = x["minus_dm"].rolling(14).sum()
-
-    x["PLUS_DI"] = (plus_dm_14 / tr_14) * 100
-    x["MINUS_DI"] = (minus_dm_14 / tr_14) * 100
-
-    di_sum = x["PLUS_DI"] + x["MINUS_DI"]
-    di_sum = np.where(di_sum == 0, 0.00001, di_sum)
-    x["DX"] = ((x["PLUS_DI"] - x["MINUS_DI"]).abs() / di_sum) * 100
-    x["ADX14"] = x["DX"].rolling(14).mean()
-
-    # [5] MACD 指標精算
-    x["EMA12"] = x["close"].ewm(span=12, adjust=False).mean()
-    x["EMA26"] = x["close"].ewm(span=26, adjust=False).mean()
-    x["MACD_DIF"] = x["EMA12"] - x["EMA26"]
-    x["MACD_SIGNAL"] = x["MACD_DIF"].ewm(span=9, adjust=False).mean()
-    x["MACD_HIST"] = x["MACD_DIF"] - x["MACD_SIGNAL"]
-
-    x = x.dropna(subset=["ATR14", "MA20", "MA20_Amount", "OBV_MA10", "RSI14", "ADX14", "MACD_HIST"]).copy()
-    if x.empty:
-        return None
-    return x
-
-
-def compute_live_price(stock_id: str, hist_last_close: float, live_price_override: float = None):
-    if live_price_override is not None and live_price_override > 0:
-        return live_price_override, True, "雷達模擬串流", "realtime"
-
-    rt_price = None
-    rt_success = False
-    rt_source = "歷史收盤"
-    rt_type = "historical"
-
-    try:
-        session = requests.Session()
-        headers = {"User-Agent": "Mozilla/5.0"}
-        session.get("https://mis.twse.com.tw/stock/index.jsp", headers=headers, timeout=2, verify=certifi.where())
-        ts = int(time.time() * 1000)
-        url = f"https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=tse_{stock_id}.tw|otc_{stock_id}.tw&json=1&delay=0&_={ts}"
-        r = session.get(url, headers=headers, timeout=2, verify=certifi.where())
-
-        if r.status_code == 200:
-            data = r.json()
-            if "msgArray" in data and len(data["msgArray"]) > 0:
-                info = data["msgArray"][0]
-                z = safe_float(info.get("z"))
-                tv = safe_float(info.get("tv"))
-                if z > 0 and tv > 0:
-                    rt_price = z
-                    rt_success = True
-                    rt_source = "TWSE 即時成交"
-                    rt_type = "realtime"
-    except Exception:
-        pass
-
-    if not rt_success:
-        try:
-            for suffix in [".TW", ".TWO"]:
-                url = f"https://query2.finance.yahoo.com/v8/finance/chart/{stock_id}{suffix}"
-                r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=2, verify=certifi.where())
-                if r.status_code == 200:
-                    meta = r.json().get("chart", {}).get("result", [{}])[0].get("meta", {})
-                    p = safe_float(meta.get("regularMarketPrice"))
-                    if p > 0:
-                        rt_price = p
-                        rt_success = True
-                        rt_source = f"Yahoo 價格 {suffix}"
-                        rt_type = "delayed"
-                        break
-        except Exception:
-            pass
-
-    final_price = rt_price if rt_success else hist_last_close
-    if not rt_success:
-        rt_source = "歷史收盤"
-        rt_type = "historical"
-
-    return final_price, rt_success, rt_source, rt_type
-
-
 def evaluate_stock(
     stock_id: str,
     total_capital: float,
@@ -399,7 +325,7 @@ def evaluate_stock(
         rev_sorted = rev_df.sort_values("date")
         latest_yoy = safe_float(rev_sorted.iloc[-1]["revenue_year_growth_rate"])
 
-    # 財報季報數據前後期精密驗證（包含相等/持平狀態修正）
+    # 財報季報數據前後期精密驗證
     fin_df = get_financial_statement_df(stock_id, years=2)
     eps_now, eps_prev = 0.0, 0.0
     gpm_now, gpm_prev = 0.0, 0.0
@@ -569,7 +495,7 @@ with tab1:
             res = evaluate_stock(target_stock, total_cap, risk_pct, 500, 1, 1.5, 3)
             
             if res:
-                # 頂部印出股票中文名字與所屬產業別大徽章
+                # 頂部大徽章
                 st.markdown(f"## 🏢 {res['stock_name']} ({res['stock_id']}) · `{res['industry']}`")
                 
                 # 頂部儀表板
@@ -606,20 +532,20 @@ with tab1:
                 f_col2.metric("營業毛利率", f"{res['gpm_now']:.2f} %", f"前季: {res['gpm_prev']:.2f} | {get_trend_tag(res['gpm_now'], res['gpm_prev'])}")
                 f_col3.metric("營業利益率", f"{res['opm_now']:.2f} %", f"前季: {res['opm_prev']:.2f} | {get_trend_tag(res['opm_now'], res['opm_prev'])}")
                 
-                # 風報比操作量尺——畫面視覺化理解區
+                # 風報比操作量尺
                 st.subheader("🎯 交易藍圖與精算風控價位")
                 
-                with st.expander("📘 什麼是「風報比」？盤中要怎麼看大於多少有意義？（點開看心法）"):
+                with st.expander("📘 什麼是「風報比」？盤中要怎麼看大於多少有意義？"):
                     st.markdown("""
                     * **公式原理：** `風報比 = 停利空間 (預期能賺的肉) ÷ 停損空間 (打算承擔的風險)`
-                    * **🔴 小於 1.5【性價比極低】**：代表你拿 10 元的風險，只能換到不到 15 元的利潤。這種交易屬於『割肉換皮』，長久下來一定賠錢，**系統會強制封鎖不推薦**。
-                    * **🟡 1.5 ~ 2.0【及格點位】**：**突破型策略**的及格底線。因為突破追擊的勝率一般在 40% 左右，風報比大於 1.5 就能保證抓到一次大行情可以抵消假突破的損失。
-                    * **🟢 大於 2.0【黃金點位】**：**拉回型策略**的完美狀態。用 1 元的風險去博 2 元以上的利潤，性價比極高，屬於典型的『高勝率、高報酬』好生意！
+                    * **🔴 小於 1.5【性價比極低】**：代表你拿 10 元的風險，只能換到不到 15 元的利潤。系統會強制封鎖不推薦。
+                    * **🟡 1.5 ~ 2.0【及格點位】**：**突破型策略**的及格底線。符合突破快市標準。
+                    * **🟢 大於 2.0【黃金點位】**：**拉回型策略**的完美狀態。用 1 元的風險去博 2 元以上的利潤，性價比極高！
                     """)
 
                 box_brk, box_pb = st.columns(2)
                 with box_brk:
-                    st.markdown("### 🏃‍♂️ 【突破型策略】方案藍圖")
+                    st.markdown("### 跑 🏃‍♂️ 【突破型策略】方案藍圖")
                     st.markdown(f"* **現價進場點：** `{res['current_price']}` 元")
                     st.markdown(f"* **停利目標價：** `{res['target_brk']}` 元 (預期賺 `{res['target_brk'] - res['current_price']:.2f}` 元)")
                     st.markdown(f"* **防守停損點：** `{res['stop_brk']}` 元 (預期賠 `{res['current_price'] - res['stop_brk']:.2f}` 元)")
@@ -644,33 +570,24 @@ with tab1:
                     else:
                         st.success(f"🚀 當前風報比: **{rr_pb_val:.2f}** (🟢 黃金點位：回檔防守肉厚，性價比高！)")
 
-                # 💡 [全新加入] 盤中即時核心消息面追蹤面盤 (附發布時間與來源出處)
+                # 💡 [全新重寫] 盤中即時消息面追蹤 (附帶秒級多空即時自動解讀標籤)
                 st.subheader("📰 盤中即時消息面追蹤")
-                news_df = get_news_df(res['stock_id'], days=30)
+                news_df = get_realtime_news_df(res['stock_id'], res['stock_name'])
                 if news_df is not None and not news_df.empty:
-                    cols = news_df.columns.tolist()
-                    date_col = 'date' if 'date' in cols else cols[0]
-                    title_col = 'news_title' if 'news_title' in cols else 'title' if 'title' in cols else cols[2] if len(cols) > 2 else cols[0]
-                    source_col = 'news_source' if 'news_source' in cols else 'source' if 'source' in cols else ''
-                    link_col = 'news_link' if 'news_link' in cols else 'link' if 'link' in cols else ''
-                    
-                    # 排序確保最新消息置頂，抓取前8條
-                    news_df = news_df.sort_values(by=date_col, ascending=False).head(8)
-                    
+                    news_df = news_df.head(8)
                     for _, row in news_df.iterrows():
-                        n_date = str(row[date_col])
-                        n_title = str(row[title_col])
-                        n_source = str(row[source_col]) if source_col and pd.notna(row[source_col]) else "財經即時通"
-                        n_link = str(row[link_col]) if link_col and pd.notna(row[link_col]) and str(row[link_col]).startswith("http") else None
+                        # 自動進行多空權重詞診斷
+                        sentiment_text, sentiment_color = analyze_news_sentiment(row['title'])
                         
-                        st.markdown(f"⏱️ **發布時間：** `{n_date}` | 📢 **新聞出處：** `{n_source}`")
-                        if n_link:
-                            st.markdown(f"👉 **[{n_title}]({n_link})**")
+                        # 視覺化排版：將利多利空直接上色掛載在標題上方
+                        st.markdown(f"⏱️ **發布時間：** `{row['date']}` | 📢 **新聞出處：** `{row['source']}` | 🎯 **即時因子診斷：** :{sentiment_color}[**{sentiment_text}**]")
+                        if row['link'] and str(row['link']).startswith("http"):
+                            st.markdown(f"👉 **[{row['title']}]({row['link']})**")
                         else:
-                            st.markdown(f"👉 **{n_title}**")
+                            st.markdown(f"👉 **{row['title']}**")
                         st.write("---")
                 else:
-                    st.info("📋 盤中安全掃描：此標的近 30 日內暫無重大的即時公告或媒體新聞發布。")
+                    st.info("📋 盤中安全掃描：此標的當下暫無即時媒體快訊發布。")
 
                 # 底層原始數據
                 st.write("### 🔍 因子診斷後台原始 JSON 數據")
@@ -680,14 +597,12 @@ with tab1:
 
 # 大盤多股批量雷達【完全免手動填代碼，自動篩選給建議】
 with tab2:
-    st.subheader("🛸 大盤多因子全自動選股雷達")
-    st.markdown("不用再手動輸入代碼了！請直接選擇你想讓雷達自動橫掃的「市場範圍」，系統會自動交叉比對因子並挑出**有賺頭的操作清單**：")
+    st.subheader("🛸 大盤多因子全自動選股雷折")
+    st.markdown("請直接選擇你想讓雷達自動橫掃的「市場範圍」，系統會自動交叉比對因子並挑出**有賺頭的操作清單**：")
     
-    # 讀取現有的股票資料庫，用來自動歸納產業分類
     info_df = get_stock_info_df()
     all_industries = sorted([str(x) for x in info_df["industry_category"].dropna().unique() if str(x).strip() != ""])
     
-    # UI 選項：讓使用者決定大盤掃描範圍
     scan_scope = st.radio(
         "🎯 請選擇雷達自動掃描範圍：",
         ["🔥 核心權值龍頭股 (自動精選市值前30大標的)", "🏭 依特定產業類股全自動橫掃"],
