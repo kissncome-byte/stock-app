@@ -290,7 +290,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     df_raw = get_daily_df(stock_id, days=365)
     if df_raw is None or df_raw.empty: return None
 
-    # ======= 提前獲取即時價格，並動態注入 DataFrame 以防指標時間差失真 =======
+    # ======= 提前獲取即時價格 =======
     hist_last_raw = df_raw.iloc[-1]
     hist_last_close = float(hist_last_raw["close"])
     hist_last_vol = float(hist_last_raw["vol"])
@@ -300,6 +300,12 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     )
     
     df_for_indicators = df_raw.copy()
+    
+    # ======= 【核心 Bug 修復點】：將所有指標分析欄位提前強制轉為 float64，防止新版 Pandas 嚴格型別報錯 =======
+    for c in ["close", "high", "low", "vol", "amount"]:
+        if c in df_for_indicators.columns:
+            df_for_indicators[c] = df_for_indicators[c].astype(float)
+            
     today_str = datetime.now(TZ).strftime("%Y-%m-%d")
 
     if rt_success and (rt_type in ["realtime", "delayed"]):
@@ -311,11 +317,11 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
         else:
             new_row = pd.DataFrame([{
                 "date": today_str,
-                "close": current_price,
-                "high": max(current_price, hist_last_close),
-                "low": min(current_price, hist_last_close),
-                "vol": current_vol,
-                "amount": current_price * current_vol * 1000 
+                "close": float(current_price),
+                "high": float(max(current_price, hist_last_close)),
+                "low": float(min(current_price, hist_last_close)),
+                "vol": float(current_vol),
+                "amount": float(current_price * current_vol * 1000) 
             }])
             df_for_indicators = pd.concat([df_for_indicators, new_row], ignore_index=True)
 
@@ -573,7 +579,6 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     max_lots_by_pool_pb = int((pool_allocation * 10000 / current_price) / 1000) if current_price > 0 else 0
     if suggested_lots_pb > max_lots_by_pool_pb: suggested_lots_pb = max_lots_by_pool_pb
 
-    # ======= 【修復核心】：在回傳字典中，補上外層 UI 需要的過熱門檻數值 =======
     return {
         "stock_id": stock_id, "stock_name": stock_name, "industry": industry,
         "current_price": current_price, "current_vol": current_vol, "vol_ma20": vol_ma20_val,
@@ -843,7 +848,6 @@ with tab1:
                     if res['rr1_pb'] < 2.0: st.error(f"❌ 當前風報比: {res['rr1_pb']:.2f} (拉回防守利潤空間過窄)")
                     else: st.success(f"🚀 當前風報比: {res['rr1_pb']:.2f} (🟢 理想低吸高性價比點位)")
 
-                # ======= 【BUG 修復處】：將原本報錯的 rsi_overbought_tmsh 改由字典 res 呼叫 =======
                 st.subheader("📊 盤中核心量化基礎指標")
                 tech_col1, tech_col2, tech_col3, tech_col4, tech_col5 = st.columns(5)
                 tech_col1.metric("MACD 柱狀體 (Hist)", f"{res['macd_hist']:.3f}", "🔺 多頭擴張" if res['macd_hist'] > 0 else "🔻 空頭修正")
