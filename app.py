@@ -214,8 +214,8 @@ def get_financial_statement_df(stock_id: str, years: int = 2):
 def get_realtime_news_df(stock_id: str, stock_name: str):
     news_list = []
     try:
-        # 1. 搜尋字串加入 when:14d，強制 Google 只搜尋最近 14 天內的新聞
-        query = f"{stock_id} {stock_name} when:14d"
+        # 💡 修正 3：拿掉 stock_id，只用 stock_name 搜尋，新聞數量會暴增！並設定 when:7d 確保時效性
+        query = f"{stock_name} when:7d"
         url = f"https://news.google.com/rss/search?q={requests.utils.quote(query)}&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
         r = requests.get(url, headers=headers, timeout=5)
@@ -232,7 +232,6 @@ def get_realtime_news_df(stock_id: str, stock_name: str):
                 
         if news_list:
             df = pd.DataFrame(news_list)
-            # 2. 將 RSS 的字串時間轉換為真正的時間格式，並嚴格按照「由新到舊」排序
             df["parsed_date"] = pd.to_datetime(df["date"], errors="coerce")
             df = df.sort_values(by="parsed_date", ascending=False).drop(columns=["parsed_date"])
             return df
@@ -240,8 +239,6 @@ def get_realtime_news_df(stock_id: str, stock_name: str):
     except Exception: pass
     
     return pd.DataFrame(news_list)
-    return pd.DataFrame(news_list)
-
 # ============ 6. Math & Technical Processing Engine ============
 def prepare_indicator_df(df: pd.DataFrame):
     if df is None or df.empty: return None
@@ -385,7 +382,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
             else:
                 fin_conclusion = f"⚖️ **【橫盤調整期】** 結構互有勝負：毛利『{gpm_text}』、營益率『{opm_text}』、EPS『{eps_lbl}』。"
 
-    # ============ 2. 全新設計的消息面焦點分析引擎 ============
+  # ============ 2. 全新設計的消息面焦點分析引擎 ============
     news_summary, news_color = "🟡 中性消息", "gray"
     news_analysis_report = "⚪ 暫無最新重要輿情分析資訊。"
     news_raw_list = []
@@ -393,12 +390,14 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     if fetch_news:
         news_df = get_realtime_news_df(stock_id, stock_name)
         if not news_df.empty and "title" in news_df.columns:
-            news_raw_list = news_df.tail(5)[::-1].to_dict('records') 
+            # 💡 修正 1：改用 head(5) 直接抓取最頂部（最新）的 5 篇新聞！
+            news_raw_list = news_df.head(5).to_dict('records') 
             pos_cnt, neg_cnt, neu_cnt = 0, 0, 0
             keywords_found = []
             core_tags = {'創新高': '🎯 歷史新高', '雙率雙升': '💰 獲利結構升級', '大賺': '🔥 暴利發酵', '利多': '📣 多頭題材', '衰退': '🚨 動能失速', '虧損': '❌ 營運赤字', '利空': '⚠️ 消息利空'}
             
-            for title in news_df["title"].tail(10).tolist():
+            # 💡 修正 2：改用 head(10) 分析最新的 10 篇新聞情緒
+            for title in news_df["title"].head(10).tolist():
                 lbl, _ = analyze_news_sentiment(title)
                 if "利多" in lbl: pos_cnt += 1
                 elif "利空" in lbl: neg_cnt += 1
