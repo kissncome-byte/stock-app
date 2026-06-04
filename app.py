@@ -101,9 +101,9 @@ def analyze_news_sentiment(title: str) -> tuple:
     pos_score = sum(1 for w in pos_words if w in title)
     neg_score = sum(1 for w in neg_words if w in title)
     
-    if pos_score > neg_score: return "🟢 即時利多", "green"
-    elif neg_score > pos_score: return "🔴 即時利空", "red"
-    return "🟡 中性消息", "gray"
+    if pos_score > neg_score: return "🟢 利多", "green"
+    elif neg_score > pos_score: return "🔴 利空", "red"
+    return "🟡 中性", "gray"
 
 
 # ============ 4. Auth, API Initialization & Shared Connection ============
@@ -254,11 +254,13 @@ def get_financial_statement_df(stock_id: str, years: int = 2):
 @st.cache_data(ttl=300)
 def get_realtime_news_df(stock_id: str, stock_name: str):
     news_list = []
-    session = get_requests_session()
     try:
+        # 獨立建立請求，不共用大盤 Session 防止特徵被阻擋
         query = f"{stock_id} {stock_name}"
         url = f"https://news.google.com/rss/search?q={requests.utils.quote(query)}&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
-        r = session.get(url, timeout=4)
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+        r = requests.get(url, headers=headers, timeout=5)
+        
         if r.status_code == 200:
             root = ET.fromstring(r.content)
             for item in root.findall('.//item'):
@@ -277,7 +279,6 @@ def prepare_indicator_df(df: pd.DataFrame):
     if df is None or df.empty: return None
     x = df.copy().sort_values("date").reset_index(drop=True)
     
-    # 標準威爾德平滑法技術指標計算
     close_prev = x["close"].shift(1)
     tr1 = x["high"] - x["low"]
     tr2 = (x["high"] - close_prev).abs()
@@ -337,7 +338,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     hist_last = df.iloc[-1]
     last_trade_date_str = str(hist_last["date"])
 
-    # 自動化判定是否為大象權值龍頭 (將門檻微調至 20 億避免高週轉中小型股干擾)
+    # 動態大象股判定門檻 20 億
     recent_amount_ma = df["amount"].tail(20).mean()
     is_heavyweight = recent_amount_ma > 2000000000  
     
@@ -422,18 +423,47 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
             else:
                 fin_conclusion = f"⚖️ **【橫盤調整期】** 結構互有勝負：毛利『{gpm_text}』、營益率『{opm_text}』、EPS『{eps_lbl}』。"
 
-    # 新聞情緒分析
+    # ============ 全新設計的消息面焦點分析引擎 ============
     news_summary, news_color = "🟡 中性消息", "gray"
+    news_analysis_report = "⚪ 暫無最新重要輿情分析資訊。"
+    news_raw_list = []
+    
     if fetch_news:
         news_df = get_realtime_news_df(stock_id, stock_name)
         if not news_df.empty and "title" in news_df.columns:
-            pos_cnt, neg_cnt = 0, 0
-            for title in news_df["title"].tail(6).tolist():
+            news_raw_list = news_df.tail(5)[::-1].to_dict('records') # 拿最新的 5 則並翻轉排序
+            pos_cnt, neg_cnt, neu_cnt = 0, 0, 0
+            keywords_found = []
+            
+            # 建立多空關鍵字庫，並淬煉出焦點標籤
+            core_tags = {'創新高': '🎯 歷史新高', '雙率雙升': '💰 獲利結構升級', '大賺': '🔥 暴利發酵', '利多': '📣 多頭題材', '衰退': '🚨 動能失速', '虧損': '❌ 營運赤字', '利空': '⚠️ 消息利空'}
+            
+            for title in news_df["title"].tail(10).tolist():
                 lbl, _ = analyze_news_sentiment(title)
                 if "利多" in lbl: pos_cnt += 1
                 elif "利空" in lbl: neg_cnt += 1
-            if pos_cnt > neg_cnt: news_summary, news_color = "🟢 即時輿情偏多", "green"
-            elif neg_cnt > pos_cnt: news_summary, news_color = "🔴 即時輿情偏空", "red"
+                else: neu_cnt += 1
+                
+                for k, v in core_tags.items():
+                    if k in title and v not in keywords_found: keywords_found.append(v)
+            
+            # 決定輿情總定論
+            total_scanned = pos_cnt + neg_cnt + neu_cnt
+            if pos_cnt > neg_cnt and pos_cnt >= 2:
+                news_summary, news_color = "🟢 即時輿情偏多", "green"
+                news_analysis_report = f"🔥 **【輿情熱度上升：市場買單積極】** 掃描近期的重要消息面，**利多消息佔比達 {pos_cnt/total_scanned*100:.0f}%**。焦點主要圍繞在 {', '.join(keywords_found) if keywords_found else '波段營運成長題材'} 上，市場追價意願與認同度高。"
+            elif neg_cnt > pos_cnt and neg_cnt >= 2:
+                news_summary, news_color = "🔴 即時輿情偏空", "red"
+                news_analysis_report = f"🚨 **【輿情警報：利空連環發酵】** 掃描近期的重要消息面，**利空消息佔比高達 {neg_cnt/total_scanned*100:.0f}%**。焦點透露出 {', '.join(keywords_found) if keywords_found else '營運基本面修正'} 的隱憂。此時切勿盲目進場接刀，提防消息面引發的主力連環多殺多！"
+            else:
+                news_summary, news_color = "🟡 輿情結構中性", "gray"
+                news_analysis_report = f"⚖️ **【消息平淡：缺乏新故事刺激】** 掃描近期的重要消息面，多空雜音交錯（利多 {pos_cnt} 則、利空 {neg_cnt} 則），無明顯單邊趨勢，盤面主要受大盤或是內資技術面籌碼拉鋸影響。"
+            
+            # 矛盾分析防禦系統 (如果股價創20日新高但是輿情偏空，或者股價創新低但輿情偏多)
+            if current_price >= real_resistance * 0.98 and neg_cnt >= 3:
+                news_analysis_report += " ⚠️ **【主力高檔反向防禦警示】**：注意！當前股價正面臨前高重壓，但背後利空新聞頻傳，可能為主力在測試浮額，或利空不跌的洗盤跡象，請嚴格控管停損。"
+            elif current_price >= real_resistance * 0.98 and pos_cnt >= 4:
+                news_analysis_report += " ⚠️ **【高檔過熱警示】**：注意！股價已達相對高點，且市場新聞全面一致瘋狂看好（利多爆量），小心主力藉由利多誘多出貨給散戶，千萬不可再重倉追高！"
     else:
         news_summary, news_color = "⚪ 批次雷達略過新聞", "gray"
 
@@ -492,7 +522,6 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     is_turnaround_dark_horse = False
     turnaround_reason = ""
 
-    # 黑馬特戰特判邏輯
     if is_compressed and vol_spike and current_price >= real_resistance * 0.99:
         eps_turn_around = (eps_now > 0) and (eps_prev <= 0) if has_financial_data else False
         revenue_rocket = latest_yoy >= 40.0 if has_revenue_data else False
@@ -577,7 +606,6 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     stop_pb = round_to_tick(current_price - atr - slip, t)
     rr1_pb = (target_pb - current_price) / (current_price - stop_pb) if (current_price - stop_pb) > 0 else 0
 
-    # 資金池動態分配
     pool_allocation = total_capital * 0.8 if is_heavyweight else total_capital * 0.2
     risk_money = pool_allocation * (risk_per_trade / 100) * 10000 
     
@@ -606,8 +634,8 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
         "invest_status": invest_status, "status_color": status_color, "status_emoji": status_emoji,
         "diag_fundamentals": diag_fundamentals, "diag_chips": diag_chips, "diag_technicals": diag_technicals,
         "is_turnaround_dark_horse": is_turnaround_dark_horse, "turnaround_reason": turnaround_reason,
-        "news_summary": news_summary, "news_color": news_color, "is_heavyweight": is_heavyweight,
-        "has_financial_data": has_financial_data
+        "news_summary": news_summary, "news_color": news_color, "news_analysis_report": news_analysis_report, "news_raw_list": news_raw_list,
+        "is_heavyweight": is_heavyweight, "has_financial_data": has_financial_data
     }
 
 
@@ -631,7 +659,9 @@ st.sidebar.markdown(f"""
 ---
 ### 📊 資金池動態配額
 * 🏛️ **核心權值大象池(80%)：** `{core_cap_pool:.1f}` 萬元
+  > 💡 **核心大象：** 日均成交額大於 20 億的超級龍頭股，流動性極佳、走勢穩健。適合佈局大資金，進出主看月線 (MA20) 防守與法人籌碼動向。
 * 🚀 **衛星突擊飆股池(20%)：** `{sat_cap_pool:.1f}` 萬元
+  > 💡 **衛星黑馬：** 中高波動的中小型股，籌碼易被主力鎖定。爆發力強但也伴隨高風險，適合快進快出，破線須嚴格停損不留戀。
 * 🛡️ **每筆最大損失金額：** `{total_cap * (risk_pct / 100) * 10000:.0f}` 元
 """)
 
@@ -713,13 +743,30 @@ with tab1:
                 st.markdown("---")
                 
                 # 4. 個股基本交易資料面板
-                st.subheader("🏢 盤中即時交易數據與輿情面板")
+                st.subheader("🏢 盤中即時交易數據面板")
                 col_m1, col_m2, col_m3, col_m4 = st.columns(4)
                 col_m1.metric("即時現價", f"{res['current_price']} 元", f"核心決策: {res['invest_status']}")
                 col_m2.metric("盤中即時量 / 20日均量", f"{res['current_vol']:.0f} 張", f"均量: {res['vol_ma20']:.0f} 張")
                 col_m3.metric(f"最新公告月營收 ({res['latest_rev_month']})", f"{res['latest_revenue_yoy']:.2f} %", f"單月營收: {res['latest_rev_value']:.2f} 億")
-                col_m4.metric("即時新聞輿情狀態", res["news_summary"])
+                col_m4.metric("即時新聞輿情定論", res["news_summary"])
                 
+                # ============ 全新設計：AI 核心輿情重點診斷艙 ============
+                st.markdown("### 📰 AI 核心輿情重點診斷艙")
+                st.info(res["news_analysis_report"])
+                
+                if res["news_raw_list"]:
+                    st.markdown("#### 🔍 焦點穿透式消息日誌")
+                    for news in res["news_raw_list"]:
+                        lbl_tag, lbl_color = analyze_news_sentiment(news["title"])
+                        # 使用 HTML 呈現漂亮的新聞條目與連結
+                        st.markdown(f"""
+                        <div style="padding: 10px; margin-bottom: 8px; border-radius: 6px; background-color: #FAFAFA; border-left: 4px solid {lbl_color};">
+                            <span style="font-size:12px; color:gray;">[{news['date'][:16]}] ({news['source']})</span> — <b>{lbl_tag}</b><br>
+                            <a href="{news['link']}" target="_blank" style="text-decoration: none; color: #1E88E5; font-size:14px;">{news['title']} 🔗</a>
+                        </div>
+                        """, unsafe_allow_html=True)
+                # =======================================================
+
                 # 5. 實質籌碼面與季度財報數據面板
                 st.subheader("👥 實質籌碼動能與季度財報體檢 (核心數值)")
                 col_d1, col_d2, col_d3, col_d4 = st.columns(4)
@@ -740,7 +787,6 @@ with tab1:
                 
                 st.success(res["fin_conclusion"])
 
-                # 白話文詳細診斷展開面板
                 with st.expander("🔍 點開查看全因子完整白話文深度診斷報告", expanded=False):
                     c_f, c_i, c_t = st.columns(3)
                     with c_f:
@@ -816,7 +862,6 @@ with tab2:
         progress_bar = st.progress(0)
         status_text = st.empty()
         
-        # 使用 Streamlit Context 綁定執行緒，防止 Session 狀態丟失
         def worker(sid):
             try: return evaluate_stock(sid, total_cap, risk_pct, 1, fetch_news=False)
             except Exception: return None
@@ -867,4 +912,4 @@ with tab2:
             else:
                 st.dataframe(scan_df, use_container_width=True, hide_index=True)
         else:
-            st.error("未能成功讀取任何標的數據，請檢查 FinMind 連線狀態。")
+            st.error("未能成功讀取 any 標的數據，請檢查 FinMind 連線狀態。")
