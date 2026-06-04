@@ -129,7 +129,6 @@ def analyze_news_sentiment(title: str) -> tuple:
         return "🟡 中性消息", "gray"
 
 
-# 💡 [重大修復] 把之前漏掉的即時報價引擎重新編排歸位，徹底消滅 NameError
 def compute_live_price(stock_id: str, hist_last_close: float, live_price_override: float = None):
     if live_price_override is not None and live_price_override > 0:
         return live_price_override, True, "雷達模擬串流", "realtime"
@@ -265,15 +264,16 @@ def get_financial_statement_df(stock_id: str, years: int = 2):
         if df_raw is None or df_raw.empty:
             return pd.DataFrame()
         df = df_raw.copy()
-        targets = ["EPS", "OperatingIncomeGrossProfitRatio", "OperatingIncomeProfitRatio"]
+        
+        # 💡 [修正核心] 改為撈取原始財務金額項目，而非比例名稱
+        targets = ["EPS", "Revenue", "GrossProfit", "OperatingIncome"]
         df = df[df["type"].isin(targets)]
         if df.empty:
             return pd.DataFrame()
         
         df_pivot = df.pivot_table(index="date", columns="type", values="value", aggfunc="last").reset_index()
         
-        core_cols = ["EPS", "OperatingIncomeGrossProfitRatio", "OperatingIncomeProfitRatio"]
-        for col in core_cols:
+        for col in targets:
             if col not in df_pivot.columns:
                 df_pivot[col] = 0.0
             else:
@@ -420,13 +420,13 @@ def evaluate_stock(
     hist_last = df.iloc[-1]
     last_trade_date_str = str(hist_last["date"])
 
-    # 💡 呼叫處對齊，上面已經完全補齊此函數定義
     current_price, rt_success, rt_source, rt_type = compute_live_price(
         stock_id, float(hist_last["close"]), live_price_override=live_price_override
     )
     rt_y_price = float(hist_last["close"])
     m_code, m_desc, m_color = get_market_status_label(rt_success, last_trade_date_str)
 
+    # 籌碼面
     inst_df = get_inst_df(stock_id, days=15)
     inst_3d_sum = 0.0
     if not inst_df.empty and "buy" in inst_df.columns and "sell" in inst_df.columns:
@@ -434,12 +434,14 @@ def evaluate_stock(
         daily_inst = inst_df.groupby("date")["net_sheets"].sum().reset_index()
         inst_3d_sum = float(daily_inst.tail(3)["net_sheets"].sum())
 
+    # 營收基本面
     rev_df = get_rev_df(stock_id, days=120)
     latest_yoy = 0.0
     if not rev_df.empty and "revenue_year_growth_rate" in rev_df.columns:
         rev_sorted = rev_df.sort_values("date")
         latest_yoy = safe_float(rev_sorted.iloc[-1]["revenue_year_growth_rate"])
 
+    # 💡 [全新重構] 財報季報數據底層：利用原始金額，就地即時精算毛利率與營益率
     fin_df = get_financial_statement_df(stock_id, years=2)
     eps_now, eps_prev = 0.0, 0.0
     gpm_now, gpm_prev = 0.0, 0.0
@@ -448,16 +450,25 @@ def evaluate_stock(
     
     if fin_df is not None and not fin_df.empty:
         fin_df = fin_df.sort_values("date").reset_index(drop=True)
+        
+        # 盤中即時換算比例因子 (防呆營收為0)
+        for idx in range(len(fin_df)):
+            rev_amt = safe_float(fin_df.loc[idx, "Revenue"])
+            gp_amt = safe_float(fin_df.loc[idx, "GrossProfit"])
+            op_amt = safe_float(fin_df.loc[idx, "OperatingIncome"])
+            fin_df.loc[idx, "gpm"] = (gp_amt / rev_amt * 100) if rev_amt > 0 else 0.0
+            fin_df.loc[idx, "opm"] = (op_amt / rev_amt * 100) if rev_amt > 0 else 0.0
+
         latest_fin = fin_df.iloc[-1]
         eps_now = safe_float(latest_fin.get("EPS", 0.0))
-        gpm_now = safe_float(latest_fin.get("OperatingIncomeGrossProfitRatio", 0.0))
-        opm_now = safe_float(latest_fin.get("OperatingIncomeProfitRatio", 0.0))
+        gpm_now = safe_float(latest_fin.get("gpm", 0.0))
+        opm_now = safe_float(latest_fin.get("opm", 0.0))
         
         if len(fin_df) >= 2:
             prev_fin = fin_df.iloc[-2]
             eps_prev = safe_float(prev_fin.get("EPS", 0.0))
-            gpm_prev = safe_float(prev_fin.get("OperatingIncomeGrossProfitRatio", 0.0))
-            opm_prev = safe_float(prev_fin.get("OperatingIncomeProfitRatio", 0.0))
+            gpm_prev = safe_float(prev_fin.get("gpm", 0.0))
+            opm_prev = safe_float(prev_fin.get("opm", 0.0))
             
             gpm_text = "進步" if gpm_now > gpm_prev else "退步" if gpm_now < gpm_prev else "持平"
             opm_text = "進步" if opm_now > opm_prev else "退步" if opm_now < opm_prev else "持平"
@@ -471,6 +482,7 @@ def evaluate_stock(
             else:
                 fin_conclusion = f"⚖️ **【橫盤拉鋸調整期！表現與前季互有勝負】** 賺錢能力正處於結構調整期。與上一季相比：毛利率『{gpm_text}』、營業利益率『{opm_text}』、每股 EPS『{eps_lbl}』。本業防守力還在，沒有全面惡化，屬一般良性波動。"
 
+    # 技術面指標數據
     ma20_val = float(hist_last["MA20"])
     atr = float(hist_last["ATR14"]) if not np.isnan(hist_last["ATR14"]) else current_price * 0.03
     t = tick_size(current_price)
@@ -658,11 +670,9 @@ with tab1:
                     else:
                         st.success(f"🚀 當前風報比: **{res['rr1_pb']:.2f}** (🟢 理想低吸點)")
 
-                # 💡 [全新重構] 消息面重組：自動化重點摘要與大腦結論生成
                 st.subheader("📰 盤中即時消息面解讀")
                 news_df = get_realtime_news_df(res['stock_id'], res['stock_name'])
                 if news_df is not None and not news_df.empty:
-                    # 1. 建立量化多空統計摘要
                     num_pos = 0
                     num_neg = 0
                     num_neu = 0
@@ -674,22 +684,19 @@ with tab1:
                         elif s_col == "red": num_neg += 1
                         else: num_neu += 1
                     
-                    # 呈現即時消息重點摘要
                     st.markdown("#### 📋 盤中核心消息重點摘要")
                     st.markdown(f"* ⚡ 雷達偵測到盤中最新 `{len(news_head)}` 則財經媒體要聞，大數據權值分類：🟢 **即時利多 `{num_pos}` 則** | 🔴 **即時利空 `{num_neg}` 則** | 🟡 **中性常規公告 `{num_neu}` 則**。")
                     
-                    # 2. 自動判斷消息面大腦結論
                     st.markdown("#### 🎯 消息面多空綜合操盤結論")
                     if num_pos > num_neg and num_pos >= 2:
                         st.success("🚀 **【偏多訊號】消息面利多頻傳，盤中買盤熱度高！** 大量正面報導容易引發游資及散戶在盤中跟風追價。這種局勢高度有利於配合『突破型策略』進行快市順勢追擊，肉厚汁多！")
                     elif num_neg > num_pos and num_neg >= 2:
-                        st.error("⚠️ **【偏空警告】利空罩頂！提防盤中爆發拋售潮！** 負面關鍵詞密集跳出，市場恐慌情緒正在釀。此時哪怕個股技術線型再漂亮，也要高度提防假突破陷阱，絕對不宜追高，想玩只能克制雙手等回檔！")
+                        st.error("⚠️ **【偏空警告】利空罩頂！提防盤中爆發拋售潮！** 負面關鍵詞密集跳出，市場恐慌情緒正在凝聚。此時哪怕個股技術線型再漂亮，也要高度提防假突破陷阱，絕對不宜追高，想玩只能克制雙手等回檔！")
                     elif num_pos > 0 and num_neg > 0:
                         st.warning("⚖️ **【震盪洗盤】多空消息劇烈拉鋸，市場分歧巨大！** 好壞題材同時交織（例如外資調降評等但營收創新高）。這種狀態極易導致盤中上下甩尾洗盤，操作難度極高，風控必須卡死！")
                     else:
-                        st.info("📋 **【中性平穩】消息面風平浪靜，無重大题材。** 目前均為例行性常規公告。盤中走勢將回歸『技術面（MA20）與籌碼法人進出』的純量化主導，缺乏話題帶動的爆發性動能。")
+                        st.info("📋 **【中性平穩】消息面風平浪靜，無重大題材。** 目前均為例行性常規公告。盤中走勢將回歸『技術面（MA20）與籌碼法人進出』的純量化主導，缺乏話題帶動的爆發性動能。")
                     
-                    # 3. 新聞列表收納（網址全部折疊隱藏，有需要再點開）
                     st.markdown("#### 🔍 即時新聞備查列表（點開看詳情）")
                     for _, row in news_head.iterrows():
                         sentiment_text, sentiment_color = analyze_news_sentiment(row['title'])
