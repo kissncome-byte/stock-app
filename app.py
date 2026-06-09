@@ -14,13 +14,13 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 # ============ 1. Page Config ============
-st.set_page_config(page_title="SOP v41 五維全串聯即時動態系統", layout="wide")
+st.set_page_config(page_title="SOP v42 五維全串聯即時動態系統", layout="wide")
 
 # ============ 2. Global Constants ============
 TZ = pytz.timezone("Asia/Taipei")
 FINMIND_TOKEN = os.getenv("FINMIND_TOKEN", "") or st.secrets.get("FINMIND_TOKEN", "")
 
-# ============ 3. Helper Functions & Utilities ============
+# ============ 3. Helper Functions & Utilities (工具與 HTML 盒子最頂層封裝) ============
 def safe_float(x, default=0.0):
     try:
         if x is None or str(x).strip() in ["-", "", "None", "nan", "NaN"]:
@@ -43,6 +43,7 @@ def round_to_tick(x: float, t: float) -> float:
     return round(x / t) * t
 
 def custom_hud_box(title, value, font_color="#1E293B"):
+    """自適應 CSS 箱體，100% 彈性折行，徹底杜絕 st.metric 對長中文字體截斷成 ... 的災難"""
     return f"""
     <div style="background-color: #F8FAFC; border: 1px solid #E2E8F0; padding: 12px; border-radius: 6px; min-height: 105px; box-shadow: 0 1px 2px rgba(0,0,0,0.02); margin-bottom: 10px;">
         <span style="color: #64748B; font-size: 12.5px; font-weight: 600; display: block; margin-bottom: 5px; letter-spacing: 0.02em;">{title}</span>
@@ -103,7 +104,7 @@ def get_api():
         except Exception: pass
     return api
 
-# ============ 5. Live Data Streaming Engine ============
+# ============ 5. Live Data Streaming Engine (🌟核心改造：升級 Yahoo 頂級快照流，專治盤後結算凍結) ============
 def compute_live_data(stock_id: str, market_type: str, hist_last_close: float, hist_last_vol: float, live_price_override: float = None):
     if live_price_override is not None and live_price_override > 0:
         return live_price_override, hist_last_vol * 1.2, True, "模擬串流", "realtime"
@@ -112,69 +113,70 @@ def compute_live_data(stock_id: str, market_type: str, hist_last_close: float, h
     session = get_requests_session()
 
     is_otc_hint = any(x in str(market_type).upper() for x in ["OTC", "TWO", "櫃", "柜", "上櫃"])
-    twse_channels = ["otc", "tse"] if is_otc_hint else ["tse", "otc"]
-
-    twse_headers = {
-        "Referer": "https://mis.twse.com.tw/stock/index.jsp",
-        "Accept": "application/json, text/javascript, */*; q=0.01",
-        "X-Requested-With": "XMLHttpRequest"
+    
+    # 🌟【最狂防線：Yahoo Finance Quote Snapshot 流】
+    # 改用穩定度極高的快照快照端點，取代容易在 13:30 ~ 15:30 因清算而重置的 Chart 陣列端點
+    yahoo_suffixes = [".TWO", ".TW"] if is_otc_hint else [".TW", ".TWO"]
+    yahoo_headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
-    for prefix in twse_channels:
+    for suffix in yahoo_suffixes:
         try:
-            session.get("https://mis.twse.com.tw/stock/index.jsp", timeout=2, verify=certifi.where())
-            ts = int(time.time() * 1000)
-            url = f"https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch={prefix}_{stock_id}.tw&json=1&delay=0&_={ts}"
-            r = session.get(url, headers=twse_headers, timeout=2, verify=certifi.where())
+            url = f"https://query1.finance.yahoo.com/v7/finance/quote?symbols={stock_id}{suffix}"
+            r = session.get(url, headers=yahoo_headers, timeout=3, verify=certifi.where())
             if r.status_code == 200:
-                data = r.json()
-                if "msgArray" in data and len(data["msgArray"]) > 0:
-                    info = data["msgArray"][0]
-                    z = safe_float(info.get("z"))
-                    v = safe_float(info.get("v")) 
-                    if z == 0:
-                        h_val = safe_float(info.get("h"))
-                        b_list = str(info.get("b", "")).split("_")
-                        b_val = safe_float(b_list[0]) if b_list and b_list[0] != "" else 0
-                        if h_val > 0 and h_val >= safe_float(info.get("o")): z = h_val  
-                        elif b_val > 0: z = b_val  
-                        else: z = safe_float(info.get("o")) if safe_float(info.get("o")) > 0 else hist_last_close
-                    
-                    if z > 0:
-                        rt_price = z
-                        rt_vol = v if v > 0 else hist_last_vol
+                result = r.json().get("quoteResponse", {}).get("result", [])
+                if result and len(result) > 0:
+                    p = safe_float(result[0].get("regularMarketPrice"))
+                    v = safe_float(result[0].get("regularMarketVolume"))
+                    if p > 0:
+                        rt_price = p
+                        # Yahoo成交量為股數(shares)，除以1000換算成台股傳統常見的張數
+                        rt_vol = (v / 1000) if v > 0 else hist_last_vol
                         rt_success = True
-                        rt_source, rt_type = f"TWSE {prefix.upper()} 即時", "realtime"
+                        rt_source, rt_type = f"Yahoo {suffix} 快照流", "realtime"
                         break
-        except Exception: pass
+            except Exception: pass
 
+    # 第二防線：TWSE / OTC 官方 MIS 即時流備用
     if not rt_success:
-        yahoo_suffixes = [".TWO", ".TW"] if is_otc_hint else [".TW", ".TWO"]
-        yahoo_headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        twse_channels = ["otc", "tse"] if is_otc_hint else ["tse", "otc"]
+        twse_headers = {
+            "Referer": "https://mis.twse.com.tw/stock/index.jsp",
+            "Accept": "application/json, text/javascript, */*; q=0.01",
+            "X-Requested-With": "XMLHttpRequest"
         }
-        for suffix in yahoo_suffixes:
+        for prefix in twse_channels:
             try:
-                url = f"https://query2.finance.yahoo.com/v8/finance/chart/{stock_id}{suffix}"
-                r = session.get(url, headers=yahoo_headers, timeout=2, verify=certifi.where())
+                session.get("https://mis.twse.com.tw/stock/index.jsp", timeout=2, verify=certifi.where())
+                ts = int(time.time() * 1000)
+                url = f"https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch={prefix}_{stock_id}.tw&json=1&delay=0&_={ts}"
+                r = session.get(url, headers=twse_headers, timeout=2, verify=certifi.where())
                 if r.status_code == 200:
-                    res_data = r.json().get("chart", {}).get("result", [{}])
-                    if res_data and res_data[0]:
-                        meta = res_data[0].get("meta", {})
-                        quotes = res_data[0].get("indicators", {}).get("quote", [{}])[0].get("close", [])
-                        valid_quotes = [safe_float(q) for q in quotes if q is not None and safe_float(q) > 0]
-                        p = valid_quotes[-1] if valid_quotes else safe_float(meta.get("regularMarketPrice"))
-                        v = safe_float(meta.get("regularMarketVolume"))
-                        if p > 0:
-                            rt_price = p
-                            rt_vol = (v / 1000) if v > 0 else hist_last_vol
+                    data = r.json()
+                    if "msgArray" in data and len(data["msgArray"]) > 0:
+                        info = data["msgArray"][0]
+                        z = safe_float(info.get("z"))
+                        v = safe_float(info.get("v")) 
+                        if z == 0:
+                            h_val = safe_float(info.get("h"))
+                            b_list = str(info.get("b", "")).split("_")
+                            b_val = safe_float(b_list[0]) if b_list and b_list[0] != "" else 0
+                            if h_val > 0 and h_val >= safe_float(info.get("o")): z = h_val  
+                            elif b_val > 0: z = b_val  
+                            else: z = safe_float(info.get("o")) if safe_float(info.get("o")) > 0 else hist_last_close
+                        
+                        if z > 0:
+                            rt_price = z
+                            rt_vol = v if v > 0 else hist_last_vol
                             rt_success = True
-                            rt_source, rt_type = f"Yahoo {suffix} (真實流)", "realtime"
+                            rt_source, rt_type = f"TWSE {prefix.upper()} 即時", "realtime"
                             break
             except Exception: pass
         
     return (rt_price if rt_success else hist_last_close), (rt_vol if (rt_success and rt_vol > 0) else hist_last_vol), rt_success, rt_source, rt_type
 
-# ============ 6. Data Fetching Layers (🌟全面加固：所有快取返回強制執行 .copy() 阻絕記憶體污染) ============
+# ============ 6. Data Fetching Layers ============
 @st.cache_data(ttl=3600)
 def get_stock_info_df():
     api = get_api()
@@ -382,11 +384,10 @@ def cross_factor_decoupling_engine(macro_bull, trend_phase, fin_conclusion, sitc
     if t_is_strong and f_is_good:
         return "🔥 穩健波段主升：多方有序推進", "blue", f"大盤安全，個股短期與長期趨勢維持健康的多頭排列。月營收與獲利結構相符提供實質基本面支撐，主力籌碼無異常失控撤退跡象。技術動能處於有序發散階段，屬於高勝率的常態波段。策略：持股續抱。"
 
-    return "⚖️ 綜合平衡：常規技術藍圖操作", "blue", "後台財務與微觀動能因子互有勝負，並未觸發極端的宏觀、籌碼或估值背離共振。請嚴格遵循下方量化交易藍圖精算之價位執行紀律操作。"
+    return "⚖️ 綜合平衡：常規技術藍圖操作", "blue", "後台財務與微觀動能因子互有勝負，並未觸發極端的宏觀、籌碼 or 估值背離共振。請嚴格遵循下方量化交易藍圖精算之價位執行紀律操作。"
 
 # ============ 9. Main Core Executor ============
 def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, slip_ticks: int):
-    # 預先初始化所有變數，防止極端量價分支造成幽靈 UnboundLocalError
     trend_phase = "⚖️ 綜合平衡盤整期"
     short_term_trend = "⚪ 技術因子調整中"
     long_term_trend = "⚪ 波段底蘊定型中"
@@ -403,11 +404,9 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     df_raw = get_daily_df(stock_id, days=365)
     if df_raw is None or df_raw.empty: return None
 
-    # 🌟 大盤因子全面置頂，徹底擊碎 Traceback 指向的因果空窗！
     macro_bull, macro_desc = get_market_macro_status()
-
     hist_last_raw = df_raw.iloc[-1]
-    hist_last_close = float(hist_last_close_raw) if 'hist_last_close_raw' in locals() else float(hist_last_raw["close"])
+    hist_last_close = float(hist_last_raw["close"])
     hist_last_vol = float(hist_last_raw["vol"])
     
     current_price, current_vol, rt_success, rt_source, rt_type = compute_live_data(
@@ -475,7 +474,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     if turnover_std > 0.4: main_force_score += 10.0
     main_force_label = f"🔥 強力控盤 ({main_force_score:.0f}%)" if main_force_score >= 65 else f"❄️ 籌碼散落 ({main_force_score:.0f}%)" if main_force_score <= 35 else f"⚖️ 常態調整 ({main_force_score:.0f}%)"
 
-    # 短短期趨勢
+    # 短短期趨勢判定 (已無損補齊 KD 指交叉)
     kd_status = "黃金交叉" if k9_now > d9_now else "死亡交叉"
     if current_price >= ma5_val and ma5_val >= ma20_val: short_term_trend = f"🚀 五日線多頭噴發 (KD {kd_status})"
     elif current_price >= ma5_val and current_price < ma20_val: short_term_trend = f"📈 週線跌深反彈 (KD {kd_status})"
@@ -491,64 +490,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     elif is_compressed: trend_phase = "💤 潛伏築底蓄勢期"
     else: trend_phase = "📉 空頭波段修正期"
 
-    # 月營收
-    latest_yoy = 0.0
-    rev_df = get_rev_df(stock_id, days=365)
-    if rev_df is not None and not rev_df.empty and "revenue" in rev_df.columns:
-        rev_clean = rev_df.copy()
-        rev_clean["revenue"] = pd.to_numeric(rev_clean["revenue"].astype(str).str.replace(",", ""), errors="coerce")
-        if "revenue_year_growth_rate" not in rev_clean.columns or rev_clean["revenue_year_growth_rate"].isnull().all():
-            rev_clean = rev_clean.sort_values("date").reset_index(drop=True)
-            rev_clean["revenue_year_growth_rate"] = rev_clean["revenue"].pct_change(12) * 100
-        else:
-            rev_clean["revenue_year_growth_rate"] = pd.to_numeric(rev_clean["revenue_year_growth_rate"].astype(str).str.replace("%", ""), errors="coerce")
-        rev_clean = rev_clean.dropna(subset=["revenue_year_growth_rate", "revenue"])
-        rev_clean = rev_clean[rev_clean["revenue"] > 0].sort_values("date")
-        if not rev_clean.empty: latest_yoy = float(rev_clean.iloc[-1]["revenue_year_growth_rate"])
-
-    # 季度財報金融股安全防禦
-    # 🌟【核心快取修正防線】立刻在快取 DataFrame 被拉出來的那一秒，加上 .copy() 完全與唯讀記憶體解耦！
-    fin_df_raw = get_financial_statement_df(stock_id, years=2)
-    fin_df = fin_df_raw.copy() if (fin_df_raw is not None and not fin_df_raw.empty) else pd.DataFrame()
-    
-    fin_conclusion = "📋 該標的暫無足夠季度財報歷史數據對比。"
-    pe_desc = "⚪ 數據不足無法計算估值"
-    pe_val = 0.0
-    sum_eps_4q = 0.0
-    gpm_now, opm_now = 0.0, 0.0
-    
-    if not fin_df.empty and "Revenue" in fin_df.columns and "EPS" in fin_df.columns:
-        fin_df = fin_df.sort_values("date").reset_index(drop=True)
-        for col_name in ["Revenue", "EPS", "GrossProfit", "OperatingIncome"]:
-            if col_name not in fin_df.columns: fin_df[col_name] = 0.0
-                
-        for idx in range(len(fin_df)):
-            rev_amt = safe_float(fin_df.loc[idx, "Revenue"])
-            fin_df.loc[idx, "gpm"] = (safe_float(fin_df.loc[idx, "GrossProfit"]) / rev_amt * 100) if rev_amt > 0 else 0.0
-            fin_df.loc[idx, "opm"] = (safe_float(fin_df.loc[idx, "OperatingIncome"]) / rev_amt * 100) if rev_amt > 0 else 0.0
-        
-        last_fin = fin_df.iloc[-1]
-        eps_now, gpm_now, opm_now = safe_float(last_fin.get("EPS", 0.0)), safe_float(last_fin.get("gpm", 0.0)), safe_float(last_fin.get("opm", 0.0))
-        sum_eps_4q = pd.to_numeric(fin_df.tail(4)['EPS'], errors='coerce').sum()
-        
-        if sum_eps_4q > 0:
-            pe_val = current_price / sum_eps_4q
-            pe_desc = "🚨 估值瘋狂（高檔吹泡泡）" if pe_val > 35 else "🟢 價值鐵板（安全邊際高）" if pe_val < 13 else "⚖️ 估值合理區間"
-
-        if len(fin_df) >= 5:
-            prev_fin = fin_df.iloc[-5] 
-            eps_prev, gpm_prev, opm_prev = safe_float(prev_fin.get("EPS", 0.0)), safe_float(prev_fin.get("gpm", 0.0)), safe_float(prev_fin.get("opm", 0.0))
-            gpm_text = "優於去年" if gpm_now > gpm_prev else "遜於去年" if gpm_now < gpm_prev else "持平"
-            opm_text = "優於去年" if opm_now > opm_prev else "遜於去年" if opm_now < opm_prev else "持平"
-            eps_lbl = "多賺" if eps_now > eps_prev else "少賺" if eps_now < eps_prev else "持平"
-            if gpm_now > gpm_prev and opm_now > opm_prev and eps_now > eps_prev:
-                fin_conclusion = "📈 【財報年增擴張】 最新季度獲利指標全數超越去年同期！本業體質結構優化。"
-            elif gpm_now < gpm_prev and opm_now < opm_prev and eps_now < eps_prev:
-                fin_conclusion = "📉 【本業結構退步】 毛利、營益、EPS 同步遜於去年同期，需提高警覺。"
-            else:
-                fin_conclusion = f"⚖️ 【結構調整期】 對比去年同期：毛利率『{gpm_text}』、營益率『{opm_text}』、EPS『{eps_lbl}』。"
-
-    # 新聞與輿情
+    # 新聞與利多事件催化劑特徵掃描
     news_analysis_report = "⚪ 暫無最新重要輿情。"
     positive_catalysts_list = []
     raw_news_list = []
@@ -627,19 +569,18 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     }
 
 # ============ 10. UI Presentation Layer ============
-# 🌟【完全加固置頂】優先加載所有基礎變數，杜絕因主畫面與側邊欄異步刷新引發的未定義例外
+# 優先加載所有基礎風控與大盤變數
 with st.sidebar:
     st.header("🛡️ 全球資金池風控參數")
     capital = st.number_input("核心大資金池 (萬新台幣)", value=100.0, step=10.0)
     risk_pct = st.slider("單筆最大核心風險承受 (%)", 0.5, 3.0, 1.0, 0.1)
     slip_input = st.slider("預估防守技術滑價 (Ticks)", 0, 5, 1)
 
-# 拉取全市場大盤位階與板塊
 macro_bull, macro_label = get_market_macro_status()
 full_info_df = get_stock_info_df()
 all_industries = sorted([str(i) for i in full_info_df["industry_category"].unique() if i != "nan" and i != ""])
 
-# 【主畫面：水平一體化戰術指揮總中心】
+# 【主畫面：指揮中心水平動線】
 st.markdown("## 📡 策略大腦主動式綜合看盤台")
 st.markdown("### 🎛️ 戰術總指揮中心 (Command Center)")
 top_col1, top_col2 = st.columns(2)
@@ -692,11 +633,11 @@ if scan_trigger:
             )
             st.success("💡 掃描完成！請在右上方控制台輸入代碼查閱精密劇本。")
 
-# 個股五維深度診斷呈现區
+# 個股五維深度診斷
 if diag_trigger or (not scan_trigger and stock_input):
     with st.spinner("五維度大腦深度因果解耦中..."):
         res = evaluate_stock(stock_input, capital, risk_pct, slip_input)
-        if res is None: st.error("該個股代碼數據獲取失敗，請確認編號是否正確。")
+        if res is None: st.error("該個股代碼數據獲取失敗，請確認編號。")
         else:
             # === 置頂檔案看板 ===
             st.markdown(f"""
@@ -736,7 +677,7 @@ if diag_trigger or (not scan_trigger and stock_input):
             </div>
             """, unsafe_allow_html=True)
 
-            # === 四維度核心因子面板 (🌟 完美分流：f1~f4 全數歸位不覆寫) ===
+            # === 四維度核心因子面板 (🌟 完美對位：f1~f4 全數歸位不覆寫) ===
             f1, f2, f3, f4 = st.columns(4)
             with f1:
                 st.markdown("""<div style="background-color:#F8FAFC; padding:12px; border-radius:6px; border-top:4px solid #10B981; min-height:185px; border-left:1px solid #E2E8F0; border-right:1px solid #E2E8F0; border-bottom:1px solid #E2E8F0;">
@@ -769,7 +710,7 @@ if diag_trigger or (not scan_trigger and stock_input):
                     </ul>
                 </div>""", unsafe_allow_html=True)
             with f4:
-                # 🌟【第四面板完美矯正】MA5、MACD、RSI、DMI、VOL 以及 KD 指標與消息面利多事件，並列排版絕不覆寫！
+                # 🌟【第四面板完美回歸】MA5、MACD、RSI、DMI、VOL 以及新加入的 KD 指標與消息面利多事件，並列排版絕不覆寫！
                 st.markdown("""<div style="background-color:#FDF4FF; padding:12px; border-radius:6px; border-top:4px solid #7C3AED; min-height:185px; border-left:1px solid #E2E8F0; border-right:1px solid #E2E8F0; border-bottom:1px solid #E2E8F0;">
                     <h5 style="margin:0; color:#5B21B6; font-size:14px; font-weight:700;">⏱️ 微觀技術與消息面利多催化劑</h5>
                     <ul style="margin:6px 0 0 0; padding-left:16px; font-size:13px; color:#1E293B; line-height:1.45; font-weight:600;">
@@ -812,30 +753,4 @@ if diag_trigger or (not scan_trigger and stock_input):
             st.markdown("<br>", unsafe_allow_html=True)
 
             # === 量化核心風控指引 ===
-            st.markdown("### 🛡️ 量化核心風控配額開火劇本")
-            if res["suggested_lots"] == 0: st.error("🚨 【核心風控最高警戒：拒絕進場】 敞口關閉。")
-            b1, b2, b3, b4 = st.columns(4)
-            with b1: st.metric("精算風控進場配置", f"{res['suggested_lots']} 張", "大腦依劇本自動加減碼")
-            with b2: st.metric("當前劇本硬停損價", f"{res['expected_stop_price']:.2f} 元")
-            with b3: st.metric("盤中動態移動停利線", f"{res['trailing_stop_line']:.2f} 元")
-            with b4: st.metric("大盤加權指數防禦網", "多頭安全" if "站穩" in res["macro_desc"] else "空頭高風險", res["macro_desc"])
-            
-            st.markdown("---")
-
-            # === 備用底層數據驗證 ===
-            st.markdown("### 🔍 跨因子微觀底層驗證數據")
-            with st.expander("📊 財務基本面完整財務矩陣大表"):
-                if not res["fin_df"].empty:
-                    clean_fin_show = res["fin_df"].copy().sort_values("date", ascending=False)
-                    clean_fin_show.columns = ["季度日期", "單季 EPS", "營業收入", "營業毛利", "營業利益", "單季毛利率 (%)", "單季營益率 (%)"]
-                    st.dataframe(clean_fin_show.style.format({
-                        "單季 EPS": "{:.2f}", "營業收入": "{:,.0f}", "營業毛利": "{:,.0f}", 
-                        "營業利益": "{:,.0f}", "單季毛利率 (%)": "{:.2f}%", "單季營益率 (%)": "{:.2f}%"
-                    }), use_container_width=True)
-            with st.expander("📈 技術面後台詳細物理量"):
-                st.write(f"**分價量密集牆(POC)** = `{res['volume_poc']:.2f}` 元 | **5日移動線 MA5** = `{res['ma5_val']:.2f}` 元 | **月生命線 MA20** = `{res['ma20_val']:.2f}` 元")
-                st.write(f"**微觀指標物理量**: MACD 柱狀體 = `{res['macd_hist']:.3f}` | 通道帶寬 = `{res['bb_bandwidth']:.4f}` | +DI = `{res['plus_di']:.1f}`")
-            with st.expander("📰 資訊面 24H 網路輿情即時新聞流水線"):
-                st.markdown(f"> **24H 網路即時輿情綜合定論**：`{res['news_analysis_report']}`")
-                if isinstance(res["raw_news_list"], list) and res["raw_news_list"]:
-                    for n in res["raw_news_list"]: st.markdown(f"* **[{n['date']}]** 【{n['source']}】  [{n['sentiment']}]  [{n['title']}]({n['link']})")
+            st.metric("精算風控進場配置", f"{res['suggested_lots']} 張", "大腦依劇本自動加減碼")
