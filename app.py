@@ -14,7 +14,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 # ============ 1. Page Config ============
-st.set_page_config(page_title="SOP v28.1 五維全串聯即時動態掃描系統", layout="wide")
+st.set_page_config(page_title="SOP v28.2 五維全串聯即時動態掃描系統", layout="wide")
 
 # ============ 2. Global Constants ============
 TZ = pytz.timezone("Asia/Taipei")
@@ -393,7 +393,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     current_bandwidth = float(hist_last["BB_bandwidth"])
     bb_upper, bb_lower = float(hist_last["BB_upper"]), float(hist_last["BB_lower"])
     
-    # 使用 .get() 防禦型取值，徹底抹殺 KeyError
+    # 【安全防禦防線】防禦型安全取值，防止 KeyError
     rsi_now = safe_float(hist_last.get("RSI14", 50.0))
     adx_now = safe_float(hist_last.get("ADX14", 20.0))
     macd_hist = safe_float(hist_last.get("MACD_HIST", 0.0))
@@ -404,7 +404,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     vol_spike = current_vol > (vol_ma20_val * vol_multiplier)
     is_compressed = current_bandwidth < df["BB_bandwidth"].tail(60).quantile(compress_quantile)
 
-    # 短期動能與長期波段對位定性
+    # 短期與長期波段定性
     if current_price >= ma5_val and ma5_val >= ma20_val:
         short_term_trend = "🚀 五日線多頭噴發 (MA5 > MA20)"
     elif current_price >= ma5_val and current_price < ma20_val:
@@ -445,7 +445,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
         if not rev_clean.empty:
             latest_yoy = float(rev_clean.iloc[-1]["revenue_year_growth_rate"])
 
-    # 季度財報年增與解耦
+    # 季度財報清洗
     fin_df = get_financial_statement_df(stock_id, years=2)
     fin_conclusion = "📋 該標的暫無足夠季度財報歷史數據對比。"
     pe_desc = "⚪ 數據不足無法計算估值"
@@ -496,12 +496,18 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
         if pos_cnt > neg_cnt: news_analysis_report = f"🔥 【輿情偏多】 利多消息主導市場情緒（多 {pos_cnt} 則 / 空 {neg_cnt} 則）。"
         elif neg_cnt > pos_cnt: news_analysis_report = f"🚨 【輿情偏空】 利空雜音浮現（空 {neg_cnt} 則 / 多 {pos_cnt} 則）。"
 
-    # 🌟 【關鍵修正：因果鎖鏈重組】先讓交叉大腦完成判定，取得 final_color
+    # 微觀技術發動定性
+    tech_short = "中性觀望"
+    if current_price >= real_resistance * 0.995 and vol_spike and is_compressed: tech_short = "🚀 準備起漲"
+    elif rsi_now >= (75 if is_heavyweight else 85): tech_short = "⚠️ 短線過熱"
+    elif float(hist_last.get("PLUS_DI", 0.0)) > float(hist_last.get("MINUS_DI", 0.0)): tech_short = "🚀 多頭成形"
+
+    # 🌟 【縱向串聯核心修復】在此處優先運算決策大腦，完成 final_color 的宣告
     final_decision, final_color, final_desc = cross_factor_decoupling_engine(
         macro_bull, trend_phase, fin_conclusion, sitc_trend, margin_trend, tech_short, latest_yoy, pe_desc
     )
 
-    # 🌟 後讓風控藍圖讀取決策結果，進行價位與配額精算（彻底杜絕 UnboundLocalError）
+    # 🌟 隨後進入交易風控與預期開火價格精算，徹底封殺變數未宣告 Bug
     t = tick_size(current_price)
     slip = float(slip_ticks) * t
     
@@ -537,7 +543,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
         "stock_id": stock_id, "stock_name": stock_name, "industry": industry, "current_price": current_price, "current_vol": current_vol,
         "ma5_val": ma5_val, "vol_ma5_val": vol_ma5_val, "ma20_val": ma20_val, "ma60_val": ma60_val, "vol_ma20_val": vol_ma20_val, "real_resistance": real_resistance,
         "bb_upper": bb_upper, "bb_lower": bb_lower, "bb_bandwidth": current_bandwidth, "rsi_now": rsi_now, "adx_now": adx_now,
-        "macd_hist": macd_hist, "plus_di": float(df.iloc[-1].get("PLUS_DI", 0.0)), "minus_di": float(df.iloc[-1].get("MINUS_DI", 0.0)),
+        "macd_hist": macd_hist, "plus_di": float(hist_last.get("PLUS_DI", 0.0)), "minus_di": float(hist_last.get("MINUS_DI", 0.0)),
         "macro_desc": macro_desc, "sitc_trend": sitc_trend, "margin_trend": margin_trend, "sitc_3d_sum": sitc_3d_sum, "margin_diff": margin_diff,
         "latest_yoy": latest_yoy, "pe_val": pe_val, "pe_desc": pe_desc, "eps_4q": sum_eps_4q, "fin_conclusion": fin_conclusion,
         "gpm_now": gpm_now, "opm_now": opm_now, "is_compressed": is_compressed, "vol_spike": vol_spike,
@@ -634,7 +640,7 @@ if stock_input:
             </div>
             """, unsafe_allow_html=True)
 
-            # === 前端 HUD 抬頭顯示牆（100% 自適應彈性排版，絕對不漏字） ===
+            # === 前端 HUD 抬頭顯示牆 ===
             c1, c2, c3, c4 = st.columns(4)
             with c1: 
                 st.markdown(custom_hud_box("💡 當前即時市價", f"<span style='font-size:20px; color:#0F172A;'>{res['current_price']:.2f} 元</span><br><small style='color:#64748B; font-weight:500;'>盤中即時量: {res['current_vol']:.0f} 張</small>"), unsafe_allow_html=True)
@@ -655,7 +661,7 @@ if stock_input:
             </div>
             """, unsafe_allow_html=True)
 
-            # === 四維度核心因子曝光面板 ===
+            # === 四維度核心因子面板 ===
             st.markdown("### 🏛️ 四維度因子核心動態曝光面板")
             f1, f2, f3, f4 = st.columns(4)
             
