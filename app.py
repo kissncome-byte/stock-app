@@ -255,7 +255,7 @@ def prepare_indicator_df(df: pd.DataFrame):
     x["ATR14"] = x["TR"].ewm(com=13, adjust=False).mean()
     x["MA20"] = x["close"].rolling(20).mean()
     
-    # ======= 【升級點】：引入 60日大波段生命線（季線） =======
+    # 引入 60日大波段生命線（季線）
     x["MA60"] = x["close"].rolling(60).mean()
     
     x["MA20_Vol"] = x["vol"].rolling(20).mean()
@@ -288,7 +288,6 @@ def prepare_indicator_df(df: pd.DataFrame):
     x["MACD_SIGNAL"] = x["MACD_DIF"].ewm(span=9, adjust=False).mean()
     x["MACD_HIST"] = x["MACD_DIF"] - x["MACD_SIGNAL"]
 
-    # 確保歷史數據排除了季線尚未生成的死水區
     return x.dropna(subset=["ATR14", "MA20", "MA60", "Res_20D", "BB_bandwidth", "RSI14", "ADX14", "MACD_HIST"]).copy()
 
 def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, slip_ticks: int, fetch_news: bool = True):
@@ -367,9 +366,9 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     bandwidth_60d = df["BB_bandwidth"].tail(60)
     is_compressed = current_bandwidth < bandwidth_60d.quantile(compress_quantile) if not bandwidth_60d.empty else False
 
-    # ======= 【核心升級】：5 日大波段均線斜率與架構定性分析（解決反覆橫跳） =======
-    ma20_trend_5d = "上升" if (df["MA20"].iloc[-1] > df["MA20"].iloc[-5]) if len(df) >= 5 else "平盤"
-    ma60_trend_5d = "上升" if (df["MA60"].iloc[-1] > df["MA60"].iloc[-5]) if len(df) >= 5 else "平盤"
+    # ======= 【語法 Bug 修復點】：將嵌套條件表達式修正為標準的 And 運算子 =======
+    ma20_trend_5d = "上升" if (len(df) >= 5 and df["MA20"].iloc[-1] > df["MA20"].iloc[-5]) else "平盤"
+    ma60_trend_5d = "上升" if (len(df) >= 5 and df["MA60"].iloc[-1] > df["MA60"].iloc[-5]) else "平盤"
     
     if current_price >= ma20_val and ma20_val >= ma60_val and ma20_trend_5d == "上升":
         trend_phase = "🔥 波段多頭主升段"
@@ -500,7 +499,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
         tech_conclusion_long = f"🚀 **【完美風暴！爆發起漲點】** 盤中強勢挑戰前高壓力（{real_resistance:.2f} 元），且**爆發主力攻擊量**！通道歷經充分盤整洗盤。"
     elif adx_now < 20:
         tech_conclusion_short = "💤 盤整死水"
-        tech_conclusion_long = "💤 **【盤整死水期】** ADX趨向極低，多空沒有方向，容易橫盤磨人，突破策略失敗率高。"
+        tech_conclusion_long = "💤 **【盤整死水期】** ADX趨向極低，多空沒有方向，容易橫盤磨人，突破突破策略失敗率高。"
     elif rsi_now >= rsi_overbought_tmsh:
         tech_conclusion_short = "⚠️ 短線過熱"
         tech_conclusion_long = f"⚠️ **【短線極度過熱】** RSI 進入超買警戒區（{rsi_now:.1f}），追高性價比低，高機率出現高檔修正。"
@@ -560,13 +559,13 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
 
     total_score = f_score + i_score + t_score
     
-    # ======= 【核心優化】：核心投資決策與宏觀波段架構深度錨定（拒絕天天變號） =======
+    # 核心投資決策與宏觀波段架構深度錨定
     if is_turnaround_dark_horse: 
         invest_status, status_color, status_emoji = "🔮 特戰訊號：轉折爆發黑馬股", "purple", "🔮"
     elif trend_phase == "🔥 波段多頭主升段":
         if total_score >= 65: invest_status, status_color, status_emoji = "🔥 波段主升：砸大資金極品點", "green", "🚀"
         else: invest_status, status_color, status_emoji = "🟢 多頭波段：持股續抱/分批布局", "blue", "⚖️"
-    elif trend_phase == "🛡️ 多頭架構拉回洗盤期":
+    elif trend_phase == "🛡️ 多頭架逐拉回洗盤期":
         if inst_3d_sum > 0 and current_price >= ma60_val * 0.98:
             invest_status, status_color, status_emoji = "🛡️ 強盾守備：季線守護低吸點", "blue", "🛡️"
         else:
@@ -697,7 +696,7 @@ with tab1:
                 if res["invest_status"] == "🔮 特戰訊號：轉折爆發黑馬股":
                     st.balloons()
                 
-                # ======= 【新增 UI 區塊】：大波段架構趨勢追蹤艙（解決天天變號的錨點） =======
+                # 大波段架構趨勢追蹤艙
                 st.markdown(f"### 📈 大波段架構趨勢追蹤艙 ——— `{res['trend_badge']}`")
                 st.help(f"**【當前宏觀趨勢定性】**：{res['trend_phase']} \n\n {res['trend_desc']}")
                 
@@ -813,7 +812,7 @@ with tab1:
                 elif res['rsi_now'] > (75 if res['is_heavyweight'] else 85):
                     reasons.append(f"**短期核心指標過熱**：RSI 達 {res['rsi_now']:.1f}，短線乖離過大，此處追高容易洗盤。")
                 elif "空頭" in res['tech_conclusion_short'] or "死水" in res['tech_conclusion_short']:
-                    reasons.append(f"**趨勢疲弱缺乏催化劑**：線型偏空或陷入無量死水，資金留在手中更安全。")
+                    reasons.append(f"**趨勢疲弱缺乏催化劑**：線型偏空或陷入無量死水，資金留在手中更安全的選擇。")
 
                 if "利空" in res['news_summary']:
                     reasons.append(f"**輿情逆風侵襲**：市場近期雜音偏多，需提防恐慌性的多殺多出貨。")
