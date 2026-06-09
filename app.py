@@ -234,7 +234,6 @@ def get_taiwan_enhanced_chips(stock_id: str, days: int = 30):
     except Exception: pass
     return sitc_trend, margin_trend, sitc_3d_sum, margin_diff
 
-# 🌟【已修正】：將天數從 365 天拉長到 730 天，給予大腦 24 個月的營收時間縱深，徹底修復 YoY 計算失效變為 0.0% 的問題。
 @st.cache_data(ttl=900)
 def get_rev_df(stock_id: str, days: int = 730):
     api = get_api()
@@ -340,7 +339,6 @@ def prepare_indicator_df(df: pd.DataFrame):
     x["K9"] = k_list
     x["D9"] = d_list
 
-    # 🌟【已新增】：微觀 K 線型態賣壓指標（爆量長上影線冤魂牆）
     if "open" in x.columns:
         x["upper_shadow"] = x["high"] - np.maximum(x["open"], x["close"])
         x["k_body"] = (x["open"] - x["close"]).abs()
@@ -352,7 +350,6 @@ def prepare_indicator_df(df: pd.DataFrame):
     return x.dropna(subset=["ATR14", "MA5", "MA20", "MA60", "Res_20D", "BB_bandwidth", "RSI14", "MACD_HIST", "K9", "D9"]).copy()
 
 # ============ 8. 五維度因果縱向串聯決策大腦 ============
-# 🌟【已修正】：增加兩大極端賣壓濾網參數 (k_shadow_trap, is_broker_dumping_risk) 進行縱向因果解耦
 def cross_factor_decoupling_engine(macro_bull, trend_phase, fin_conclusion, sitc_trend, margin_trend, tech_short, latest_yoy, pe_desc, current_price, volume_poc, k_shadow_trap, is_broker_dumping_risk):
     f_is_good = "【財報年增擴張】" in fin_conclusion or latest_yoy >= 20
     f_is_bad = "【本業結構退步】" in fin_conclusion and latest_yoy < 5
@@ -362,11 +359,9 @@ def cross_factor_decoupling_engine(macro_bull, trend_phase, fin_conclusion, sitc
     
     is_under_poc_wall = current_price < volume_poc and (volume_poc - current_price) / current_price <= 0.03
 
-    # 🌟【已新增】：爆量長上影線賣壓 戰略一票否決
     if k_shadow_trap:
         return "❌ 爆量長上影：冤魂套牢牆頂天", "red", "警告！該股當前觸發『爆量長上影線』極端賣壓。 K 線顯示盤中衝高時有海量大戶資金瘋狂倒貨，導致留下一大條上影線，所有盤中追價者集體重傷。這屬於強烈的反轉或主力趁熱度出貨訊號，上方套牢賣壓極其沉重，大腦無條件一票否決，嚴禁進場當替死鬼！"
 
-    # 🌟【已新增】：潛在隔日沖與高額當沖踩踏 戰略一票否決
     if is_broker_dumping_risk:
         return "🚨 惡性金流陷阱：隔日沖與當沖大踩踏", "red", "極度危險！行為學特徵偵測顯示此為標準的『主力拉高倒貨劇本』：早盤利用利多消息強勢開極高，誘騙散戶進場後不計代價瘋狂下殺，終場收在低檔且爆出歷史級巨量。此金流特徵極高機率為隔日沖大戶集體集體套現拋售，或當沖客踩踏現場，明日開盤必有續跌拋壓。強制關閉開火權！"
 
@@ -496,7 +491,6 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     elif is_compressed: trend_phase = "💤 潛伏築底蓄勢期"
     else: trend_phase = "📉 空頭波段修正期"
 
-    # 🌟【已修正】：此處的 get_rev_df 呼叫同步改為 730 天，讓 Pandas 手算 YoY 的 pct_change(12) 獲得足夠的歷史資料，成功算回最新營收 YoY 數據。
     latest_yoy = 0.0
     rev_df = get_rev_df(stock_id, days=730)
     if rev_df is not None and not rev_df.empty and "revenue" in rev_df.columns:
@@ -571,7 +565,6 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     if positive_catalysts_list:
         recent_catalyst_summary = "<b>🎯 關鍵消息面利多題材：</b><br>" + "<br>".join([f"• {t}" for t in positive_catalysts_list[:2]])
 
-    # 🌟【已新增】：微觀雙重核心極端賣壓動態精算
     k_shadow_trap = bool(hist_last.get("is_long_upper_shadow", False)) and vol_spike
 
     open_p = safe_float(hist_last.get("open"))
@@ -587,7 +580,6 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
 
     tech_short_status = "🚀 準備起漲" if (current_price >= real_resistance * 0.99 and vol_spike) else "🚀 多頭成形" if (rsi_now > 55 or k9_now > d9_now) else "中性觀望"
     
-    # 將全新的極端賣壓變數送進決策大腦
     final_decision, final_color, final_desc = cross_factor_decoupling_engine(
         macro_bull, trend_phase, fin_conclusion, sitc_trend, margin_trend, tech_short_status, latest_yoy, pe_desc, current_price, volume_poc, k_shadow_trap, is_broker_dumping_risk
     )
@@ -811,7 +803,14 @@ if diag_trigger or (not scan_trigger and stock_input):
 
             st.markdown("<br>", unsafe_allow_html=True)
             st.markdown("### 🛡️ 量化核心風控配額開火劇本")
-            if res["suggested_lots"] == 0: st.error("🚨 【核心風控最高警戒：拒絕進場】 敞口關閉。")
+            
+            # 🌟【解耦修復核心】：分離「大腦策略拒絕」與「小資金配額不足 1 張」的 UI 警告邏輯
+            if res["suggested_lots"] == 0:
+                if res["final_color"] == "red":
+                    st.error("🚨 【核心風控最高警戒：大腦策略拒絕進場】 標的或大盤觸發致命賣壓/空頭共振，敞口強制關閉！")
+                else:
+                    st.warning("⚠️ 【風控提示：資金配額不足 1 張】 當前標的趨勢極度健康！但因你的『核心大資金池』較小或『風險承受％』設得太嚴格，導致容許虧損金額小於單張股票的停損價差。系統為保護帳戶不給予強行開火建議。請至側邊欄調高資金池或放寬風險％數。")
+            
             b1, b2, b3, b4 = st.columns(4)
             with b1: st.metric("精算風控進場配置", f"{res['suggested_lots']} 張", "大腦依劇本自動加減碼")
             with b2: st.metric("當前劇本硬停損價", f"{res['expected_stop_price']:.2f} 元")
