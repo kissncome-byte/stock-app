@@ -344,7 +344,6 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     recent_amount_ma = df["amount"].tail(20).mean()
     is_heavyweight = recent_amount_ma > 2000000000  
     
-    # ======= 【結構調整】：因應停利升級，將基礎波動係數移至趨勢判定後動態增幅 =======
     if is_heavyweight: vol_multiplier, compress_quantile = 1.25, 0.35
     else: vol_multiplier, compress_quantile = 2.2, 0.18    
 
@@ -491,7 +490,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
                 news_summary, news_color = "🟡 多空平衡", "gray"
                 news_analysis_report = f"⚖️ **【輿情中性】** 多空雜音交錯（多 {pos_cnt} 則、空 {neg_cnt} 則），回歸基本面拉鋸。"
 
-    # 交叉過濾核心：將微觀動能指標結合大波段環境進行多空解耦
+    # 微觀動能短期定論
     tech_conclusion_short = "中性觀望"
     tech_conclusion_long = "⚖️ 擺動指標目前處於中性橫盤區，大資金尚未表態，短線缺乏爆發性動能。"
     rsi_overbought_tmsh = 75 if is_heavyweight else 85
@@ -551,7 +550,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     if has_financial_data:
         if gpm_now > gpm_prev and opm_now > opm_prev: f_score += 20; diag_fundamentals.append("🟢 **獲利年增（雙率雙升）**：毛利率與營益率皆超越去年同期，轉嫁成本能力一流。")
         elif gpm_now < gpm_prev and opm_now < opm_prev: diag_fundamentals.append("🔴 **獲利衰退（雙率雙降）**：毛利率與營益率雙雙低於去年同期，本業面臨逆風！")
-        else: f_score += 10; diag_fundamentals.append("⚖️ **獲利結構調整**：毛利與營益對比去年互有勝負，本業防守力一般。")
+        else: f_score += 10; diag_fundamentals.append("⚖️ **獲利結構調整**：毛利與營益對比去年互有勝負，本業防守力一般. ")
     else: diag_fundamentals.append("⚪ **季度財報不適用**：暫無季度獲利歷史年增對比數據。")
 
     if inst_3d_sum > 800: i_score += 30; diag_chips.append(f"🟢 **法人強勢抬轎**：近3日法人集體灌入 {inst_3d_sum:.0f} 張，籌碼結構快速沉澱。")
@@ -565,9 +564,11 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
 
     total_score = f_score + i_score + t_score
     
-    # 核心投資決策與宏觀波段架構深度錨定
+    # ======= 【核心修復點】：將短線危險異象（假突破嫌疑）升級為一票否決權，完全同步決策艙 =======
     if is_turnaround_dark_horse: 
         invest_status, status_color, status_emoji = "🔮 特戰訊號：轉折爆發黑馬股", "purple", "🔮"
+    elif tech_conclusion_short == "⚠️ 假突破嫌疑":
+        invest_status, status_color, status_emoji = "🚨 誘多危機：提防假突破陷阱", "red", "🚨"
     elif trend_phase == "🔥 波段多頭主升段":
         if total_score >= 65: invest_status, status_color, status_emoji = "🔥 波段主升：砸大資金極品點", "green", "🚀"
         else: invest_status, status_color, status_emoji = "🟢 多頭波段：持股續抱/分批布局", "blue", "⚖️"
@@ -584,8 +585,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     else:
         invest_status, status_color, status_emoji = "❌ 空頭修正：結構破壞嚴格避開", "red", "🚨"
 
-    # ============ 5. 【動態精算修正艙】：交易藍圖結合趨勢定性全面升級 ============
-    # ======= 【升級 1】：依據波段架構與 ADX 強度，動態拓寬突破停利天花板，解放風報比 =======
+    # ============ 5. 交易藍圖精算與資金池配額風控保護 ============
     if is_heavyweight:
         target_atr_ratio = 4.0 if (trend_phase == "🔥 波段多頭主升段" and adx_now >= 22) else 3.2
     else:
@@ -596,7 +596,6 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     if stop_brk >= current_price: stop_brk = round_to_tick(current_price - (1.0 * atr), t)
     rr1_brk = (target_brk - current_price) / (current_price - stop_brk) if (current_price - stop_brk) > 0 else 0
 
-    # ======= 【升級 2】：主升段的拉回策略利潤目標拒絕井底之蛙，自動往上延伸 1 個 ATR 空間 =======
     if trend_phase == "🔥 波段多頭主升段":
         target_pb = round_to_tick(real_resistance + (1.0 * atr), t)
     else:
@@ -726,7 +725,16 @@ with tab1:
                 matrix_col4.markdown(f"**4. 📈 技術面時機**\n\n{t_light}")
 
                 # 下層一針見血矛盾定論
-                if res['status_color'] == "red" and res['rr1_brk'] >= 1.5:
+                if res['status_color'] == "red" and res['tech_conclusion_short'] == "⚠️ 假突破嫌疑":
+                    st.markdown(f"""
+                    <div style="background-color:#FFEBEE; padding:15px; border-radius:8px; border-left:5px solid #F44336; margin-top:10px; margin-bottom:15px;">
+                        <span style="color:#B71C1C; font-weight:bold; font-size:16px;">🚨 【操盤手一針見血定論：危險！指標完美背離，這是誘多陷阱！】</span><br>
+                        <span style="color:#B71C1C; font-size:14px;">
+                            雖然K線走勢呈現強勢突破，但計算顯示<b>三大法人正在趁拉高偷偷大量倒貨</b>（近3日籌碼外逃）。此時的突破極大概率是主力製造的<b>假突破誘多陷阱</b>。風報比計算再漂亮也絕不進場，空手者請直接放棄。
+                        </span>
+                    </div>
+                    """, unsafe_allow_html=True)
+                elif res['status_color'] == "red" and res['rr1_brk'] >= 1.5:
                     st.markdown(f"""
                     <div style="background-color:#FFEBEE; padding:15px; border-radius:8px; border-left:5px solid #F44336; margin-top:10px; margin-bottom:15px;">
                         <span style="color:#B71C1C; font-weight:bold; font-size:16px;">🚨 【操盤手一針見血定論：空間極美，但勝率極低！】</span><br>
@@ -830,7 +838,10 @@ with tab1:
                 else:
                     reasons.append(f"**籌碼動向處於觀望**：法人無明顯單邊動作，多空交由內資與散戶情緒主導。")
                     
-                if "主升" in res['invest_status'] or "多頭波段" in res['invest_status']:
+                # ======= 【修復點】：收集考量因子時，優先置入「假突破」的核心危機宣告 =======
+                if res['tech_conclusion_short'] == "⚠️ 假突破嫌疑":
+                    reasons.append("⚠️ **致命核心危機（假突破）**：技術K線雖然表現強勁，但這幾天主力法人卻趁拉高大舉倒貨。技術面與籌碼面出現極端死亡背離，屬於典型的誘多陷阱。")
+                elif "主升" in res['invest_status'] or "多頭波段" in res['invest_status']:
                     reasons.append(f"**宏觀趨勢保駕護航**：本股正處於大級別多頭主升架構（月線高於季線），單日技術面冷卻不影響核心看多中長線。")
                 elif res['rsi_now'] > (75 if res['is_heavyweight'] else 85):
                     reasons.append(f"**短期核心指標過熱**：RSI 達 {res['rsi_now']:.1f}，短線乖離過大，此處追高容易洗盤。")
@@ -846,8 +857,11 @@ with tab1:
                     else:
                         reasons.append(f"**幾何利潤空間受限**：雖趨勢偏多，脫離主升段或距壓力位太近，風報比不具高性價比。")
 
+                # ======= 【修復點】：將假突破危機完全綁定進具體行動建議中 =======
                 action_advice = ""
-                if res['status_color'] == 'green' or res['status_color'] == 'purple':
+                if res['status_color'] == 'red' or res['tech_conclusion_short'] == "⚠️ 假突破嫌疑":
+                    action_advice = "🚨 **絕對放棄開火 / 空手者嚴禁進場**：籌碼面大人正在反向倒貨，此處進場極高概率淪為主力倒貨的接刀散戶。請把資金留在手中，或使用 Tab 2 的雷達尋找其他真正「主力真金白銀抬轎」的安全黃金個股。"
+                elif res['status_color'] == 'green' or res['status_color'] == 'purple':
                     if res['brk_tradeable'] or res['pb_tradeable']:
                         action_advice = "🟢 **建議堅決執行布局**：所有核心權重因子完美共振！請對照下方『精算交易藍圖』，依照系統建議的風控張數分批或直接進場，嚴設停損。"
                     else:
@@ -884,24 +898,26 @@ with tab1:
                     st.markdown(f"* **建議突破進場點：** `{res['current_price']}` 元")
                     st.markdown(f"* **預估停利目標價：** `{res['target_brk']}` 元")
                     st.markdown(f"* **防守撤退停損點：** `{res['stop_brk']}` 元")
-                    if res['status_color'] == "red":
-                        st.markdown(f"* **💡 系統建議購買張數：** <span style='color:gray; font-size:18px; font-weight:bold;'>0</span> 張 (結構崩壞，強制關閉策略)", unsafe_allow_html=True)
+                    if res['status_color'] == "red" or res['tech_conclusion_short'] == "⚠️ 假突破嫌疑":
+                        st.markdown(f"* **💡 系統建議購買張數：** <span style='color:gray; font-size:18px; font-weight:bold;'>0</span> 張 (結構破壞或面臨誘多風險，強制關閉策略)", unsafe_allow_html=True)
                     else:
                         st.markdown(f"* **💡 系統建議購買張數：** <span style='color:red; font-size:18px; font-weight:bold;'>{res['suggested_lots_brk']}</span> 張", unsafe_allow_html=True)
                     
-                    if res['rr1_brk'] < 1.5: st.error(f"❌ 當前風報比: {res['rr1_brk']:.2f} (空間不足，不符期望值)")
+                    if res['status_color'] == "red": st.error("❌ 最終判定：結構危險，策略關閉")
+                    elif res['rr1_brk'] < 1.5: st.error(f"❌ 當前風報比: {res['rr1_brk']:.2f} (空間不足，不符期望值)")
                     else: st.success(f"🚀 當前風報比: {res['rr1_brk']:.2f} (🟢 符合進攻點幾何期望值)")
                 with box_pb:
                     st.markdown("### 🛡️ 【均線拉回低吸策略】藍圖")
                     st.markdown(f"* **理想低吸買入點：** `{res['current_price']}` 元")
                     st.markdown(f"* **短線預期停利價：** `{res['target_pb']}` 元")
                     st.markdown(f"* **破位防守停損點：** `{res['stop_pb']}` 元")
-                    if res['status_color'] == "red":
-                        st.markdown(f"* **💡 系統建議購買張數：** <span style='color:gray; font-size:18px; font-weight:bold;'>0</span> 張 (結構崩壞，強制關閉策略)", unsafe_allow_html=True)
+                    if res['status_color'] == "red" or res['tech_conclusion_short'] == "⚠️ 假突破嫌疑":
+                        st.markdown(f"* **💡 系統建議購買張數：** <span style='color:gray; font-size:18px; font-weight:bold;'>0</span> 張 (結構破壞或面臨誘多風險，強制關閉策略)", unsafe_allow_html=True)
                     else:
                         st.markdown(f"* **💡 系統建議購買張數：** <span style='color:green; font-size:18px; font-weight:bold;'>{res['suggested_lots_pb']}</span> 張", unsafe_allow_html=True)
                     
-                    if res['rr1_pb'] < 2.0: st.error(f"❌ 當前風報比: {res['rr1_pb']:.2f} (拉回防守利潤空間過窄)")
+                    if res['status_color'] == "red": st.error("❌ 最終判定：結構危險，策略關閉")
+                    elif res['rr1_pb'] < 2.0: st.error(f"❌ 當前風報比: {res['rr1_pb']:.2f} (拉回防守利潤空間過窄)")
                     else: st.success(f"🚀 當前風報比: {res['rr1_pb']:.2f} (🟢 理想低吸高性價比點位)")
 
                 st.subheader("📊 盤中核心量化基礎指標")
