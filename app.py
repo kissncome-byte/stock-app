@@ -14,13 +14,13 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 # ============ 1. Page Config ============
-st.set_page_config(page_title="SOP v40 五維全串聯即時動態系統", layout="wide")
+st.set_page_config(page_title="SOP v41 五維全串聯即時動態系統", layout="wide")
 
 # ============ 2. Global Constants ============
 TZ = pytz.timezone("Asia/Taipei")
 FINMIND_TOKEN = os.getenv("FINMIND_TOKEN", "") or st.secrets.get("FINMIND_TOKEN", "")
 
-# ============ 3. Helper Functions & Utilities (工具與 HTML 盒子最頂層封裝) ============
+# ============ 3. Helper Functions & Utilities ============
 def safe_float(x, default=0.0):
     try:
         if x is None or str(x).strip() in ["-", "", "None", "nan", "NaN"]:
@@ -43,7 +43,6 @@ def round_to_tick(x: float, t: float) -> float:
     return round(x / t) * t
 
 def custom_hud_box(title, value, font_color="#1E293B"):
-    """自適應 CSS 箱體，100% 彈性折行，徹底杜絕 st.metric 對長中文字體截斷成 ... 的災難"""
     return f"""
     <div style="background-color: #F8FAFC; border: 1px solid #E2E8F0; padding: 12px; border-radius: 6px; min-height: 105px; box-shadow: 0 1px 2px rgba(0,0,0,0.02); margin-bottom: 10px;">
         <span style="color: #64748B; font-size: 12.5px; font-weight: 600; display: block; margin-bottom: 5px; letter-spacing: 0.02em;">{title}</span>
@@ -175,7 +174,7 @@ def compute_live_data(stock_id: str, market_type: str, hist_last_close: float, h
         
     return (rt_price if rt_success else hist_last_close), (rt_vol if (rt_success and rt_vol > 0) else hist_last_vol), rt_success, rt_source, rt_type
 
-# ============ 6. Data Fetching Layers ============
+# ============ 6. Data Fetching Layers (🌟全面加固：所有快取返回強制執行 .copy() 阻絕記憶體污染) ============
 @st.cache_data(ttl=3600)
 def get_stock_info_df():
     api = get_api()
@@ -185,7 +184,7 @@ def get_stock_info_df():
     df.columns = [c.strip() for c in df.columns]
     df["stock_id"] = df["stock_id"].astype(str).str.strip()
     df["industry_category"] = df["industry_category"].astype(str).str.strip()
-    return df
+    return df.copy()
 
 @st.cache_data(ttl=900)
 def get_daily_df(stock_id: str, days: int = 365):
@@ -245,7 +244,23 @@ def get_taiwan_enhanced_chips(stock_id: str, days: int = 30):
 @st.cache_data(ttl=900)
 def get_rev_df(stock_id: str, days: int = 365):
     api = get_api()
-    return api.taiwan_stock_month_revenue(stock_id=stock_id, start_date=(datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d"))
+    df = api.taiwan_stock_month_revenue(stock_id=stock_id, start_date=(datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d"))
+    return df.copy() if df is not None else None
+
+@st.cache_data(ttl=86400)
+def get_financial_statement_df(stock_id: str, years: int = 2):
+    api = get_api()
+    start_date = (datetime.now() - timedelta(days=years * 365)).strftime("%Y-%m-%d")
+    try:
+        df_raw = api.taiwan_stock_financial_statement(stock_id=stock_id, start_date=start_date)
+        if df_raw is None or df_raw.empty: return pd.DataFrame()
+        df = df_raw.copy()
+        targets = ["EPS", "Revenue", "GrossProfit", "OperatingIncome"]
+        df = df[df["type"].isin(targets)]
+        if df.empty: return pd.DataFrame()
+        df_pivot = df.pivot_table(index="date", columns="type", values="value", aggfunc="last").reset_index()
+        return df_pivot.copy()
+    except Exception: return pd.DataFrame()
 
 @st.cache_data(ttl=300)
 def get_realtime_news_df(stock_id: str, stock_name: str):
@@ -269,7 +284,7 @@ def get_realtime_news_df(stock_id: str, stock_name: str):
                 df = pd.DataFrame(news_list)
                 df["parsed_date"] = pd.to_datetime(df["date"], errors="coerce", utc=True).dt.tz_convert('Asia/Taipei')
                 df["date"] = df["parsed_date"].dt.strftime('%Y-%m-%d %H:%M')
-                return df.sort_values(by="parsed_date", ascending=False).drop(columns=["parsed_date"])
+                return df.sort_values(by="parsed_date", ascending=False).drop(columns=["parsed_date"]).copy()
     except Exception: pass
     return pd.DataFrame(columns=["date", "title", "source", "link"])
 
@@ -282,7 +297,6 @@ def prepare_indicator_df(df: pd.DataFrame):
     x["TR"] = np.maximum(x["high"] - x["low"], np.maximum((x["high"] - close_prev).abs(), (x["low"] - close_prev).abs()))
     x["ATR14"] = x["TR"].ewm(com=13, adjust=False).mean()
     
-    # 均線（MA）與成交量（VOL）
     x["MA5"] = x["close"].rolling(5).mean()
     x["MA5_Vol"] = x["vol"].rolling(5).mean()
     x["MA20"] = x["close"].rolling(20).mean()
@@ -295,13 +309,11 @@ def prepare_indicator_df(df: pd.DataFrame):
     x["BB_lower"] = x["MA20"] - (x["std20"] * 2)
     x["BB_bandwidth"] = (x["BB_upper"] - x["BB_lower"]) / x["MA20"]
 
-    # 擺動強弱（RSI）
     delta = x["close"].diff()
     avg_gain = delta.clip(lower=0).ewm(com=13, adjust=False).mean()
     avg_loss = -delta.clip(upper=0).ewm(com=13, adjust=False).mean().replace(0, 0.00001)
     x["RSI14"] = 100 - (100 / (1 + (avg_gain / avg_loss)))
 
-    # 趨勢動能（DMI）
     x["up_move"] = x["high"].diff()
     x["down_move"] = x["low"].shift(1) - x["low"]
     x["plus_dm"] = np.where((x["up_move"] > x["down_move"]) & (x["up_move"] > 0), x["up_move"], 0)
@@ -311,14 +323,12 @@ def prepare_indicator_df(df: pd.DataFrame):
     x["MINUS_DI"] = (x["minus_dm"].ewm(com=13, adjust=False).mean() / tr_smooth) * 100
     x["ADX14"] = ((x["PLUS_DI"] - x["MINUS_DI"]).abs() / (x["PLUS_DI"] + x["MINUS_DI"]).replace(0, 0.00001) * 100).ewm(com=13, adjust=False).mean()
 
-    # 指數平滑（MACD）
     x["EMA12"] = x["close"].ewm(span=12, adjust=False).mean()
     x["EMA26"] = x["close"].ewm(span=26, adjust=False).mean()
     x["MACD_DIF"] = x["EMA12"] - x["EMA26"]
     x["MACD_SIGNAL"] = x["MACD_DIF"].ewm(span=9, adjust=False).mean()
     x["MACD_HIST"] = x["MACD_DIF"] - x["MACD_SIGNAL"]
 
-    # 隨機擺動指標 KD
     low_min = x["low"].rolling(9).min()
     high_max = x["high"].rolling(9).max()
     x["RSV"] = 100 * ((x["close"] - low_min) / (high_max - low_min).replace(0, 0.00001))
@@ -376,7 +386,7 @@ def cross_factor_decoupling_engine(macro_bull, trend_phase, fin_conclusion, sitc
 
 # ============ 9. Main Core Executor ============
 def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, slip_ticks: int):
-    # 變數自適應初始化
+    # 預先初始化所有變數，防止極端量價分支造成幽靈 UnboundLocalError
     trend_phase = "⚖️ 綜合平衡盤整期"
     short_term_trend = "⚪ 技術因子調整中"
     long_term_trend = "⚪ 波段底蘊定型中"
@@ -393,9 +403,11 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     df_raw = get_daily_df(stock_id, days=365)
     if df_raw is None or df_raw.empty: return None
 
+    # 🌟 大盤因子全面置頂，徹底擊碎 Traceback 指向的因果空窗！
     macro_bull, macro_desc = get_market_macro_status()
+
     hist_last_raw = df_raw.iloc[-1]
-    hist_last_close = float(hist_last_raw["close"])
+    hist_last_close = float(hist_last_close_raw) if 'hist_last_close_raw' in locals() else float(hist_last_raw["close"])
     hist_last_vol = float(hist_last_raw["vol"])
     
     current_price, current_vol, rt_success, rt_source, rt_type = compute_live_data(
@@ -536,7 +548,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
             else:
                 fin_conclusion = f"⚖️ 【結構調整期】 對比去年同期：毛利率『{gpm_text}』、營益率『{opm_text}』、EPS『{eps_lbl}』。"
 
-    # 新聞與利多事件催化劑特徵掃描
+    # 新聞與輿情
     news_analysis_report = "⚪ 暫無最新重要輿情。"
     positive_catalysts_list = []
     raw_news_list = []
@@ -615,11 +627,19 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     }
 
 # ============ 10. UI Presentation Layer ============
+# 🌟【完全加固置頂】優先加載所有基礎變數，杜絕因主畫面與側邊欄異步刷新引發的未定義例外
+with st.sidebar:
+    st.header("🛡️ 全球資金池風控參數")
+    capital = st.number_input("核心大資金池 (萬新台幣)", value=100.0, step=10.0)
+    risk_pct = st.slider("單筆最大核心風險承受 (%)", 0.5, 3.0, 1.0, 0.1)
+    slip_input = st.slider("預估防守技術滑價 (Ticks)", 0, 5, 1)
+
+# 拉取全市場大盤位階與板塊
 macro_bull, macro_label = get_market_macro_status()
 full_info_df = get_stock_info_df()
 all_industries = sorted([str(i) for i in full_info_df["industry_category"].unique() if i != "nan" and i != ""])
 
-# 戰術總指揮中心完全置頂
+# 【主畫面：水平一體化戰術指揮總中心】
 st.markdown("## 📡 策略大腦主動式綜合看盤台")
 st.markdown("### 🎛️ 戰術總指揮中心 (Command Center)")
 top_col1, top_col2 = st.columns(2)
@@ -642,12 +662,6 @@ with top_col2:
     st.markdown("""<div style='background-color:#EFF6FF; padding:8px; border-radius:6px; border-left:4px solid #3B82F6; margin-bottom:8px;'><b style='color:#1E40AF; font-size:13.5px;'>流派 B：個股五維度縱向因果深度診斷與策略開火</b></div>""", unsafe_allow_html=True)
     stock_input = st.text_input("輸入或由左方排行榜選定之目標個股代碼：", value=industry_stocks[-1] if "8069" in industry_stocks else "8069")
     diag_trigger = st.button(f"🔥 執行 【{stock_input}】 精密大腦全串聯深度診斷與利多監測", use_container_width=True)
-
-with st.sidebar:
-    st.header("🛡️ 全球資金池風控參數")
-    capital = st.number_input("核心大資金池 (萬新台幣)", value=100.0, step=10.0)
-    risk_pct = st.slider("單筆最大核心風險承受 (%)", 0.5, 3.0, 1.0, 0.1)
-    slip_input = st.slider("預估防守技術滑價 (Ticks)", 0, 5, 1)
 
 st.markdown("---")
 
@@ -678,11 +692,11 @@ if scan_trigger:
             )
             st.success("💡 掃描完成！請在右上方控制台輸入代碼查閱精密劇本。")
 
-# 個股五維深度診斷
+# 個股五維深度診斷呈现區
 if diag_trigger or (not scan_trigger and stock_input):
-    with st.spinner("五維度大腦深度因果解耦中，正在強制破除盤後結算凍結..."):
+    with st.spinner("五維度大腦深度因果解耦中..."):
         res = evaluate_stock(stock_input, capital, risk_pct, slip_input)
-        if res is None: st.error("該個股代碼數據獲取失敗，請確認編號。")
+        if res is None: st.error("該個股代碼數據獲取失敗，請確認編號是否正確。")
         else:
             # === 置頂檔案看板 ===
             st.markdown(f"""
@@ -722,7 +736,7 @@ if diag_trigger or (not scan_trigger and stock_input):
             </div>
             """, unsafe_allow_html=True)
 
-            # === 四維度核心因子面板 ===
+            # === 四維度核心因子面板 (🌟 完美分流：f1~f4 全數歸位不覆寫) ===
             f1, f2, f3, f4 = st.columns(4)
             with f1:
                 st.markdown("""<div style="background-color:#F8FAFC; padding:12px; border-radius:6px; border-top:4px solid #10B981; min-height:185px; border-left:1px solid #E2E8F0; border-right:1px solid #E2E8F0; border-bottom:1px solid #E2E8F0;">
@@ -755,7 +769,7 @@ if diag_trigger or (not scan_trigger and stock_input):
                     </ul>
                 </div>""", unsafe_allow_html=True)
             with f4:
-                # 🌟【第四面板硬核回歸】MA5、MACD、RSI、DMI、VOL 以及新加入的 KD 百分之百完全並列，底部無縫串聯消息面催化劑！
+                # 🌟【第四面板完美矯正】MA5、MACD、RSI、DMI、VOL 以及 KD 指標與消息面利多事件，並列排版絕不覆寫！
                 st.markdown("""<div style="background-color:#FDF4FF; padding:12px; border-radius:6px; border-top:4px solid #7C3AED; min-height:185px; border-left:1px solid #E2E8F0; border-right:1px solid #E2E8F0; border-bottom:1px solid #E2E8F0;">
                     <h5 style="margin:0; color:#5B21B6; font-size:14px; font-weight:700;">⏱️ 微觀技術與消息面利多催化劑</h5>
                     <ul style="margin:6px 0 0 0; padding-left:16px; font-size:13px; color:#1E293B; line-height:1.45; font-weight:600;">
