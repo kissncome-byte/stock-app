@@ -14,7 +14,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 # ============ 1. Page Config ============
-st.set_page_config(page_title="SOP v31 五維全串聯即時動態掃描系統", layout="wide")
+st.set_page_config(page_title="SOP v32 五維全串聯即時動態掃描系統", layout="wide")
 
 # ============ 2. Global Constants ============
 TZ = pytz.timezone("Asia/Taipei")
@@ -341,7 +341,7 @@ def cross_factor_decoupling_engine(macro_bull, trend_phase, fin_conclusion, sitc
     if t_is_strong and f_is_good:
         return "🔥 穩健波段主升：多方有序推進", "blue", f"大盤安全，個股短期與長期趨勢維持健康的多頭排列。月營收與獲利結構相符提供實質基本面支撐，主力籌碼無異常失控撤退跡象。技術動能處於有序發散階段，屬於高勝率的常態波段。策略：持股續抱。"
 
-    return "⚖️ 綜合平衡：常規技術藍圖操作", "blue", "後台財務與微觀動能因子互有勝負，並未觸發極端的宏觀、籌碼或估值背離共振。請嚴格遵循下方量化交易藍圖精算之價位執行紀律操作。"
+    return "⚖️ 綜合平衡：常規技術藍圖操作", "blue", "後台財務與微觀動能因子互有勝負，並未觸發極端的宏觀、籌碼或估值背離共振。目前盤面多空勢力處於動態動能平衡，請嚴格遵循下方量化交易藍圖精算之價位執行紀律操作。"
 
 # ============ 9. Main Core Executor ============
 def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, slip_ticks: int):
@@ -386,6 +386,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
 
     info_df_local = get_stock_info_df()
     match = info_df_local[info_df_local["stock_id"] == stock_id]
+    
     stock_name = str(match["stock_name"].values[0]) if not match.empty else "指定標的"
     industry = str(match["industry_category"].values[0]) if not match.empty else "未知板塊"
 
@@ -393,7 +394,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     last_trade_date_str = str(hist_last["date"])
     m_code, m_desc, m_color = get_market_status_label(rt_success, last_trade_date_str)
 
-    # 物理量
+    # 物理量提取
     ma5_val, vol_ma5_val = float(hist_last["MA5"]), float(hist_last["MA5_Vol"])
     ma20_val, ma60_val = float(hist_last["MA20"]), float(hist_last["MA60"])
     vol_ma20_val, real_resistance = float(hist_last["MA20_Vol"]), float(hist_last["Res_20D"])
@@ -437,7 +438,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
 
     macro_bull, macro_desc = get_market_macro_status()
     
-    # 營收
+    # 月營收數據清洗
     latest_yoy = 0.0
     rev_df = get_rev_df(stock_id, days=365)
     if rev_df is not None and not rev_df.empty and "revenue" in rev_df.columns:
@@ -452,7 +453,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
         rev_clean = rev_clean[rev_clean["revenue"] > 0].sort_values("date")
         if not rev_clean.empty: latest_yoy = float(rev_clean.iloc[-1]["revenue_year_growth_rate"])
 
-    # 財報
+    # 季度財報清洗
     fin_df = get_financial_statement_df(stock_id, years=2)
     fin_conclusion = "📋 該標的暫無足夠季度財報歷史數據對比。"
     pe_desc = "⚪ 數據不足無法計算估值"
@@ -462,6 +463,12 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     
     if not fin_df.empty and "Revenue" in fin_df.columns and "EPS" in fin_df.columns:
         fin_df = fin_df.sort_values("date").reset_index(drop=True)
+        
+        # 🛡️ 【核心修復天防線】一鍵對齊所有欄位！如果遇到金融股缺 GPM 直接初始化為 0.0 防止 KeyError
+        for col_name in ["Revenue", "EPS", "GrossProfit", "OperatingIncome"]:
+            if col_name not in fin_df.columns:
+                fin_df[col_name] = 0.0
+                
         for idx in range(len(fin_df)):
             rev_amt = safe_float(fin_df.loc[idx, "Revenue"])
             fin_df.loc[idx, "gpm"] = (safe_float(fin_df.loc[idx, "GrossProfit"]) / rev_amt * 100) if rev_amt > 0 else 0.0
@@ -502,7 +509,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
         if pos_cnt > neg_cnt: news_analysis_report = f"🔥 【輿情偏多】 利多消息主導市場情緒（多 {pos_cnt} 則 / 空 {neg_cnt} 則）。"
         elif neg_cnt > pos_cnt: news_analysis_report = f"🚨 【輿情偏空】 利空雜音浮現（空 {neg_cnt} 則 / 多 {pos_cnt} 則）。"
 
-    # 因果交叉大腦
+    # 縱向因果大腦解耦
     final_decision, final_color, final_desc = cross_factor_decoupling_engine(
         macro_bull, trend_phase, fin_conclusion, sitc_trend, margin_trend, "🚀 準備起漲" if (current_price >= real_resistance * 0.99 and vol_spike) else "🚀 多頭成形" if rsi_now > 55 else "中性觀望", latest_yoy, pe_desc, current_price, volume_poc
     )
@@ -557,15 +564,10 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
         "volume_poc": volume_poc, "main_force_label": main_force_label
     }
 
-# ============ 10. UI Adaptive Component ============
-def custom_hud_box(title, value, font_color="#1E293B"):
-    return f"""
-    <div style="background-color: #F8FAFC; border: 1px solid #E2E8F0; padding: 14px; border-radius: 6px; min-height: 105px; box-shadow: 0 1px 2px rgba(0,0,0,0.02); margin-bottom: 10px;">
-        <span style="color: #64748B; font-size: 13px; font-weight: 600; display: block; margin-bottom: 5px; letter-spacing: 0.02em;">{title}</span>
-        <span style="color: {font_color}; font-size: 14.5px; font-weight: 700; display: block; line-height: 1.5; white-space: normal; word-break: break-all;">{value}</span>
-    </div>
-    """
+# ============ 10. UI Presentation Layer ============
+macro_bull, macro_label = get_market_macro_status()
 
+# 預先拉取全市場所有板塊
 full_info_df = get_stock_info_df()
 all_industries = sorted([str(i) for i in full_info_df["industry_category"].unique() if i != "nan" and i != ""])
 
@@ -576,29 +578,23 @@ with st.sidebar:
     slip_input = st.slider("預估防守技術滑價 (Ticks)", 0, 5, 1)
 
 # =========================================================
-# 🌟 【總指揮中心：大盤、板塊自適應切換區】
+# 【主畫面：全新整合型戰術指揮總中心（同一流暢水平動線）】
 # =========================================================
-st.markdown("### 🎛️ 系統戰術總指揮中心 (Command Center)")
+st.markdown("### 🎛 nighttime 系統戰術總指揮中心 (Command Center)")
 top_col1, top_col2 = st.columns(2)
 
 with top_col1:
     st.markdown("""<div style='background-color:#F0FDF4; padding:8px; border-radius:6px; border-left:4px solid #10B981; margin-bottom:8px;'><b style='color:#065F46; font-size:13.5px;'>流派 A：多策略/全板塊當下即時策略掃描選股池</b></div>""", unsafe_allow_html=True)
-    
-    # 🌟 【無損補回與重構】完美融合「大盤市值前15大」與「自選板塊」的雙軌掃描器
     scan_mode = st.selectbox(
         "選擇當下你想全網掃描的篩選大環境：", 
         ["🔥 大盤市值前15大權值股（自動網羅）"] + all_industries
     )
-    
     if scan_mode == "🔥 大盤市值前15大權值股（自動網羅）":
-        # 精準鎖定台股 2026 最新大盤前 15 大核心權值名單
         industry_stocks = ["2330", "2454", "2308", "2317", "3711", "2383", "3037", "2345", "2881", "2382", "2882", "3017", "2412", "2891", "2303"]
         scan_label = "大盤前15大"
     else:
-        # 動態撈取所選板塊內前 10 大活躍標的
         industry_stocks = full_info_df[full_info_df["industry_category"] == scan_mode]["stock_id"].tolist()[:10]
         scan_label = scan_mode
-        
     scan_trigger = st.button(f"🔍 啟動 【{scan_label}】 當下全因子動態矩陣掃描", use_container_width=True)
 
 with top_col2:
@@ -608,7 +604,7 @@ with top_col2:
 
 st.markdown("---")
 
-# 排行榜渲染
+# 排行榜著色渲染
 if scan_trigger:
     st.subheader(f"📊 【{scan_label}】即時動態連線排行榜")
     with st.spinner(f"五維度大腦正在對 {scan_label} 活躍個股進行籌碼洗滌與分價量表過濾..."):
@@ -631,11 +627,11 @@ if scan_trigger:
             st.dataframe(df_scan.style.apply(highlight_verdict, axis=1).hide(subset=["color_code"], axis="columns"), use_container_width=True, height=360)
             st.success("💡 掃描完成！請在右上方輸入代碼代入精密深度診斷劇本。")
 
-# 個股診斷主要渲染區
+# 個股診斷主要呈現
 if diag_trigger or (not scan_trigger and stock_input):
-    with st.spinner("深度因果漏斗啟動中..."):
+    with st.spinner("深度因果因子漏斗啟動中..."):
         res = evaluate_stock(stock_input, capital, risk_pct, slip_input)
-        if res is None: st.error("代碼數據獲取失敗。")
+        if res is None: st.error("該個股代碼數據獲取失敗，請確認編號。")
         else:
             # === 置頂檔案看板 ===
             st.markdown(f"""
