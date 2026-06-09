@@ -343,8 +343,10 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     # 判定大象股門檻 (20億)
     recent_amount_ma = df["amount"].tail(20).mean()
     is_heavyweight = recent_amount_ma > 2000000000  
-    if is_heavyweight: vol_multiplier, compress_quantile, target_atr_ratio = 1.25, 0.35, 2.0
-    else: vol_multiplier, compress_quantile, target_atr_ratio = 2.2, 0.18, 3.5    
+    
+    # ======= 【結構調整】：因應停利升級，將基礎波動係數移至趨勢判定後動態增幅 =======
+    if is_heavyweight: vol_multiplier, compress_quantile = 1.25, 0.35
+    else: vol_multiplier, compress_quantile = 2.2, 0.18    
 
     m_code, m_desc, m_color = get_market_status_label(rt_success, last_trade_date_str)
 
@@ -489,7 +491,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
                 news_summary, news_color = "🟡 多空平衡", "gray"
                 news_analysis_report = f"⚖️ **【輿情中性】** 多空雜音交錯（多 {pos_cnt} 則、空 {neg_cnt} 則），回歸基本面拉鋸。"
 
-    # ======= 【交叉過濾核心】：將微觀動能指標結合大波段環境進行多空解耦，修復打架漏洞 =======
+    # 交叉過濾核心：將微觀動能指標結合大波段環境進行多空解耦
     tech_conclusion_short = "中性觀望"
     tech_conclusion_long = "⚖️ 擺動指標目前處於中性橫盤區，大資金尚未表態，短線缺乏爆發性動能。"
     rsi_overbought_tmsh = 75 if is_heavyweight else 85
@@ -514,7 +516,6 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
             tech_conclusion_short = "🚀 多頭成形"
             tech_conclusion_long = "趨勢多頭成形，買盤動能延續性佳，適合尋找突破點切入。"
     elif float(hist_last["MINUS_DI"]) > float(hist_last["PLUS_DI"]) and adx_now >= 20:
-        # 💡 解耦點：如果大格局已經是主升段，微觀 DMI 轉空代表「良性洗盤」，而非「空頭成形」
         if "主升" in trend_phase:
             tech_conclusion_short = "⚠️ 主升段急跌洗盤"
             tech_conclusion_long = "⚠️ **【主升段劇烈回檔】** 宏觀均線（月線、季線）仍呈完美多頭排列，但短線遭遇主力劇烈洗盤（DMI空方發散）。此處屬於良性的浮額清洗，切勿盲目恐慌殺低，靜待股價回踩生命線止穩。"
@@ -583,16 +584,24 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     else:
         invest_status, status_color, status_emoji = "❌ 空頭修正：結構破壞嚴格避開", "red", "🚨"
 
-    # ============ 5. 交易藍圖精算與資金池配額風控保護 ============
-    brk_setup = (current_price >= real_resistance * 0.98) and (rsi_now < rsi_overbought_tmsh - 2)
-    pb_setup = (current_price < real_resistance) and (current_price >= ma20_val * 0.98)
+    # ============ 5. 【動態精算修正艙】：交易藍圖結合趨勢定性全面升級 ============
+    # ======= 【升級 1】：依據波段架構與 ADX 強度，動態拓寬突破停利天花板，解放風報比 =======
+    if is_heavyweight:
+        target_atr_ratio = 4.0 if (trend_phase == "🔥 波段多頭主升段" and adx_now >= 22) else 3.2
+    else:
+        target_atr_ratio = 5.5 if (trend_phase == "🔥 波段多頭主升段" and adx_now >= 25) else 4.2
 
     target_brk = round_to_tick(current_price + (target_atr_ratio * atr), t)
     stop_brk = round_to_tick(real_resistance - (1.5 * atr) - slip, t)
     if stop_brk >= current_price: stop_brk = round_to_tick(current_price - (1.0 * atr), t)
     rr1_brk = (target_brk - current_price) / (current_price - stop_brk) if (current_price - stop_brk) > 0 else 0
 
-    target_pb = round_to_tick(real_resistance, t)
+    # ======= 【升級 2】：主升段的拉回策略利潤目標拒絕井底之蛙，自動往上延伸 1 個 ATR 空間 =======
+    if trend_phase == "🔥 波段多頭主升段":
+        target_pb = round_to_tick(real_resistance + (1.0 * atr), t)
+    else:
+        target_pb = round_to_tick(real_resistance, t)
+        
     stop_pb = round_to_tick(current_price - atr - slip, t)
     rr1_pb = (target_pb - current_price) / (current_price - stop_pb) if (current_price - stop_pb) > 0 else 0
 
@@ -607,7 +616,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     suggested_lots_pb = int((risk_money / loss_per_share_pb) / 1000) if loss_per_share_pb > 0 else 0
 
     max_lots_by_pool_brk = int((pool_allocation * 10000 / current_price) / 1000) if current_price > 0 else 0
-    if Math_lots_by_pool_brk := suggested_lots_brk > max_lots_by_pool_brk: suggested_lots_brk = max_lots_by_pool_brk
+    if suggested_lots_brk > max_lots_by_pool_brk: suggested_lots_brk = max_lots_by_pool_brk
         
     max_lots_by_pool_pb = int((pool_allocation * 10000 / current_price) / 1000) if current_price > 0 else 0
     if suggested_lots_pb > max_lots_by_pool_pb: suggested_lots_pb = max_lots_by_pool_pb
@@ -716,7 +725,7 @@ with tab1:
                 matrix_col3.markdown(f"**3. 👥 籌碼面大人**\n\n{c_light}")
                 matrix_col4.markdown(f"**4. 📈 技術面時機**\n\n{t_light}")
 
-                # ======= 【修復點】：優化下層一針見血矛盾定論，根據交叉過濾結果渲染，拒絕多空打架 =======
+                # 下層一針見血矛盾定論
                 if res['status_color'] == "red" and res['rr1_brk'] >= 1.5:
                     st.markdown(f"""
                     <div style="background-color:#FFEBEE; padding:15px; border-radius:8px; border-left:5px solid #F44336; margin-top:10px; margin-bottom:15px;">
