@@ -95,7 +95,7 @@ def get_api():
         except Exception: pass
     return api
 
-# ============ 5. Live Data Streaming Engine ============
+# ============ 5. Live Data Streaming Engine (已精密修復漲跌停空窗 Bug) ============
 def compute_live_data(stock_id: str, hist_last_close: float, hist_last_vol: float, live_price_override: float = None):
     if live_price_override is not None and live_price_override > 0:
         return live_price_override, hist_last_vol * 1.2, True, "模擬串流", "realtime"
@@ -114,7 +114,20 @@ def compute_live_data(stock_id: str, hist_last_close: float, hist_last_vol: floa
                 info = data["msgArray"][0]
                 z = safe_float(info.get("z"))
                 v = safe_float(info.get("v")) 
-                if z == 0: z = safe_float(info.get("o"))
+                
+                # 🛡️ 【核心修復機制】打破證交所鎖漲跌停時成交價歸 0 的 Bug
+                if z == 0:
+                    h_val = safe_float(info.get("h"))  # 當日最高價
+                    b_list = str(info.get("b", "")).split("_")
+                    b_val = safe_float(b_list[0]) if b_list and b_list[0] != "" else 0  # 買一掛單價
+                    
+                    if h_val > 0 and h_val >= safe_float(info.get("o")):
+                        z = h_val  # 鎖漲停時，最高價即為最新真實市價
+                    elif b_val > 0:
+                        z = b_val  # 若無最高價則退守買一委買價
+                    else:
+                        z = safe_float(info.get("o")) if safe_float(info.get("o")) > 0 else hist_last_close
+                
                 if z > 0:
                     rt_price = z
                     rt_vol = v if v > 0 else hist_last_vol
@@ -144,7 +157,7 @@ def compute_live_data(stock_id: str, hist_last_close: float, hist_last_vol: floa
         except Exception: pass
     return (rt_price if rt_success else hist_last_close), (rt_vol if (rt_success and rt_vol > 0) else hist_last_vol), rt_success, rt_source, rt_type
 
-# ============ 6. Advanced Data Layer (FinMind 無損整合) ============
+# ============ 6. Data Fetching Layers ============
 @st.cache_data(ttl=3600)
 def get_stock_info_df():
     api = get_api()
@@ -294,7 +307,7 @@ def prepare_indicator_df(df: pd.DataFrame):
 
     return x.dropna(subset=["ATR14", "MA20", "MA60", "Res_20D", "BB_bandwidth", "RSI14", "MACD_HIST"]).copy()
 
-# ============ 8. 五維度縱向串聯決策大腦 ============
+# ============ 8. 五維度縱向全串聯決策大腦 ============
 def cross_factor_decoupling_engine(macro_bull, trend_phase, fin_conclusion, sitc_trend, margin_trend, tech_short, latest_yoy, pe_desc):
     f_is_good = "【財報年增擴張】" in fin_conclusion or latest_yoy >= 20
     f_is_bad = "【本業結構退步】" in fin_conclusion and latest_yoy < 5
@@ -366,7 +379,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     hist_last = df.iloc[-1]
     last_trade_date_str = str(hist_last["date"])
 
-    # 100% 補回：市場狀態解耦標籤與即時流狀態顏色防線
+    # 補回缺失：解碼市場狀態標籤與即時流顏色
     m_code, m_desc, m_color = get_market_status_label(rt_success, last_trade_date_str)
 
     # 物理量提取
@@ -406,7 +419,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     sitc_trend, margin_trend, sitc_3d_sum, margin_diff = get_taiwan_enhanced_chips(stock_id)
     macro_bull, macro_desc = get_market_macro_status()
     
-    # 100% 無損還原：月營收精細清洗與時間軸強制排序
+    # 月營收清洗與強制排序
     latest_yoy = 0.0
     rev_df = get_rev_df(stock_id, days=365)
     if rev_df is not None and not rev_df.empty and "revenue" in rev_df.columns:
@@ -422,7 +435,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
         if not rev_clean.empty:
             latest_yoy = float(rev_clean.iloc[-1]["revenue_year_growth_rate"])
 
-    # 100% 無損還原：季度財報強制時間軸排序與按年對比（YoY）解耦算法
+    # 季度財報強制時間軸排序與 YoY 解耦算法
     fin_df = get_financial_statement_df(stock_id, years=2)
     fin_conclusion = "📋 該標的暫無足夠季度財報歷史數據對比。"
     pe_desc = "⚪ 數據不足無法計算估值"
@@ -535,27 +548,38 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     }
 
 # ============ 10. UI Presentation Layer ============
-# 優先提取市場宏觀環境資訊，用以動態判定大盤建議個股選單
 macro_bull, macro_label = get_market_macro_status()
 
 with st.sidebar:
     st.header("⚙️ 實戰交易風控參數")
     
-    # 補回並完成串聯：大盤環境強勢建議個股選單 (結合大盤 Beta 自適應切換)
+    # 🌟 【強勢補回：大盤環境個股強勢建議選單】
     st.markdown("### 📡 大盤環境強勢建議個股")
     if macro_bull:
         st.caption("⚡ **大盤目前為多頭常態**：系統主動篩選法人建倉與強勢權值飆股名單：")
-        suggested_pool = {"2330": "台積電 (半導體主攻王)", "2317": "鴻海 (AI伺服器龍頭)", "2454": "聯發科 (晶片設計旗舰)", "2382": "廣達 (量能主攻權值)", "3034": "聯詠 (內資鎖碼標的)"}
+        suggested_pool = {
+            "2330": "台積電 (半導體主攻王)", 
+            "2317": "鴻海 (AI伺服器龍頭)", 
+            "2454": "聯發科 (晶片設計旗艦)", 
+            "3450": "聯鈞 (光通訊強勢鎖碼股)", 
+            "2382": "廣達 (量能主攻權值)"
+        }
     else:
         st.caption("🛡️ **大盤目前走勢偏空**：系統自動防禦，主動切換為高安全邊際、抗震防守型標的：")
-        suggested_pool = {"2412": "中華電 (防禦性內需權值)", "1216": "統一 (民生抗通膨龍頭)", "2881": "富邦金 (金融防禦獲利王)", "00713": "元大高息低波 (高防守安全島)", "2105": "正新 (傳產低位階防守)"}
+        suggested_pool = {
+            "2412": "中華電 (防禦性內需權值)", 
+            "1216": "統一 (民生抗通膨龍頭)", 
+            "2881": "富邦金 (金融防禦獲利王)", 
+            "00713": "元大高息低波 (高防守安全島)", 
+            "2105": "正新 (傳產低位階防守)"
+        }
         
     selected_suggested = st.selectbox("點選即可快速帶入分析代碼：", ["手動輸入"] + [f"{k} - {v}" for k, v in suggested_pool.items()])
     
     if selected_suggested != "手動輸入":
         default_code = selected_suggested.split(" - ")[0].strip()
     else:
-        default_code = "2330"
+        default_code = "3450"
         
     stock_input = st.text_input("台股代碼輸入", value=default_code)
     capital = st.number_input("核心交易總資本 (萬新台幣)", value=100.0, step=10.0)
