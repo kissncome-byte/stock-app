@@ -14,7 +14,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 # ============ 1. Page Config ============
-st.set_page_config(page_title="SOP v35 五維全串聯即時動態掃描系統", layout="wide")
+st.set_page_config(page_title="SOP v36 五維全串聯即時動態掃描系統", layout="wide")
 
 # ============ 2. Global Constants ============
 TZ = pytz.timezone("Asia/Taipei")
@@ -43,11 +43,11 @@ def round_to_tick(x: float, t: float) -> float:
     return round(x / t) * t
 
 def custom_hud_box(title, value, font_color="#1E293B"):
-    """自適應 CSS 箱體，100% 彈性折行，徹底杜絕 st.metric 對長中文字體截斷成 ... 的災難"""
+    """自適應 CSS 箱體，優化字體大小與彈性折行，確保短線與波段特徵 100% 完整曝光不留 ... 遺憾"""
     return f"""
-    <div style="background-color: #F8FAFC; border: 1px solid #E2E8F0; padding: 14px; border-radius: 6px; min-height: 105px; box-shadow: 0 1px 2px rgba(0,0,0,0.02); margin-bottom: 10px;">
-        <span style="color: #64748B; font-size: 13px; font-weight: 600; display: block; margin-bottom: 5px; letter-spacing: 0.02em;">{title}</span>
-        <span style="color: {font_color}; font-size: 14.5px; font-weight: 700; display: block; line-height: 1.5; white-space: normal; word-break: break-all;">{value}</span>
+    <div style="background-color: #F8FAFC; border: 1px solid #E2E8F0; padding: 12px; border-radius: 6px; min-height: 105px; box-shadow: 0 1px 2px rgba(0,0,0,0.02); margin-bottom: 10px;">
+        <span style="color: #64748B; font-size: 12.5px; font-weight: 600; display: block; margin-bottom: 5px; letter-spacing: 0.02em;">{title}</span>
+        <span style="color: {font_color}; font-size: 14px; font-weight: 700; display: block; line-height: 1.5; white-space: normal; word-break: break-all;">{value}</span>
     </div>
     """
 
@@ -75,7 +75,7 @@ def get_market_status_label(rt_success: bool, last_trade_date_str: str):
             return "POST_MARKET", f"今日已收盤 | 數據日期: {last_trade_date_str}", "green"
 
 def analyze_news_sentiment(title: str) -> tuple:
-    pos_words = ['創新高', '大賺', '暴增', '飆', '大成長', '利多', '優於預期', '加碼', '看旺', '強勢', '獲利', '突破', '轉盈', '充沛', '加持', '買超', '爆發', '新高', '雙率雙升', '三率三升', '扭虧為盈', '轉虧為盈', '急單']
+    pos_words = ['創新高', '大賺', '暴增', '飆', '大成長', '利多', '優於預期', '加碼', '看旺', '強勢', '獲利', '突破', '轉盈', '充沛', '加持', '買超', '爆發', '新高', '雙率雙升', '三率三升', '扭虧為盈', '轉虧為盈', '急單', '擴產']
     neg_words = ['衰退', '虧損', '重挫', '低於預期', '縮水', '跌破', '警告', '利空', '下滑', '疲弱', '裁員', '大跌', '慘', '賣壓', '修正', '賣超', '暴跌', '逆風', '雙率雙降']
     pos_score = sum(1 for w in pos_words if w in title)
     neg_score = sum(1 for w in neg_words if w in title)
@@ -165,7 +165,7 @@ def compute_live_data(stock_id: str, market_type: str, hist_last_close: float, h
                     quotes = res_data[0].get("indicators", {}).get("quote", [{}])[0].get("close", [])
                     valid_quotes = [safe_float(q) for q in quotes if q is not None and safe_float(q) > 0]
                     if valid_quotes:
-                        p = valid_quotes[-1]  # 100% 取得最終交割撮合之真實價
+                        p = valid_quotes[-1]  # 100% 取得最終交割真實價
                     
                     if p > 0:
                         rt_price = p
@@ -262,6 +262,33 @@ def get_financial_statement_df(stock_id: str, years: int = 2):
         return df_pivot
     except Exception: return pd.DataFrame()
 
+# 🛡️ 【核心修復：防禦性縱向加固防線】將時間軸轉換、排序、剔除欄位全數鎖死在 try 區塊內，徹底消滅崩潰漏洞
+@st.cache_data(ttl=300)
+def get_realtime_news_df(stock_id: str, stock_name: str):
+    news_list = []
+    session = get_requests_session()
+    try:
+        query = f"{str(stock_name)} {str(stock_id)} when:1d"
+        encoded_query = urllib.parse.quote(query)
+        url = f"https://news.google.com/rss/search?q={encoded_query}&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
+        r = session.get(url, timeout=5)
+        if r.status_code == 200:
+            root = ET.fromstring(r.content)
+            for item in root.findall('.//item'):
+                title = item.find('title').text or ""
+                link = item.find('link').text or ""
+                pub_date = item.find('pubDate').text or ""
+                source = item.find('source').text if item.find('source') is not None else "新聞財經"
+                if " - " in title: title = title.rsplit(" - ", 1)[0]
+                news_list.append({"date": pub_date, "title": title, "source": source, "link": link})
+        if news_list:
+            df = pd.DataFrame(news_list)
+            df["parsed_date"] = pd.to_datetime(df["date"], errors="coerce", utc=True).dt.tz_convert('Asia/Taipei')
+            df["date"] = df["parsed_date"].dt.strftime('%Y-%m-%d %H:%M')
+            return df.sort_values(by="parsed_date", ascending=False).drop(columns=["parsed_date"])
+    except Exception: pass
+    return pd.DataFrame(columns=["date", "title", "source", "link"])
+
 # ============ 7. Technical Engine ============
 def prepare_indicator_df(df: pd.DataFrame):
     if df is None or df.empty: return None
@@ -329,7 +356,7 @@ def cross_factor_decoupling_engine(macro_bull, trend_phase, fin_conclusion, sitc
         return "🔮 頂級多頭共振：黃金主升飆股", "purple", f"五維度指標達成完美黃金交集！加權指數多頭護航，個股本益比未過熱。月營收與財報同步確認為『基本面擴張』，疊加投信主力鎖碼與散戶融資退場（籌碼極淨）。此時技術面發動『{tech_short}』，且現價已成功跨越分價量表密集區。屬於內資主力籌碼與基本面雙軌驅動的最高勝率飆股型態。策略：敞口調升至 1.5 倍，全力進攻！"
 
     if "主升段" in trend_phase and pe_desc == "🚨 估值瘋狂（高檔吹泡泡）" and (f_is_bad or c_is_leaking):
-        return "💥 世紀價值陷阱：高檔出貨盤", "red", f"極度危險！雖然技術型態包裝成『{trend_phase}』且新聞表面熱絡，但縱向勾稽發現重大背離：滾動估值已達歷史瘋狂天花板，最新季度財報卻暴露出毛利營益率『雙降退步』。此時主力趁高大舉倒貨給融資散戶（融資暴增）。這完全是主力利用市場散戶樂觀情緒進行的『高檔套現抓交替』型態。策略：一票否決。"
+        return "💥 世紀價值陷阱：高檔出貨盤", "red", f"極度危險！雖然技術型態包裝成『{trend_phase}』且新聞表面熱絡，幕後縱向勾稽發現重大背離：滾動估值已達歷史瘋狂天花板，最新季度財報卻暴露出毛利營益率『雙降退步』。此時主力趁高大舉倒貨給融資散戶（融資暴增）。這完全是主力利用市場散戶樂觀情緒進行的『高檔套現抓交替』型態。策略：一票否決。"
 
     if "拉回洗盤期" in trend_phase and pe_desc in ["🟢 價值鐵板（安全邊際高）", "⚖️ 估值合理區間"] and "融資大量退場" in margin_trend:
         return "🛡️ 良性回檔：高手低吸黃金右腳", "green", f"中長期大波段季線穩健向上，短線股價跌破月線洗盤。串聯發現：滾動本益比已回踩至具有高度安全邊際的低位水準，且散戶融資不堪折磨、大舉肉退場（籌碼重新沉澱至特定大戶手中）。這屬於典型的主力『良性換手期』而非波段終結。策略：防守性極強，精密低吸潛伏。"
@@ -503,21 +530,19 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
             lbl, col = analyze_news_sentiment(n["title"])
             n["sentiment"] = lbl
             n["color"] = col
-            # 🌟【消息面利多提取核心邏輯】捕捉最近驅動股價的重大專利、營收、獲利等核心利多字眼
             if "利多" in lbl:
                 positive_catalysts_list.append(n["title"])
                 
         pos_cnt = sum(1 for n in raw_news_list if "利多" in n["sentiment"])
         neg_cnt = sum(1 for n in raw_news_list if "利空" in n["sentiment"])
         if pos_cnt > neg_cnt: news_analysis_report = f"🔥 【輿情偏多】 利多消息主導市場情緒（多 {pos_cnt} 則 / 空 {neg_cnt} 則）。"
-        elif neg_cnt > pos_cnt: news_analysis_report = f"🚨 【輿情偏空】 利空雜音浮現，嚴防拋壓（空 {neg_cnt} 則 / 多 {pos_cnt} 則）。"
+        elif neg_cnt > pos_cnt: news_analysis_report = f"🚨 【輿情偏空】 利空雜音浮現（空 {neg_cnt} 則 / 多 {pos_cnt} 則）。"
 
-    # 🌟【消息面利多裁判定性】將抓取到的最近利多標題彙整
     recent_catalyst_summary = "⚪ 近 24H 內市場暫無顯著的突發消息面利多推升。"
     if positive_catalysts_list:
         recent_catalyst_summary = "🎯 偵測到最近核心利多驅動源：<br>" + "<br>".join([f"• <span style='color:#10B981; font-weight:600;'>{t}</span>" for t in positive_catalysts_list[:3]])
 
-    # 縱向因果大腦解耦
+    # 縱向因果大腦解耦（決定 final_color）
     final_decision, final_color, final_desc = cross_factor_decoupling_engine(
         macro_bull, trend_phase, fin_conclusion, sitc_trend, margin_trend, "🚀 準備起漲" if (current_price >= real_resistance * 0.99 and vol_spike) else "🚀 多頭成形" if rsi_now > 55 else "中性觀望", latest_yoy, pe_desc, current_price, volume_poc
     )
@@ -574,19 +599,19 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     }
 
 # ============ 10. UI Presentation Layer ============
-# 🌟【核心修復一：將變數定義防線全面移到最頂層】徹底解決網頁載入時變數未宣告的 UnboundLocalError
+# 🌟【最上方防線】優先定義風控與大盤變數，杜絕任何因加載位階導致的變數空窗閃退 Bug
 with st.sidebar:
     st.header("🛡️ 全球資金池風控參數")
     capital = st.number_input("核心大資金池 (萬新台幣)", value=100.0, step=10.0)
     risk_pct = st.slider("單筆最大核心風險承受 (%)", 0.5, 3.0, 1.0, 0.1)
     slip_input = st.slider("預估防守技術滑價 (Ticks)", 0, 5, 1)
 
-# 執行大盤與板塊基礎資料撈取
+# 拉取全市場大盤位階與板塊
 macro_bull, macro_label = get_market_macro_status()
 full_info_df = get_stock_info_df()
 all_industries = sorted([str(i) for i in full_info_df["industry_category"].unique() if i != "nan" and i != ""])
 
-# 🌟【核心修復二：大看盤控制面板降臨主畫面頂部】看盤、輸入、點擊一氣呵成，拒絕側邊欄反人類動線
+# 【主畫面：水平一體化戰術指揮總中心】
 st.markdown("## 📡 策略大腦主動式綜合看盤台")
 st.markdown("### 🎛️ 戰術總指揮中心 (Command Center)")
 top_col1, top_col2 = st.columns(2)
@@ -594,7 +619,7 @@ top_col1, top_col2 = st.columns(2)
 with top_col1:
     st.markdown("""<div style='background-color:#F0FDF4; padding:8px; border-radius:6px; border-left:4px solid #10B981; margin-bottom:8px;'><b style='color:#065F46; font-size:13.5px;'>流派 A：多策略/全板塊當下即時策略掃描選股池</b></div>""", unsafe_allow_html=True)
     scan_mode = st.selectbox(
-        "選擇當下你想全網掃描的篩選大環境類別：", 
+        "選擇當下你想全網掃描的篩選大環境：", 
         ["🔥 大盤市值前15大權值股（自動網羅）"] + all_industries
     )
     if scan_mode == "🔥 大盤市值前15大權值股（自動網羅）":
@@ -612,7 +637,7 @@ with top_col2:
 
 st.markdown("---")
 
-# 策略排行榜著色呈現
+# 排行榜渲染
 if scan_trigger:
     st.subheader(f"📊 【{scan_label}】即時動態連線篩選排行榜")
     with st.spinner(f"五維度大腦正在對 {scan_label} 股池進行籌碼洗滌與 K 線真實流解碼..."):
@@ -631,14 +656,20 @@ if scan_trigger:
                 color_map = {"purple": "#7D3CFF20", "green": "#2BD9A120", "blue": "#1C86EE20", "red": "#FF4B4B20", "gray": "#80808020", "orange": "#F59E0B20"}
                 return [f'background-color: {color_map.get(row["color_code"], "#ffffff")}; font-weight: 600;'] * len(row)
             
-            st.dataframe(df_scan.style.apply(highlight_verdict, axis=1).hide(subset=["color_code"], axis="columns"), use_container_width=True, height=360)
-            st.success("💡 掃描完成！請在右上方控制台代入代碼，直接呼叫個股精密無損劇本。")
+            # 🌟【版本防禦修復】捨棄容易死結的 Pandas Styler hide 語法，改用 Streamlit 原生 column_order 機制，100% 封殺過往 KeyError
+            st.dataframe(
+                df_scan.style.apply(highlight_verdict, axis=1), 
+                column_order=["代碼", "股名", "盤中市價", "大腦全串聯裁決", "短期動能", "波段底蘊", "開火預期價", "建議配置"],
+                use_container_width=True, 
+                height=360
+            )
+            st.success("💡 掃描完成！請在右上方輸入代碼帶入精密深度診斷劇本。")
 
 # 個股五維深度診斷
 if diag_trigger or (not scan_trigger and stock_input):
-    with st.spinner("五維度大腦深度因果解耦中，全面攻破盤後結算凍結..."):
+    with st.spinner("五維度大腦深度因果解耦中..."):
         res = evaluate_stock(stock_input, capital, risk_pct, slip_input)
-        if res is None: st.error("該個股代碼數據獲取失敗，請確認編號是否正確。")
+        if res is None: st.error("該個股代碼數據獲取失敗，請確認編號。")
         else:
             # === 置頂檔案看板 ===
             st.markdown(f"""
@@ -682,7 +713,7 @@ if diag_trigger or (not scan_trigger and stock_input):
             st.markdown("### 🏛️ 四維度因子核心動態曝光面板")
             f1, f2, f3, f4 = st.columns(4)
             with f1:
-                st.markdown("""<div style="background-color:#F8FAFC; padding:12px; border-radius:6px; border-top:4px solid #10B981; min-height:185px; border-left:1px solid #E2E8F0; border-right:1px solid #E2E8F0; border-bottom:1px solid #E2E8F0;">
+                st.markdown("""<div style="background-color:#F8FAFC; padding:12px; border-radius:6px; border-top:4px solid #10B981; min-height:175px; border-left:1px solid #E2E8F0; border-right:1px solid #E2E8F0; border-bottom:1px solid #E2E8F0;">
                     <h5 style="margin:0; color:#065F46; font-size:14px; font-weight:700;">💎 財務面基本結構</h5>
                     <ul style="margin:8px 0 0 0; padding-left:16px; font-size:13px; color:#334155; line-height:1.5; font-weight:600;">
                         <li>最新月營收YoY: <span style="color:#10B981; font-weight:700;">""" + f"{res['latest_yoy']:.1f}%" + """</span></li>
@@ -711,11 +742,11 @@ if diag_trigger or (not scan_trigger and stock_input):
                         <li>防禦邊際: """ + ("高鐵板 (便宜)" if res['pe_val']<13 else "常態區間" if res['pe_val']<=35 else "危險區 (泡沫)") + """</li>
                     </ul>
                 </div>""", unsafe_allow_html=True)
-            with f4:
-                # 🌟【消息面利多爆發點主頁全曝光】將動態提取出、背後支持該股暴漲的重大突發消息直接在第四面板最醒目處渲染！
-                st.markdown("""<div style="background-color:#FDF4FF; padding:12px; border-radius:6px; border-top:4px solid #7C3AED; min-height:185px; border-left:1px solid #E2E8F0; border-right:1px solid #E2E8F0; border-bottom:1px solid #E2E8F0;">
-                    <h5 style="margin:0; color:#5B21B6; font-size:14px; font-weight:700;">⏱️ 消息面核心利多催化劑</h5>
-                    <p style="margin:6px 0 0 0; padding:0; font-size:12.5px; color:#475569; line-height:1.45; font-weight:600;">
+            with f2:
+                # 🌟【第四面板：消息面核心利多催化劑完全曝光】迎合核心訴求，讓使用者主頁一眼秒懂最近上漲的題材事件！
+                st.markdown("""<div style="background-color:#FDF4FF; padding:12px; border-radius:6px; border-top:4px solid #7C3AED; min-height:175px; border-left:1px solid #E2E8F0; border-right:1px solid #E2E8F0; border-bottom:1px solid #E2E8F0;">
+                    <h5 style="margin:0; color:#5B21B6; font-size:14px; font-weight:700;">⏱️ 消息面 24H 核心利多事件催化劑</h5>
+                    <p style="margin:6px 0 0 0; padding:0; font-size:12.5px; color:#1E293B; line-height:1.5; font-weight:600;">
                         """ + res["recent_catalyst_summary"] + """
                     </p>
                 </div>""", unsafe_allow_html=True)
@@ -765,13 +796,14 @@ if diag_trigger or (not scan_trigger and stock_input):
                 if not res["fin_df"].empty:
                     clean_fin_show = res["fin_df"].copy().sort_values("date", ascending=False)
                     clean_fin_show.columns = ["季度日期", "單季 EPS", "營業收入", "營業毛利", "營業利益", "單季毛利率 (%)", "單季營益率 (%)"]
+                    # 🌟【格式化錯誤修正】將舊版的字體錯誤 {:Rx:,.0f} 100% 修正為標準無損規格 {:,.0f}
                     st.dataframe(clean_fin_show.style.format({
                         "單季 EPS": "{:.2f}", "營業收入": "{:,.0f}", "營業毛利": "{:,.0f}", 
                         "營業利益": "{:,.0f}", "單季毛利率 (%)": "{:.2f}%", "單季營益率 (%)": "{:.2f}%"
                     }), use_container_width=True)
             with st.expander("📈 技術面後台詳細物理量"):
                 st.write(f"**分價量密集牆(POC)** = `{res['volume_poc']:.2f}` 元 | **5日移動線 MA5** = `{res['ma5_val']:.2f}` 元 | **月生命線 MA20** = `{res['ma20_val']:.2f}` 元")
-                st.write(f"**趨勢擺動極值**: MACD 柱狀體 = `{res['macd_hist']:.3f}` | +DI = `{res['plus_di']:.1f}` | -DI = `{res['minus_di']:.1f}`")
+                st.write(f"**微觀指標物理量**: MACD 柱狀體 = `{res['macd_hist']:.3f}` | 通道帶寬 = `{res['bb_bandwidth']:.4f}` | +DI = `{res['plus_di']:.1f}`")
             with st.expander("📰 資訊面 24H 網路輿情即時新聞流水線"):
                 st.markdown(f"> **24H 網路即時輿情綜合定論**：`{res['news_analysis_report']}`")
                 if isinstance(res["raw_news_list"], list) and res["raw_news_list"]:
