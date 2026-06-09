@@ -188,7 +188,7 @@ def get_daily_df(stock_id: str, days: int = 365):
     df = df_raw.copy()
     df.columns = [c.strip() for c in df.columns]
     df = df.rename(columns={"Trading_Volume": "vol", "Trading_money": "amount", "max": "high", "min": "low"})
-    for c in ["close", "high", "low", "vol", "amount"]:
+    for c in ["open", "close", "high", "low", "vol", "amount"]:
         if c in df.columns: df[c] = pd.to_numeric(df[c], errors="coerce")
     return df.dropna(subset=["close", "high", "low", "vol"]).copy()
 
@@ -234,8 +234,9 @@ def get_taiwan_enhanced_chips(stock_id: str, days: int = 30):
     except Exception: pass
     return sitc_trend, margin_trend, sitc_3d_sum, margin_diff
 
+# 🌟【已修正】：將天數從 365 天拉長到 730 天，給予大腦 24 個月的營收時間縱深，徹底修復 YoY 計算失效變為 0.0% 的問題。
 @st.cache_data(ttl=900)
-def get_rev_df(stock_id: str, days: int = 365):
+def get_rev_df(stock_id: str, days: int = 730):
     api = get_api()
     df = api.taiwan_stock_month_revenue(stock_id=stock_id, start_date=(datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d"))
     return df.copy() if df is not None else None
@@ -339,10 +340,20 @@ def prepare_indicator_df(df: pd.DataFrame):
     x["K9"] = k_list
     x["D9"] = d_list
 
+    # 🌟【已新增】：微觀 K 線型態賣壓指標（爆量長上影線冤魂牆）
+    if "open" in x.columns:
+        x["upper_shadow"] = x["high"] - np.maximum(x["open"], x["close"])
+        x["k_body"] = (x["open"] - x["close"]).abs()
+        x["total_range"] = x["high"] - x["low"].replace(0, 0.00001)
+        x["is_long_upper_shadow"] = (x["upper_shadow"] > x["k_body"]) & (x["upper_shadow"] / x["total_range"] > 0.4)
+    else:
+        x["is_long_upper_shadow"] = False
+
     return x.dropna(subset=["ATR14", "MA5", "MA20", "MA60", "Res_20D", "BB_bandwidth", "RSI14", "MACD_HIST", "K9", "D9"]).copy()
 
 # ============ 8. 五維度因果縱向串聯決策大腦 ============
-def cross_factor_decoupling_engine(macro_bull, trend_phase, fin_conclusion, sitc_trend, margin_trend, tech_short, latest_yoy, pe_desc, current_price, volume_poc):
+# 🌟【已修正】：增加兩大極端賣壓濾網參數 (k_shadow_trap, is_broker_dumping_risk) 進行縱向因果解耦
+def cross_factor_decoupling_engine(macro_bull, trend_phase, fin_conclusion, sitc_trend, margin_trend, tech_short, latest_yoy, pe_desc, current_price, volume_poc, k_shadow_trap, is_broker_dumping_risk):
     f_is_good = "【財報年增擴張】" in fin_conclusion or latest_yoy >= 20
     f_is_bad = "【本業結構退步】" in fin_conclusion and latest_yoy < 5
     c_is_locked = "投信強力鎖碼" in sitc_trend or "融資大量退場" in margin_trend
@@ -350,6 +361,14 @@ def cross_factor_decoupling_engine(macro_bull, trend_phase, fin_conclusion, sitc
     t_is_strong = "起漲" in tech_short or "多頭" in tech_short
     
     is_under_poc_wall = current_price < volume_poc and (volume_poc - current_price) / current_price <= 0.03
+
+    # 🌟【已新增】：爆量長上影線賣壓 戰略一票否決
+    if k_shadow_trap:
+        return "❌ 爆量長上影：冤魂套牢牆頂天", "red", "警告！該股當前觸發『爆量長上影線』極端賣壓。 K 線顯示盤中衝高時有海量大戶資金瘋狂倒貨，導致留下一大條上影線，所有盤中追價者集體重傷。這屬於強烈的反轉或主力趁熱度出貨訊號，上方套牢賣壓極其沉重，大腦無條件一票否決，嚴禁進場當替死鬼！"
+
+    # 🌟【已新增】：潛在隔日沖與高額當沖踩踏 戰略一票否決
+    if is_broker_dumping_risk:
+        return "🚨 惡性金流陷阱：隔日沖與當沖大踩踏", "red", "極度危險！行為學特徵偵測顯示此為標準的『主力拉高倒貨劇本』：早盤利用利多消息強勢開極高，誘騙散戶進場後不計代價瘋狂下殺，終場收在低檔且爆出歷史級巨量。此金流特徵極高機率為隔日沖大戶集體集體套現拋售，或當沖客踩踏現場，明日開盤必有續跌拋壓。強制關閉開火權！"
 
     if not macro_bull:
         if t_is_strong:
@@ -415,7 +434,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
             df_for_indicators.iloc[-1, df_for_indicators.columns.get_loc("vol")] = current_vol
         else:
             new_row = pd.DataFrame([{
-                "date": today_str, "close": float(current_price),
+                "date": today_str, "open": float(current_price), "close": float(current_price),
                 "high": float(max(current_price, hist_last_close)), "low": float(min(current_price, hist_last_close)),
                 "vol": float(current_vol), "amount": float(current_price * current_vol * 1000) 
             }])
@@ -477,8 +496,9 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     elif is_compressed: trend_phase = "💤 潛伏築底蓄勢期"
     else: trend_phase = "📉 空頭波段修正期"
 
+    # 🌟【已修正】：此處的 get_rev_df 呼叫同步改為 730 天，讓 Pandas 手算 YoY 的 pct_change(12) 獲得足夠的歷史資料，成功算回最新營收 YoY 數據。
     latest_yoy = 0.0
-    rev_df = get_rev_df(stock_id, days=365)
+    rev_df = get_rev_df(stock_id, days=730)
     if rev_df is not None and not rev_df.empty and "revenue" in rev_df.columns:
         rev_clean = rev_df.copy()
         rev_clean["revenue"] = pd.to_numeric(rev_clean["revenue"].astype(str).str.replace(",", ""), errors="coerce")
@@ -551,9 +571,25 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     if positive_catalysts_list:
         recent_catalyst_summary = "<b>🎯 關鍵消息面利多題材：</b><br>" + "<br>".join([f"• {t}" for t in positive_catalysts_list[:2]])
 
+    # 🌟【已新增】：微觀雙重核心極端賣壓動態精算
+    k_shadow_trap = bool(hist_last.get("is_long_upper_shadow", False)) and vol_spike
+
+    open_p = safe_float(hist_last.get("open"))
+    high_p = safe_float(hist_last.get("high"))
+    low_p = safe_float(hist_last.get("low"))
+    close_p = safe_float(hist_last.get("close"))
+    prev_close_p = safe_float(df.iloc[-2]["close"]) if len(df) > 1 else open_p
+    
+    open_gap_pct = ((open_p - prev_close_p) / prev_close_p) * 100 if prev_close_p > 0 else 0
+    close_to_low_pct = ((close_p - low_p) / (high_p - low_p)) if (high_p - low_p) > 0 else 1
+    
+    is_broker_dumping_risk = (open_gap_pct > 3.5) and (close_to_low_pct < 0.35) and (current_vol > vol_ma20_val * 2.5)
+
     tech_short_status = "🚀 準備起漲" if (current_price >= real_resistance * 0.99 and vol_spike) else "🚀 多頭成形" if (rsi_now > 55 or k9_now > d9_now) else "中性觀望"
+    
+    # 將全新的極端賣壓變數送進決策大腦
     final_decision, final_color, final_desc = cross_factor_decoupling_engine(
-        macro_bull, trend_phase, fin_conclusion, sitc_trend, margin_trend, tech_short_status, latest_yoy, pe_desc, current_price, volume_poc
+        macro_bull, trend_phase, fin_conclusion, sitc_trend, margin_trend, tech_short_status, latest_yoy, pe_desc, current_price, volume_poc, k_shadow_trap, is_broker_dumping_risk
     )
 
     t = tick_size(current_price)
@@ -674,7 +710,7 @@ if diag_trigger or (not scan_trigger and stock_input):
                         <span style="color: #9CA3AF; font-size: 13px; font-weight: 600; letter-spacing: 0.05em;">DIAGNOSTIC TARGET</span>
                         <h1 style="margin: 4px 0 0 0; color: #FFFFFF; font-size: 28px; font-weight: 800;">{res['stock_name']} <span style="color: #3B82F6;">({res['stock_id']})</span></h1>
                     </div>
-                    <div style="text-align: right;">
+                    <div>
                         <span style="color: #9CA3AF; font-size: 13px; font-weight: 600;">大類板塊歸屬</span>
                         <h3 style="margin: 4px 0 0 0; color: #F3F4F6; font-size: 18px; font-weight: 700;">{res['industry']}</h3>
                     </div>
@@ -694,7 +730,7 @@ if diag_trigger or (not scan_trigger and stock_input):
             with c4: st.markdown(custom_hud_box("🎯 核心開火預期價", f"<span style='font-size:15px; color:#2563EB;'>{res['expected_target_price']:.2f} 元</span><br><small style='color:#64748B; font-weight:500;'>最佳對位: {res['strategy_route']}</small>"), unsafe_allow_html=True)
 
             st.markdown("### 🎯 決策大腦全方位縱向串聯裁決")
-            color_hex = {"red": "#FF4B4B", "purple": "#7D3CFF", "green": "#2BD9A120", "blue": "#1C86EE", "gray": "#808080", "orange": "#F59E0B"}[res["final_color"]]
+            color_hex = {"red": "#FF4B4B", "purple": "#7D3CFF", "green": "#2BD9A1", "blue": "#1C86EE", "gray": "#808080", "orange": "#F59E0B"}[res["final_color"]]
             st.markdown(f"""
             <div style="background-color:{color_hex}10; border-left: 6px solid {color_hex}; padding: 18px; border-radius: 6px; margin-bottom: 20px;">
                 <h3 style="margin:0; color:{color_hex}; font-size:20px; font-weight:800;">【最終戰略判定：{res['final_decision']}】</h3>
@@ -756,7 +792,7 @@ if diag_trigger or (not scan_trigger and stock_input):
                 st.markdown(f"""
                 <div style="background-color: #F8FAFC; padding: 16px; border-radius: 6px; border-left: 5px solid #2563EB; border-top: 1px solid #E2E8F0; border-right: 1px solid #E2E8F0; border-bottom: 1px solid #E2E8F0;">
                     <h4 style="margin: 0 0 12px 0; color: #1E40AF; font-weight:800;">🚀 流派一：突破前高起漲劇本 (Breakout)</h4>
-                    <p style="font-size: 14px; margin: 5px 0;"><b>精密建倉觸發點</b>：≥ {res['real_resistance']:.2f} 元</p>
+                    <p style="font-size: 14px; margin: 5px 0;"><b>精密建倉觸發點</b>：&ge; {res['real_resistance']:.2f} 元</p>
                     <p style="font-size: 14px; margin: 5px 0;"><b>期望波段獲利目標</b>：<span style="color:#2563EB; font-weight:700;">{res['target_brk']:.2f} 元</span></p>
                     <p style="font-size: 14px; margin: 5px 0;"><b>技術硬性防守停損</b>：{res['stop_brk']:.2f} 元</p>
                     <p style="font-size: 14px; margin: 5px 0;"><b>期望風險報酬比 (R:R)</b>：{res['rr1_brk']:.2f}</p>
@@ -774,7 +810,6 @@ if diag_trigger or (not scan_trigger and stock_input):
                 """, unsafe_allow_html=True)
 
             st.markdown("<br>", unsafe_allow_html=True)
-            # 🌟【完全補齊：後半段風控指標與底層展開驗證大表，保證一字不刪減】
             st.markdown("### 🛡️ 量化核心風控配額開火劇本")
             if res["suggested_lots"] == 0: st.error("🚨 【核心風控最高警戒：拒絕進場】 敞口關閉。")
             b1, b2, b3, b4 = st.columns(4)
