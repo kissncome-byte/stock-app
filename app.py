@@ -649,4 +649,132 @@ if diag_trigger or (not scan_trigger and stock_input):
                     </div>
                     <div style="text-align: right;">
                         <span style="color: #9CA3AF; font-size: 13px; font-weight: 600;">大類板塊歸屬</span>
-                        <h3 style="margin: 4px 0 0 0; color: #F3F4F
+                        <h3 style="margin: 4px 0 0 0; color: #F3F4F6; font-size: 18px; font-weight: 700;">{res['industry']}</h3>
+                    </div>
+                    <div style="text-align: right; background-color: rgba(255,255,255,0.05); padding: 6px 12px; border-radius: 6px;">
+                        <span style="color: #9CA3AF; font-size: 11px; font-weight: 600; display:block;">即時流報價狀態</span>
+                        <span style="color: #F9FAFB; font-weight: 600; font-size: 13px;">來源: {res['rt_source']} | 狀態: </span>
+                        <span style="color: {res['m_color']}; font-weight: 700; font-size: 13px;">{res['m_desc']}</span>
+                    </div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+            # === 前端 HUD 抬頭顯示牆 ===
+            c1, c2, c3, c4 = st.columns(4)
+            with c1: st.markdown(custom_hud_box("💡 當前即時市價", f"<span style='font-size:20px; color:#0F172A;'>{res['current_price']:.2f} 元</span><br><small style='color:#64748B; font-weight:500;'>盤中即時量: {res['current_vol']:.0f} 張</small>"), unsafe_allow_html=True)
+            with c2: st.markdown(custom_hud_box("⏱️ 短期動能趨勢 (含MA5週線)", res["short_term_trend"], font_color="#10B981" if "多頭" in res["short_term_trend"] or "噴發" in res["short_term_trend"] else "#EF4444"), unsafe_allow_html=True)
+            with c3: st.markdown(custom_hud_box("⏳ 長期波段底蘊", res["long_term_trend"], font_color="#7C3AED" if "主升段" in res["long_term_trend"] else "#64748B"), unsafe_allow_html=True)
+            with c4: st.markdown(custom_hud_box("🎯 核心開火預期價", f"<span style='font-size:16px; color:#2563EB;'>{res['expected_target_price']:.2f} 元</span><br><small style='color:#64748B; font-weight:500;'>最佳對位: {res['strategy_route']}</small>"), unsafe_allow_html=True)
+
+            # === 最終決策建議 ===
+            st.markdown("### 🎯 決策大腦全方位縱向串聯裁決")
+            color_hex = {"red": "#FF4B4B", "purple": "#7D3CFF", "green": "#2BD9A1", "blue": "#1C86EE", "gray": "#808080", "orange": "#F59E0B"}[res["final_color"]]
+            st.markdown(f"""
+            <div style="background-color:{color_hex}10; border-left: 6px solid {color_hex}; padding: 18px; border-radius: 6px; margin-bottom: 20px;">
+                <h3 style="margin:0; color:{color_hex}; font-size:20px; font-weight:800;">【最終戰略判定：{res['final_decision']}】</h3>
+                <p style="margin: 12px 0 0 0; color:#1E293B; font-size:14.5px; font-weight:600; line-height:1.65; text-align: justify;">{res['final_desc']}</p>
+            </div>
+            """, unsafe_allow_html=True)
+
+            # === 四維度核心因子面板 ===
+            st.markdown("### 🏛️ 四維度因子核心動態曝光面板")
+            f1, f2, f3, f4 = st.columns(4)
+            with f1:
+                st.markdown("""<div style="background-color:#F8FAFC; padding:12px; border-radius:6px; border-top:4px solid #10B981; min-height:175px; border-left:1px solid #E2E8F0; border-right:1px solid #E2E8F0; border-bottom:1px solid #E2E8F0;">
+                    <h5 style="margin:0; color:#065F46; font-size:14px; font-weight:700;">💎 財務面基本結構</h5>
+                    <ul style="margin:8px 0 0 0; padding-left:16px; font-size:13px; color:#334155; line-height:1.5; font-weight:600;">
+                        <li>最新月營收YoY: <span style="color:#10B981; font-weight:700;">""" + f"{res['latest_yoy']:.1f}%" + """</span></li>
+                        <li>單季毛利率: """ + f"{res['gpm_now']:.1f}%" + """</li>
+                        <li>單季營益率: """ + f"{res['opm_now']:.1f}%" + """</li>
+                        <li>體質定性: """ + res['fin_conclusion'].replace("📈", "").replace("📉", "").replace("⚖️", "").strip() + """</li>
+                    </ul>
+                </div>""", unsafe_allow_html=True)
+            with f2:
+                st.markdown("""<div style="background-color:#F8FAFC; padding:12px; border-radius:6px; border-top:4px solid #3B82F6; min-height:175px; border-left:1px solid #E2E8F0; border-right:1px solid #E2E8F0; border-bottom:1px solid #E2E8F0;">
+                    <h5 style="margin:0; color:#1E40AF; font-size:14px; font-weight:700;">🦅 籌碼面核心金流</h5>
+                    <ul style="margin:8px 0 0 0; padding-left:16px; font-size:13px; color:#334155; line-height:1.5; font-weight:600;">
+                        <li><b>神祕主力控盤度</b>: <span style="color:#2563EB; font-weight:700;">""" + res["main_force_label"] + """</span></li>
+                        <li>投信3日進出: """ + f"{res['sitc_3d_sum']:.0f} 張" + """</li>
+                        <li>散戶融資5日增減: """ + f"{res['margin_diff']:.0f} 張" + """</li>
+                        <li>浮額沉澱狀態: """ + res['margin_trend'].replace("🚨", "").replace("🟢", "").replace("🟡", "").strip() + """</li>
+                    </ul>
+                </div>""", unsafe_allow_html=True)
+            with f3:
+                st.markdown("""<div style="background-color:#F8FAFC; padding:12px; border-radius:6px; border-top:4px solid #F59E0B; min-height:175px; border-left:1px solid #E2E8F0; border-right:1px solid #E2E8F0; border-bottom:1px solid #E2E8F0;">
+                    <h5 style="margin:0; color:#92400E; font-size:14px; font-weight:700;">📊 估值面歷史位階</h5>
+                    <ul style="margin:8px 0 0 0; padding-left:16px; font-size:13px; color:#334155; line-height:1.5; font-weight:600;">
+                        <li>滾動本益比: <span style="color:#D97706; font-weight:700;">""" + f"{res['pe_val']:.1f} 倍" + """</span></li>
+                        <li>近四季總EPS: """ + f"{res['eps_4q']:.2f} 元" + """</li>
+                        <li>位階判定: """ + res['pe_desc'].replace("🚨", "").replace("🟢", "").replace("⚖️", "").strip() + """</li>
+                        <li>防禦邊際: """ + ("高鐵板 (便宜)" if res['pe_val']<13 else "常態區間" if res['pe_val']<=35 else "危險區 (泡沫)") + """</li>
+                    </ul>
+                </div>""", unsafe_allow_html=True)
+            with f4:
+                st.markdown("""<div style="background-color:#F8FAFC; padding:12px; border-radius:6px; border-top:4px solid #7C3AED; min-height:175px; border-left:1px solid #E2E8F0; border-right:1px solid #E2E8F0; border-bottom:1px solid #E2E8F0;">
+                    <h5 style="margin:0; color:#5B21B6; font-size:14px; font-weight:700;">⏱️ 微觀技術與分價量牆</h5>
+                    <ul style="margin:8px 0 0 0; padding-left:16px; font-size:13px; color:#334155; line-height:1.4; font-weight:600;">
+                        <li><b>分價量密集牆(POC)</b>: <span style="color:#7C3AED; font-weight:700;">""" + f"{res['volume_poc']:.2f} 元" + """</span></li>
+                        <li>五日線(MA5): """ + f"{res['ma5_val']:.2f} 元" + """</li>
+                        <li>擺動強弱RSI14: """ + f"{res['rsi_now']:.1f}" + """</li>
+                        <li>趨勢強度ADX14: """ + f"{res['adx_now']:.1f}" + """</li>
+                        <li>布林帶寬: """ + f"{res['bb_bandwidth']:.4f}" + """</li>
+                    </ul>
+                </div>""", unsafe_allow_html=True)
+
+            st.markdown("<br>", unsafe_allow_html=True)
+
+            # === 精密雙軌交易藍圖對照區 ===
+            st.markdown("### 🗺️ 精密雙軌量化交易藍圖對照區")
+            bl1, bl2 = st.columns(2)
+            with bl1:
+                st.markdown(f"""
+                <div style="background-color: #F8FAFC; padding: 16px; border-radius: 6px; border-left: 5px solid #2563EB; border-top: 1px solid #E2E8F0; border-right: 1px solid #E2E8F0; border-bottom: 1px solid #E2E8F0;">
+                    <h4 style="margin: 0 0 12px 0; color: #1E40AF; font-weight:800;">🚀 流派一：突破前高起漲劇本 (Breakout)</h4>
+                    <p style="font-size: 14px; margin: 5px 0;"><b>精密建倉觸發點</b>：≥ {res['real_resistance']:.2f} 元 (強勢帶量過壓力位)</p>
+                    <p style="font-size: 14px; margin: 5px 0;"><b>期望波段獲利目標</b>：<span style="color:#2563EB; font-weight:700;">{res['target_brk']:.2f} 元</span></p>
+                    <p style="font-size: 14px; margin: 5px 0;"><b>技術硬性防守停損</b>：{res['stop_brk']:.2f} 元</p>
+                    <p style="font-size: 14px; margin: 5px 0;"><b>期望風險報酬比 (R:R)</b>：{res['rr1_brk']:.2f}</p>
+                </div>
+                """, unsafe_allow_html=True)
+            with bl2:
+                st.markdown(f"""
+                <div style="background-color: #F8FAFC; padding: 16px; border-radius: 6px; border-left: 5px solid #10B981; border-top: 1px solid #E2E8F0; border-right: 1px solid #E2E8F0; border-bottom: 1px solid #E2E8F0;">
+                    <h4 style="margin: 0 0 12px 0; color: #065F46; font-weight:800;">🛡️ 流派二：均線拉回低吸劇本 (Pullback)</h4>
+                    <p style="font-size: 14px; margin: 5px 0;"><b>精密低吸左側買點</b>：貼近 {res['ma20_val']:.2f} 元 (縮量回踩月生命線)</p>
+                    <p style="font-size: 14px; margin: 5px 0;"><b>期望反彈獲利目標</b>：<span style="color:#10B981; font-weight:700;">{res['target_pb']:.2f} 元</span> (前波箱頂高點)</p>
+                    <p style="font-size: 14px; margin: 5px 0;"><b>技術硬性防守停損</b>：{res['stop_pb']:.2f} 元</p>
+                    <p style="font-size: 14px; margin: 5px 0;"><b>期望風險報酬比 (R:R)</b>：{res['rr1_pb']:.2f}</p>
+                </div>
+                """, unsafe_allow_html=True)
+
+            st.markdown("<br>", unsafe_allow_html=True)
+
+            # === 量化防禦風控配額 ===
+            st.markdown("### 🛡️ 量化核心風控配額開火劇本")
+            if res["suggested_lots"] == 0: st.error("🚨 【核心風控最高警戒：拒絕進場】 敞口關閉。請防禦觀望。")
+            b1, b2, b3, b4 = st.columns(4)
+            with b1: st.metric("精算風控進場配置", f"{res['suggested_lots']} 張", "大腦依劇本自動加減碼")
+            with b2: st.metric("當前劇本硬停損價", f"{res['expected_stop_price']:.2f} 元")
+            with b3: st.metric("盤中動態移動停利線", f"{res['trailing_stop_line']:.2f} 元")
+            with b4: st.metric("大盤加權指數防禦網", "多頭安全" if "站穩" in res["macro_desc"] else "空頭高風險", res["macro_desc"])
+            
+            st.markdown("---")
+
+            # === 備用底層數據驗證漏斗 ===
+            st.markdown("### 🔍 跨因子微觀底層驗證數據")
+            with st.expander("📊 財務基本面完整財務矩陣大表"):
+                if not res["fin_df"].empty:
+                    clean_fin_show = res["fin_df"].copy().sort_values("date", ascending=False)
+                    clean_fin_show.columns = ["季度日期", "單季 EPS", "營業收入", "營業毛利", "營業利益", "單季毛利率 (%)", "單季營益率 (%)"]
+                    st.dataframe(clean_fin_show.style.format({
+                        "單季 EPS": "{:.2f}", "營業收入": "{:,.0f}", "營業毛利": "{:,.0f}", 
+                        "營業利益": "{:,.0f}", "單季毛利率 (%)": "{:.2f}%", "單季營益率 (%)": "{:.2f}%"
+                    }), use_container_width=True)
+            with st.expander("📈 技術面後台詳細物理量"):
+                st.write(f"* **均線防守**: 5日線 MA5 = `{res['ma5_val']:.2f}` 元 | 月線 MA20 = `{res['ma20_val']:.2f}` 元 | 季線 MA60 = `{res['ma60_val']:.2f}` 元")
+                st.write(f"* **擺動極值**: MACD 柱狀體 = `{res['macd_hist']:.3f}` | +DI = `{res['plus_di']:.1f}` | -DI = `{res['minus_di']:.1f}`")
+            with st.expander("📰 資訊面 24H 網路輿情即時新聞流水線"):
+                st.markdown(f"> **24H 網路即時輿情報告**：`{res['news_analysis_report']}`")
+                if isinstance(res["raw_news_list"], list) and res["raw_news_list"]:
+                    for n in res["raw_news_list"]: st.markdown(f"* **[{n['date']}]** 【{n['source']}】  [{n['sentiment']}]  [{n['title']}]({n['link']})")
