@@ -366,7 +366,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     bandwidth_60d = df["BB_bandwidth"].tail(60)
     is_compressed = current_bandwidth < bandwidth_60d.quantile(compress_quantile) if not bandwidth_60d.empty else False
 
-    # 5 日大波段均線斜率與架構定性分析（解決反覆橫跳）
+    # 5 日大波段均線斜率與架構定性分析
     ma20_trend_5d = "上升" if (len(df) >= 5 and df["MA20"].iloc[-1] > df["MA20"].iloc[-5]) else "平盤"
     ma60_trend_5d = "上升" if (len(df) >= 5 and df["MA60"].iloc[-1] > df["MA60"].iloc[-5]) else "平盤"
     
@@ -489,7 +489,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
                 news_summary, news_color = "🟡 多空平衡", "gray"
                 news_analysis_report = f"⚖️ **【輿情中性】** 多空雜音交錯（多 {pos_cnt} 則、空 {neg_cnt} 則），回歸基本面拉鋸。"
 
-    # 技術動能短期定論
+    # ======= 【交叉過濾核心】：將微觀動能指標結合大波段環境進行多空解耦，修復打架漏洞 =======
     tech_conclusion_short = "中性觀望"
     tech_conclusion_long = "⚖️ 擺動指標目前處於中性橫盤區，大資金尚未表態，短線缺乏爆發性動能。"
     rsi_overbought_tmsh = 75 if is_heavyweight else 85
@@ -514,10 +514,15 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
             tech_conclusion_short = "🚀 多頭成形"
             tech_conclusion_long = "趨勢多頭成形，買盤動能延續性佳，適合尋找突破點切入。"
     elif float(hist_last["MINUS_DI"]) > float(hist_last["PLUS_DI"]) and adx_now >= 20:
-        tech_conclusion_short = "📉 空頭成形"
-        tech_conclusion_long = "📉 **【強勢空頭成形】** 技術面由空方完全主導，賣壓沉重，切勿盲目摸底。"
+        # 💡 解耦點：如果大格局已經是主升段，微觀 DMI 轉空代表「良性洗盤」，而非「空頭成形」
+        if "主升" in trend_phase:
+            tech_conclusion_short = "⚠️ 主升段急跌洗盤"
+            tech_conclusion_long = "⚠️ **【主升段劇烈回檔】** 宏觀均線（月線、季線）仍呈完美多頭排列，但短線遭遇主力劇烈洗盤（DMI空方發散）。此處屬於良性的浮額清洗，切勿盲目恐慌殺低，靜待股價回踩生命線止穩。"
+        else:
+            tech_conclusion_short = "📉 空頭成形"
+            tech_conclusion_long = "📉 **【強勢空頭成形】** 技術面由空方完全主導，長短期均線已全面蓋頭壓制，賣壓沉重，切勿盲目摸底。"
 
-    if tech_conclusion_short not in ["🚀 準備起漲", "🚀 完美多頭", "⚠️ 假突破嫌疑"] and current_price >= ma20_val and (current_price - ma20_val) / ma20_val <= 0.03:
+    if tech_conclusion_short not in ["🚀 準備起漲", "🚀 完美多頭", "⚠️ 假突破嫌疑", "⚠️ 主升段急跌洗盤"] and current_price >= ma20_val and (current_price - ma20_val) / ma20_val <= 0.03:
         if inst_3d_sum > 0 and latest_yoy > 15:
             tech_conclusion_short = "🛡️ 精準拉回"
             tech_conclusion_long = "🛡️ **【高手低吸點】** 股價修正至 MA20 均線防守區，過熱指標已洗淨，且下跌期間法人偷偷吃貨。"
@@ -602,7 +607,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     suggested_lots_pb = int((risk_money / loss_per_share_pb) / 1000) if loss_per_share_pb > 0 else 0
 
     max_lots_by_pool_brk = int((pool_allocation * 10000 / current_price) / 1000) if current_price > 0 else 0
-    if suggested_lots_brk > max_lots_by_pool_brk: suggested_lots_brk = max_lots_by_pool_brk
+    if Math_lots_by_pool_brk := suggested_lots_brk > max_lots_by_pool_brk: suggested_lots_brk = max_lots_by_pool_brk
         
     max_lots_by_pool_pb = int((pool_allocation * 10000 / current_price) / 1000) if current_price > 0 else 0
     if suggested_lots_pb > max_lots_by_pool_pb: suggested_lots_pb = max_lots_by_pool_pb
@@ -696,7 +701,7 @@ with tab1:
                 if res["invest_status"] == "🔮 特戰訊號：轉折爆發黑馬股":
                     st.balloons()
                 
-                # ======= 【已修復】：大波段架構趨勢追蹤艙，改用 st.info 呈現完美排版 =======
+                # 大波段架構趨勢追蹤艙
                 st.markdown(f"### 📈 大波段架構趨勢追蹤艙 ——— `{res['trend_badge']}`")
                 st.info(f"**【當前宏觀趨勢定性】**：{res['trend_phase']} \n\n {res['trend_desc']}")
                 
@@ -711,7 +716,7 @@ with tab1:
                 matrix_col3.markdown(f"**3. 👥 籌碼面大人**\n\n{c_light}")
                 matrix_col4.markdown(f"**4. 📈 技術面時機**\n\n{t_light}")
 
-                # 3. 下層：一針見血矛盾定論
+                # ======= 【修復點】：優化下層一針見血矛盾定論，根據交叉過濾結果渲染，拒絕多空打架 =======
                 if res['status_color'] == "red" and res['rr1_brk'] >= 1.5:
                     st.markdown(f"""
                     <div style="background-color:#FFEBEE; padding:15px; border-radius:8px; border-left:5px solid #F44336; margin-top:10px; margin-bottom:15px;">
@@ -727,6 +732,15 @@ with tab1:
                         <span style="color:#1B5E20; font-weight:bold; font-size:16px;">🚀 【操盤手一針見血定論：黃金訊號，方向與空間完美共振！】</span><br>
                         <span style="color:#1B5E20; font-size:14px;">
                             核心體質強健，技術面同時具備極佳的風報比防守優勢。這是具備基本面護城河支持的<b>真金白銀波段發動點</b>，請堅決執行下方計劃。
+                        </span>
+                    </div>
+                    """, unsafe_allow_html=True)
+                elif "主升" in res['trend_phase'] and "急跌" in res['tech_conclusion_short']:
+                    st.markdown(f"""
+                    <div style="background-color:#FFF3E0; padding:15px; border-radius:8px; border-left:5px solid #FF9800; margin-top:10px; margin-bottom:15px;">
+                        <span style="color:#E65100; font-weight:bold; font-size:16px;">⏳ 【操盤手一針見血定論：宏觀多頭不變，微觀急殺不追！】</span><br>
+                        <span style="color:#E65100; font-size:14px;">
+                            大格局均線呈完美多頭排列，此時微觀動能轉弱代表<b>高檔良性洗盤、清洗浮額</b>。策略上切忌盲目開火追擊，應保持耐心，等候股價回踩生命線止穩後，再行分批低吸佈局。
                         </span>
                     </div>
                     """, unsafe_allow_html=True)
@@ -857,7 +871,7 @@ with tab1:
                 st.subheader("🎯 精算交易藍圖與風控部位張數建議")
                 box_brk, box_pb = st.columns(2)
                 with box_brk:
-                    st.markdown("### 跑動追擊 【突破/起漲策略】藍圖")
+                    st.markdown("### 🏃‍♂️ 【突破/起漲策略】藍圖")
                     st.markdown(f"* **建議突破進場點：** `{res['current_price']}` 元")
                     st.markdown(f"* **預估停利目標價：** `{res['target_brk']}` 元")
                     st.markdown(f"* **防守撤退停損點：** `{res['stop_brk']}` 元")
@@ -869,7 +883,7 @@ with tab1:
                     if res['rr1_brk'] < 1.5: st.error(f"❌ 當前風報比: {res['rr1_brk']:.2f} (空間不足，不符期望值)")
                     else: st.success(f"🚀 當前風報比: {res['rr1_brk']:.2f} (🟢 符合進攻點幾何期望值)")
                 with box_pb:
-                    st.markdown("### 穩健防守 【均線拉回低吸策略】藍圖")
+                    st.markdown("### 🛡️ 【均線拉回低吸策略】藍圖")
                     st.markdown(f"* **理想低吸買入點：** `{res['current_price']}` 元")
                     st.markdown(f"* **短線預期停利價：** `{res['target_pb']}` 元")
                     st.markdown(f"* **破位防守停損點：** `{res['stop_pb']}` 元")
