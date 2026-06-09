@@ -14,7 +14,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 # ============ 1. Page Config ============
-st.set_page_config(page_title="SOP v42 五維全串聯即時動態系統", layout="wide")
+st.set_page_config(page_title="SOP v43 五維全串聯即時動態系統", layout="wide")
 
 # ============ 2. Global Constants ============
 TZ = pytz.timezone("Asia/Taipei")
@@ -103,7 +103,7 @@ def get_api():
         except Exception: pass
     return api
 
-# ============ 5. Live Data Streaming Engine (標準半形空格重構防線) ============
+# ============ 5. Live Data Streaming Engine ============
 def compute_live_data(stock_id: str, market_type: str, hist_last_close: float, hist_last_vol: float, live_price_override: float = None):
     if live_price_override is not None and live_price_override > 0:
         return live_price_override, hist_last_vol * 1.2, True, "模擬串流", "realtime"
@@ -113,7 +113,6 @@ def compute_live_data(stock_id: str, market_type: str, hist_last_close: float, h
 
     is_otc_hint = any(x in str(market_type).upper() for x in ["OTC", "TWO", "櫃", "柜", "上櫃"])
     
-    # 1. 優先採用 Yahoo Finance Quote 快照流打破交割封鎖
     yahoo_suffixes = [".TWO", ".TW"] if is_otc_hint else [".TW", ".TWO"]
     yahoo_headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
     for suffix in yahoo_suffixes:
@@ -134,7 +133,6 @@ def compute_live_data(stock_id: str, market_type: str, hist_last_close: float, h
         except Exception:
             pass
 
-    # 2. 備用 TWSE MIS 官方流
     if not rt_success:
         twse_channels = ["otc", "tse"] if is_otc_hint else ["tse", "otc"]
         twse_headers = {
@@ -171,8 +169,8 @@ def compute_live_data(stock_id: str, market_type: str, hist_last_close: float, h
         
     return (rt_price if rt_success else hist_last_close), (rt_vol if (rt_success and rt_vol > 0) else hist_last_vol), rt_success, rt_source, rt_type
 
-# ============ 6. Data Fetching Layers ============
-@st.cache_data(subset_mutation_protection=False)
+# ============ 6. Data Fetching Layers (🌟核心修正：刪除不合規參數，全面改回標準快取格式) ============
+@st.cache_data(ttl=3600)
 def get_stock_info_df():
     api = get_api()
     df = api.taiwan_stock_info()
@@ -285,7 +283,7 @@ def get_realtime_news_df(stock_id: str, stock_name: str):
     except Exception: pass
     return pd.DataFrame(columns=["date", "title", "source", "link"])
 
-# ============ 7. Technical Engine ============
+# ============ 7. Technical Engine (五日、MACD、RSI、DMI、VOL、KD 全因子搭載) ============
 def prepare_indicator_df(df: pd.DataFrame):
     if df is None or df.empty: return None
     x = df.copy().sort_values("date").reset_index(drop=True)
@@ -655,6 +653,7 @@ with top_col2:
 
 st.markdown("---")
 
+# 策略掃描排行榜
 if scan_trigger:
     st.subheader(f"📊 【{scan_label}】即時動態連線篩選排行榜")
     with st.spinner(f"五維度大腦正在對 {scan_label} 股池進行籌碼洗滌與 K 線真實流解碼..."):
@@ -674,6 +673,7 @@ if scan_trigger:
                 return [f'background-color: {color_map.get(row["color_code"], "#ffffff")}; font-weight: 600;'] * len(row)
             st.dataframe(df_scan.style.apply(highlight_verdict, axis=1), column_order=["代碼", "股名", "盤中市價", "大腦全串聯裁決", "短期動能", "波段底蘊", "開火預期價", "建議配置"], use_container_width=True, height=360)
 
+# 個股五維深度診斷呈现區
 if diag_trigger or (not scan_trigger and stock_input):
     with st.spinner("五維度大腦深度因果解耦中..."):
         res = evaluate_stock(stock_input, capital, risk_pct, slip_input)
@@ -706,7 +706,7 @@ if diag_trigger or (not scan_trigger and stock_input):
             with c4: st.markdown(custom_hud_box("🎯 核心開火預期價", f"<span style='font-size:15px; color:#2563EB;'>{res['expected_target_price']:.2f} 元</span><br><small style='color:#64748B; font-weight:500;'>最佳對位: {res['strategy_route']}</small>"), unsafe_allow_html=True)
 
             st.markdown("### 🎯 決策大腦全方位縱向串聯裁決")
-            color_hex = {"red": "#FF4B4B", "purple": "#7D3CFF", "green": "#2BD9A1", "blue": "#1C86EE", "gray": "#808080", "orange": "#F59E0B"}[res["final_color"]]
+            color_hex = {"red": "#FF4B4B", "purple": "#7D3CFF", "green": "#2BD9A120", "blue": "#1C86EE", "gray": "#808080", "orange": "#F59E0B"}[res["final_color"]]
             st.markdown(f"""
             <div style="background-color:{color_hex}10; border-left: 6px solid {color_hex}; padding: 18px; border-radius: 6px; margin-bottom: 20px;">
                 <h3 style="margin:0; color:{color_hex}; font-size:20px; font-weight:800;">【最終戰略判定：{res['final_decision']}】</h3>
@@ -748,7 +748,7 @@ if diag_trigger or (not scan_trigger and stock_input):
                 </div>""", unsafe_allow_html=True)
             with f4:
                 st.markdown("""<div style="background-color:#FDF4FF; padding:12px; border-radius:6px; border-top:4px solid #7C3AED; min-height:185px; border-left:1px solid #E2E8F0; border-right:1px solid #E2E8F0; border-bottom:1px solid #E2E8F0;">
-                    <h5 style="margin:0; color:#5B21B6; font-size:14px; font-weight:700;">⏱ nighttime 微觀技術與消息面利多</h5>
+                    <h5 style="margin:0; color:#5B21B6; font-size:14px; font-weight:700;">⏱️ 微觀技術與消息面利多</h5>
                     <ul style="margin:6px 0 0 0; padding-left:16px; font-size:13px; color:#1E293B; line-height:1.45; font-weight:600;">
                         <li>五日攻擊線(MA5): <span style="color:#7C3AED;">""" + f"{res['ma5_val']:.2f} 元" + """</span></li>
                         <li>分價量密集牆(POC): """ + f"{res['volume_poc']:.2f} 元" + """</li>
