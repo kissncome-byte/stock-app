@@ -1,7 +1,7 @@
 import os
 import time
 import requests
-import certify
+import certifi
 import urllib.parse
 import pandas as pd
 import numpy as np
