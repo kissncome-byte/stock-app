@@ -14,13 +14,13 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 # ============ 1. Page Config ============
-st.set_page_config(page_title="SOP v39 五維全串聯即時動態系統", layout="wide")
+st.set_page_config(page_title="SOP v40 五維全串聯即時動態系統", layout="wide")
 
 # ============ 2. Global Constants ============
 TZ = pytz.timezone("Asia/Taipei")
 FINMIND_TOKEN = os.getenv("FINMIND_TOKEN", "") or st.secrets.get("FINMIND_TOKEN", "")
 
-# ============ 3. Helper Functions & Utilities (工具防線全面最頂層加固) ============
+# ============ 3. Helper Functions & Utilities (工具與 HTML 盒子最頂層封裝) ============
 def safe_float(x, default=0.0):
     try:
         if x is None or str(x).strip() in ["-", "", "None", "nan", "NaN"]:
@@ -43,11 +43,11 @@ def round_to_tick(x: float, t: float) -> float:
     return round(x / t) * t
 
 def custom_hud_box(title, value, font_color="#1E293B"):
-    """彈性 CSS 盒子，支援自動換行與精準排版，徹底解決文字遭 st.metric 截斷的缺陷"""
+    """自適應 CSS 箱體，100% 彈性折行，徹底杜絕 st.metric 對長中文字體截斷成 ... 的災難"""
     return f"""
-    <div style="background-color: #F8FAFC; border: 1px solid #E2E8F0; padding: 14px; border-radius: 6px; min-height: 105px; box-shadow: 0 1px 2px rgba(0,0,0,0.02); margin-bottom: 10px;">
-        <span style="color: #64748B; font-size: 13px; font-weight: 600; display: block; margin-bottom: 5px; letter-spacing: 0.02em;">{title}</span>
-        <span style="color: {font_color}; font-size: 14.5px; font-weight: 700; display: block; line-height: 1.5; white-space: normal; word-break: break-all;">{value}</span>
+    <div style="background-color: #F8FAFC; border: 1px solid #E2E8F0; padding: 12px; border-radius: 6px; min-height: 105px; box-shadow: 0 1px 2px rgba(0,0,0,0.02); margin-bottom: 10px;">
+        <span style="color: #64748B; font-size: 12.5px; font-weight: 600; display: block; margin-bottom: 5px; letter-spacing: 0.02em;">{title}</span>
+        <span style="color: {font_color}; font-size: 14px; font-weight: 700; display: block; line-height: 1.5; white-space: normal; word-break: break-all;">{value}</span>
     </div>
     """
 
@@ -112,7 +112,6 @@ def compute_live_data(stock_id: str, market_type: str, hist_last_close: float, h
     rt_source, rt_type = "歷史收盤", "historical"
     session = get_requests_session()
 
-    # 識別首選提示
     is_otc_hint = any(x in str(market_type).upper() for x in ["OTC", "TWO", "櫃", "柜", "上櫃"])
     twse_channels = ["otc", "tse"] if is_otc_hint else ["tse", "otc"]
 
@@ -283,6 +282,7 @@ def prepare_indicator_df(df: pd.DataFrame):
     x["TR"] = np.maximum(x["high"] - x["low"], np.maximum((x["high"] - close_prev).abs(), (x["low"] - close_prev).abs()))
     x["ATR14"] = x["TR"].ewm(com=13, adjust=False).mean()
     
+    # 均線（MA）與成交量（VOL）
     x["MA5"] = x["close"].rolling(5).mean()
     x["MA5_Vol"] = x["vol"].rolling(5).mean()
     x["MA20"] = x["close"].rolling(20).mean()
@@ -295,11 +295,13 @@ def prepare_indicator_df(df: pd.DataFrame):
     x["BB_lower"] = x["MA20"] - (x["std20"] * 2)
     x["BB_bandwidth"] = (x["BB_upper"] - x["BB_lower"]) / x["MA20"]
 
+    # 擺動強弱（RSI）
     delta = x["close"].diff()
     avg_gain = delta.clip(lower=0).ewm(com=13, adjust=False).mean()
     avg_loss = -delta.clip(upper=0).ewm(com=13, adjust=False).mean().replace(0, 0.00001)
     x["RSI14"] = 100 - (100 / (1 + (avg_gain / avg_loss)))
 
+    # 趨勢動能（DMI）
     x["up_move"] = x["high"].diff()
     x["down_move"] = x["low"].shift(1) - x["low"]
     x["plus_dm"] = np.where((x["up_move"] > x["down_move"]) & (x["up_move"] > 0), x["up_move"], 0)
@@ -309,12 +311,14 @@ def prepare_indicator_df(df: pd.DataFrame):
     x["MINUS_DI"] = (x["minus_dm"].ewm(com=13, adjust=False).mean() / tr_smooth) * 100
     x["ADX14"] = ((x["PLUS_DI"] - x["MINUS_DI"]).abs() / (x["PLUS_DI"] + x["MINUS_DI"]).replace(0, 0.00001) * 100).ewm(com=13, adjust=False).mean()
 
+    # 指數平滑（MACD）
     x["EMA12"] = x["close"].ewm(span=12, adjust=False).mean()
     x["EMA26"] = x["close"].ewm(span=26, adjust=False).mean()
     x["MACD_DIF"] = x["EMA12"] - x["EMA26"]
     x["MACD_SIGNAL"] = x["MACD_DIF"].ewm(span=9, adjust=False).mean()
     x["MACD_HIST"] = x["MACD_DIF"] - x["MACD_SIGNAL"]
 
+    # 隨機擺動指標 KD
     low_min = x["low"].rolling(9).min()
     high_max = x["high"].rolling(9).max()
     x["RSV"] = 100 * ((x["close"] - low_min) / (high_max - low_min).replace(0, 0.00001))
@@ -351,7 +355,7 @@ def cross_factor_decoupling_engine(macro_bull, trend_phase, fin_conclusion, sitc
             return "❌ 宏觀與個股全面雙空共振", "red", "大盤大環境位於空方警戒區，且個股自身技術架構亦步步下沉。基本面缺乏爆發動能，籌碼面呈現凌亂拋壓，屬於標準空頭波段，必須嚴格避開，保持絕對空倉防禦。"
 
     if macro_bull and t_is_strong and is_under_poc_wall and not c_is_locked:
-        return "⚠️ 阻撞分價量套牢牆：慎防過關失敗", "orange", f"雖然大盤安全、個股動能偏多，但目前開火位階 ({current_price:.2f} 元) 正迎頭撞擊過去 180 天大戶密集區壓力牆（分價量表天花板：{volume_poc:.2f} 元）。在籌碼面未見法人大買背書前，極易遭解套盤壓回。策略：暫緩追高，待帶量跨越該壁垒再切入。"
+        return "⚠️ 阻撞分價量套牢牆：慎防過關失敗", "orange", f"雖然大盤安全、個股動能偏多，但目前開火位階 ({current_price:.2f} 元) 正迎頭撞擊過去 180 天大戶密集區壓力牆（分價量表天花板：{volume_poc:.2f} 元）。在籌碼面未見法人大買背書前，極易遭解套盤壓回。策略：暫緩追高，待帶量跨越該壁壘再切入。"
 
     if macro_bull and pe_desc != "🚨 估值瘋狂（高檔吹泡泡）" and f_is_good and c_is_locked and t_is_strong:
         return "🔮 頂級多頭共振：黃金主升飆股", "purple", f"五維度指標達成完美黃金交集！加權指數多頭護航，個股本益比未過熱。月營收與財報同步確認為『基本面擴張』，疊加投信主力鎖碼與散戶融資退場（籌碼極淨）。此時技術面發動『{tech_short}』，且現價已成功跨越分價量表密集區。屬於內資主力籌碼與基本面雙軌驅動的最高勝率飆股型態。策略：敞口調升至 1.5 倍，全力進攻！"
@@ -372,7 +376,7 @@ def cross_factor_decoupling_engine(macro_bull, trend_phase, fin_conclusion, sitc
 
 # ============ 9. Main Core Executor ============
 def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, slip_ticks: int):
-    # 🌟【完全體加固防線一：預先初始化所有核心變數】徹底消滅任何因數據缺失或判斷死角導致的 UnboundLocalError
+    # 變數自適應初始化
     trend_phase = "⚖️ 綜合平衡盤整期"
     short_term_trend = "⚪ 技術因子調整中"
     long_term_trend = "⚪ 波段底蘊定型中"
@@ -459,7 +463,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     if turnover_std > 0.4: main_force_score += 10.0
     main_force_label = f"🔥 強力控盤 ({main_force_score:.0f}%)" if main_force_score >= 65 else f"❄️ 籌碼散落 ({main_force_score:.0f}%)" if main_force_score <= 35 else f"⚖️ 常態調整 ({main_force_score:.0f}%)"
 
-    # 短短期趨勢判定
+    # 短短期趨勢
     kd_status = "黃金交叉" if k9_now > d9_now else "死亡交叉"
     if current_price >= ma5_val and ma5_val >= ma20_val: short_term_trend = f"🚀 五日線多頭噴發 (KD {kd_status})"
     elif current_price >= ma5_val and current_price < ma20_val: short_term_trend = f"📈 週線跌深反彈 (KD {kd_status})"
@@ -470,7 +474,6 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     elif current_price < ma60_val and (df["MA60"].iloc[-1] < df["MA60"].iloc[-5]): long_term_trend = "📉 季線下彎蓋頭（空頭修正架構）"
     else: long_term_trend = "💤 季線橫向延伸（箱型潛伏築底）"
 
-    # 🌟【精密加固：滴水不漏因果分類分支】保證百分之百指派到變數
     if current_price >= ma20_val and ma20_val >= ma60_val and (df["MA20"].iloc[-1] > df["MA20"].iloc[-5]): trend_phase = "🔥 波段多頭主升段"
     elif current_price < ma20_val and ma20_val >= ma60_val: trend_phase = "🛡️ 多頭架構拉回洗盤期"
     elif is_compressed: trend_phase = "💤 潛伏築底蓄勢期"
@@ -492,7 +495,10 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
         if not rev_clean.empty: latest_yoy = float(rev_clean.iloc[-1]["revenue_year_growth_rate"])
 
     # 季度財報金融股安全防禦
-    fin_df = get_financial_statement_df(stock_id, years=2)
+    # 🌟【核心快取修正防線】立刻在快取 DataFrame 被拉出來的那一秒，加上 .copy() 完全與唯讀記憶體解耦！
+    fin_df_raw = get_financial_statement_df(stock_id, years=2)
+    fin_df = fin_df_raw.copy() if (fin_df_raw is not None and not fin_df_raw.empty) else pd.DataFrame()
+    
     fin_conclusion = "📋 該標的暫無足夠季度財報歷史數據對比。"
     pe_desc = "⚪ 數據不足無法計算估值"
     pe_val = 0.0
@@ -530,7 +536,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
             else:
                 fin_conclusion = f"⚖️ 【結構調整期】 對比去年同期：毛利率『{gpm_text}』、營益率『{opm_text}』、EPS『{eps_lbl}』。"
 
-    # 新聞與輿情
+    # 新聞與利多事件催化劑特徵掃描
     news_analysis_report = "⚪ 暫無最新重要輿情。"
     positive_catalysts_list = []
     raw_news_list = []
@@ -553,8 +559,6 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
 
     # 微觀發動定性
     tech_short_status = "🚀 準備起漲" if (current_price >= real_resistance * 0.99 and vol_spike) else "🚀 多頭成形" if (rsi_now > 55 or k9_now > d9_now) else "中性觀望"
-    
-    # 縱向因果決策大腦呼叫（此處已被前置預指派完全加固保護）
     final_decision, final_color, final_desc = cross_factor_decoupling_engine(
         macro_bull, trend_phase, fin_conclusion, sitc_trend, margin_trend, tech_short_status, latest_yoy, pe_desc, current_price, volume_poc
     )
@@ -665,11 +669,18 @@ if scan_trigger:
             def highlight_verdict(row):
                 color_map = {"purple": "#7D3CFF20", "green": "#2BD9A120", "blue": "#1C86EE20", "red": "#FF4B4B20", "gray": "#80808020", "orange": "#F59E0B20"}
                 return [f'background-color: {color_map.get(row["color_code"], "#ffffff")}; font-weight: 600;'] * len(row)
-            st.dataframe(df_scan.style.apply(highlight_verdict, axis=1), column_order=["代碼", "股名", "盤中市價", "大腦全串聯裁決", "短期動能", "波段底蘊", "開火預期價", "建議配置"], use_container_width=True, height=360)
+            
+            st.dataframe(
+                df_scan.style.apply(highlight_verdict, axis=1), 
+                column_order=["代碼", "股名", "盤中市價", "大腦全串聯裁決", "短期動能", "波段底蘊", "開火預期價", "建議配置"],
+                use_container_width=True, 
+                height=360
+            )
+            st.success("💡 掃描完成！請在右上方控制台輸入代碼查閱精密劇本。")
 
-# 個股五維深度診斷呈现區
+# 個股五維深度診斷
 if diag_trigger or (not scan_trigger and stock_input):
-    with st.spinner("五維度大腦深度因果解耦中..."):
+    with st.spinner("五維度大腦深度因果解耦中，正在強制破除盤後結算凍結..."):
         res = evaluate_stock(stock_input, capital, risk_pct, slip_input)
         if res is None: st.error("該個股代碼數據獲取失敗，請確認編號。")
         else:
@@ -711,10 +722,10 @@ if diag_trigger or (not scan_trigger and stock_input):
             </div>
             """, unsafe_allow_html=True)
 
-            # === 四維度核心因子面板 (🌟 完美分流：f1~f4 全數歸位不覆寫) ===
+            # === 四維度核心因子面板 ===
             f1, f2, f3, f4 = st.columns(4)
             with f1:
-                st.markdown("""<div style="background-color:#F8FAFC; padding:12px; border-radius:6px; border-top:4px solid #10B981; min-height:195px; border-left:1px solid #E2E8F0; border-right:1px solid #E2E8F0; border-bottom:1px solid #E2E8F0;">
+                st.markdown("""<div style="background-color:#F8FAFC; padding:12px; border-radius:6px; border-top:4px solid #10B981; min-height:185px; border-left:1px solid #E2E8F0; border-right:1px solid #E2E8F0; border-bottom:1px solid #E2E8F0;">
                     <h5 style="margin:0; color:#065F46; font-size:14px; font-weight:700;">💎 財務面基本結構</h5>
                     <ul style="margin:8px 0 0 0; padding-left:16px; font-size:13px; color:#334155; line-height:1.5; font-weight:600;">
                         <li>最新月營收YoY: <span style="color:#10B981; font-weight:700;">""" + f"{res['latest_yoy']:.1f}%" + """</span></li>
@@ -724,7 +735,7 @@ if diag_trigger or (not scan_trigger and stock_input):
                     </ul>
                 </div>""", unsafe_allow_html=True)
             with f2:
-                st.markdown("""<div style="background-color:#F8FAFC; padding:12px; border-radius:6px; border-top:4px solid #3B82F6; min-height:195px; border-left:1px solid #E2E8F0; border-right:1px solid #E2E8F0; border-bottom:1px solid #E2E8F0;">
+                st.markdown("""<div style="background-color:#F8FAFC; padding:12px; border-radius:6px; border-top:4px solid #3B82F6; min-height:185px; border-left:1px solid #E2E8F0; border-right:1px solid #E2E8F0; border-bottom:1px solid #E2E8F0;">
                     <h5 style="margin:0; color:#1E40AF; font-size:14px; font-weight:700;">🦅 籌碼面核心金流</h5>
                     <ul style="margin:8px 0 0 0; padding-left:16px; font-size:13px; color:#334155; line-height:1.5; font-weight:600;">
                         <li><b>神祕主力控盤度</b>: <span style="color:#2563EB; font-weight:700;">""" + res["main_force_label"] + """</span></li>
@@ -734,7 +745,7 @@ if diag_trigger or (not scan_trigger and stock_input):
                     </ul>
                 </div>""", unsafe_allow_html=True)
             with f3:
-                st.markdown("""<div style="background-color:#F8FAFC; padding:12px; border-radius:6px; border-top:4px solid #F59E0B; min-height:195px; border-left:1px solid #E2E8F0; border-right:1px solid #E2E8F0; border-bottom:1px solid #E2E8F0;">
+                st.markdown("""<div style="background-color:#F8FAFC; padding:12px; border-radius:6px; border-top:4px solid #F59E0B; min-height:175px; border-left:1px solid #E2E8F0; border-right:1px solid #E2E8F0; border-bottom:1px solid #E2E8F0;">
                     <h5 style="margin:0; color:#92400E; font-size:14px; font-weight:700;">📊 估值面歷史位階</h5>
                     <ul style="margin:8px 0 0 0; padding-left:16px; font-size:13px; color:#334155; line-height:1.5; font-weight:600;">
                         <li>滾動本益比: <span style="color:#D97706; font-weight:700;">""" + f"{res['pe_val']:.1f} 倍" + """</span></li>
@@ -744,8 +755,8 @@ if diag_trigger or (not scan_trigger and stock_input):
                     </ul>
                 </div>""", unsafe_allow_html=True)
             with f4:
-                # 🌟【第四面板完美矯正：MA5、MACD、RSI、DMI、VOL 以及 KD 指標與消息面利多事件，並列排版絕不覆寫】
-                st.markdown("""<div style="background-color:#FDF4FF; padding:12px; border-radius:6px; border-top:4px solid #7C3AED; min-height:195px; border-left:1px solid #E2E8F0; border-right:1px solid #E2E8F0; border-bottom:1px solid #E2E8F0;">
+                # 🌟【第四面板硬核回歸】MA5、MACD、RSI、DMI、VOL 以及新加入的 KD 百分之百完全並列，底部無縫串聯消息面催化劑！
+                st.markdown("""<div style="background-color:#FDF4FF; padding:12px; border-radius:6px; border-top:4px solid #7C3AED; min-height:185px; border-left:1px solid #E2E8F0; border-right:1px solid #E2E8F0; border-bottom:1px solid #E2E8F0;">
                     <h5 style="margin:0; color:#5B21B6; font-size:14px; font-weight:700;">⏱️ 微觀技術與消息面利多催化劑</h5>
                     <ul style="margin:6px 0 0 0; padding-left:16px; font-size:13px; color:#1E293B; line-height:1.45; font-weight:600;">
                         <li>五日攻擊線(MA5): <span style="color:#7C3AED;">""" + f"{res['ma5_val']:.2f} 元" + """</span></li>
