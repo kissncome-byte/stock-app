@@ -262,7 +262,6 @@ def get_realtime_news_df(stock_id: str, stock_name: str):
         query = f"{str(stock_name)} {str(stock_id)} when:1d"
         encoded_query = urllib.parse.quote(query)
         url = f"https://news.google.com/rss/search?q={encoded_query}&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
-        # 🌟【已修復】：將漏掉的 url 參數成功填回，杜絕展開新聞大表時發生的語法崩潰
         r = session.get(url, timeout=5)
         if r.status_code == 200:
             root = ET.fromstring(r.content)
@@ -378,14 +377,15 @@ def cross_factor_decoupling_engine(macro_bull, trend_phase, fin_conclusion, sitc
     if macro_bull and pe_desc != "🚨 估值瘋狂（高檔吹泡泡）" and f_is_good and c_is_locked and t_is_strong:
         return "🔮 頂級多頭共振：黃金主升飆股", "purple", f"五維度指標達成完美黃金交集！加權指數多頭護航，個股本益比未過熱。月營收與財報同步確認為『基本面擴張』，疊加投信主力鎖碼與散戶融資退場（籌碼極淨）。此時技術面發動『{tech_short}』，且現價已成功跨越分價量表密集區。屬於內資主力籌碼與基本面雙軌驅動的最高勝率飆股型態。策略：敞口調升至 1.5 倍，全力進攻！"
 
-    if "主升段" in trend_phase && pe_desc == "🚨 估值瘋狂（高檔吹泡泡）" and (f_is_bad or c_is_leaking):
+    # 🌟【已修復】：將原本筆誤的 && 修正為 Python 的標準 and 語法，終結編譯錯誤！
+    if "主升段" in trend_phase and pe_desc == "🚨 估值瘋狂（高檔吹泡泡）" and (f_is_bad or c_is_leaking):
         return "💥 世紀價值陷阱：高檔出貨盤", "red", f"極度危險！雖然技術型態包裝成『{trend_phase}』且新聞表面熱絡，幕後縱向勾稽發現重大背離：滾動估值已達歷史瘋狂天花板，最新季度財報卻暴露出毛利營益率『雙降退步』。此時主力趁高大舉倒貨給融資散戶（融資暴增）。這完全是主力利用市場散戶樂觀情緒進行的『高檔套現抓交替』型態。策略：一票否決。"
 
     if "拉回洗盤期" in trend_phase and pe_desc in ["🟢 價值鐵板（安全邊際高）", "⚖️ 估值合理區間"] and "融資大量退場" in margin_trend:
         return "🛡️ 良性回檔：高手低吸黃金右腳", "green", f"中長期大波段季線穩健向上，短線股價跌破月線洗盤。串聯發現：滾動本益比已回踩至具有高度安全邊際的低位水準，且散戶融資不堪折磨、大舉肉退場（籌碼重新沉澱至特定大戶手中）。這屬於典型的主力『良性換手期』而非波段終結。策略：防守性極強，精密低吸潛伏。"
 
     if "橫盤蓄勢期" in trend_phase and not f_is_good and "投信無顯著動作" in sitc_trend:
-        return "💤 邊緣人時間：動能休克無量橫盤", "gray", "大盤隨安全，長線死水一條。月營收動能失速，季度財報缺乏亮點，且內資投信核心金流毫無建倉意願。此時技術面雖然維持橫盤築底，但缺乏催化劑（Catalyst），時間成本高昂。策略：無效資金配額，建議直接換股操作。"
+        return "💤 邊緣人時間：動能休克無量橫盤", "gray", "大盤隨安全，長線死水一條。月營收動能失速，季度財報缺乏亮點，且內資投信核心金流毫無建倉意願。此時技術面雖然維持橫盤著底，但缺乏催化劑（Catalyst），時間成本高昂。策略：無效資金配額，建議直接換股操作。"
 
     if t_is_strong and f_is_good:
         return "🔥 穩健波段主升：多方有序推進", "blue", f"大盤安全，個股短期與長期趨勢維持健康的多頭排列。月營收與獲利結構相符提供實質基本面支撐，主力籌碼無異常失控撤退跡象。技術動能處於有序發散階段，屬於高勝率的常態波段。策略：持股續抱。"
@@ -559,7 +559,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
             if "利多" in lbl: positive_catalysts_list.append(n["title"])
         pos_cnt = sum(1 for n in raw_news_list if "利多" in n["sentiment"])
         neg_cnt = sum(1 for n in raw_news_list if "利空" in n["sentiment"])
-        if pos_cnt > neg_cnt: news_analysis_report = f"🔥 【輿情偏多】 利多消息主主導市場情緒（多 {pos_cnt} 則 / 空 {neg_cnt} 則）。"
+        if pos_cnt > neg_cnt: news_analysis_report = f"🔥 【輿情偏多】 利多消息主導市場情緒（多 {pos_cnt} 則 / 空 {neg_cnt} 則）。"
         elif neg_cnt > pos_cnt: news_analysis_report = f"🚨 【輿情偏空】 利空雜音浮現（空 {neg_cnt} 則 / 多 {pos_cnt} 則）。"
 
     recent_catalyst_summary = "⚪ 近 24H 內市場暫無顯著的突發消息面利多推升。"
@@ -643,7 +643,6 @@ with st.sidebar:
     risk_pct = st.slider("單筆最大核心風險承受 (%)", 0.5, 3.0, 1.0, 0.1)
     slip_input = st.slider("預估防守技術滑價 (Ticks)", 0, 5, 1)
     st.markdown("---")
-    # 🌟【已新增】：盤中自動秒級刷新開關，勾選後靜態網頁立即轉為動態連線流
     auto_refresh = st.checkbox("🔄 開啟盤中每 5 秒自動秒刷報價", value=False)
 
 macro_bull, macro_label = get_market_macro_status()
@@ -798,7 +797,7 @@ if diag_trigger or (not scan_trigger and stock_input):
                 st.markdown(f"""
                 <div style="background-color: #F8FAFC; padding: 16px; border-radius: 6px; border-left: 5px solid #10B981; border-top: 1px solid #E2E8F0; border-right: 1px solid #E2E8F0; border-bottom: 1px solid #E2E8F0;">
                     <h4 style="margin: 0 0 12px 0; color: #065F46; font-weight:800;">🛡️ 流派二：均線拉回低吸劇本 (Pullback)</h4>
-                    <p style="font-size: 14px; margin: 5px 0;"><b>精密低吸左側買點</b>：貼近 {res['ma20_val']:.2f} 元</p>
+                    <p style="font-size: 14px; margin: 5px 0;"><b>精密低吸left側買點</b>：貼近 {res['ma20_val']:.2f} 元</p>
                     <p style="font-size: 14px; margin: 5px 0;"><b>期望反彈獲利目標</b>：<span style="color:#10B981; font-weight:700;">{res['target_pb']:.2f} 元</span></p>
                     <p style="font-size: 14px; margin: 5px 0;"><b>技術硬性防守停損</b>：{res['stop_pb']:.2f} 元</p>
                     <p style="font-size: 14px; margin: 5px 0;"><b>期望風險報酬比 (R:R)</b>：{res['rr1_pb']:.2f}</p>
@@ -838,8 +837,6 @@ if diag_trigger or (not scan_trigger and stock_input):
                 if isinstance(res["raw_news_list"], list) and res["raw_news_list"]:
                     for n in res["raw_news_list"]: st.markdown(f"* **[{n['date']}]** 【{n['source']}】  [{n['sentiment']}]  [{n['title']}]({n['link']})")
 
-# 🌟【已新增】：動態自動秒刷雷達
-# 當你在側邊欄打勾開啟時，系統會在底層執行倒數並強制觸發頁面 Rerun，達成盤中 0 手動、純自動更新看盤效果。
 if auto_refresh:
     time.sleep(5)
     st.rerun()
