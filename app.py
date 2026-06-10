@@ -104,6 +104,7 @@ def get_api():
     return api
 
 # ============ 5. Live Data Streaming Engine ============
+# 🌟【抗封鎖重大升級】：導入強效 Yahoo v8 Chart 機制，全方位突破雲端部署 IP 被證交所阻擋導致價格卡死的死穴。
 def compute_live_data(stock_id: str, market_type: str, hist_last_close: float, hist_last_vol: float, live_price_override: float = None):
     if live_price_override is not None and live_price_override > 0:
         return live_price_override, hist_last_vol * 1.2, True, "模擬串流", "realtime"
@@ -113,6 +114,7 @@ def compute_live_data(stock_id: str, market_type: str, hist_last_close: float, h
 
     is_otc_hint = any(x in str(market_type).upper() for x in ["OTC", "TWO", "櫃", "柜", "上櫃"])
     
+    # ⚡ 第一線：連線台灣證交所官方 API
     twse_channels = ["otc", "tse"] if is_otc_hint else ["tse", "otc"]
     twse_headers = {
         "Referer": "https://mis.twse.com.tw/stock/index.jsp",
@@ -145,6 +147,29 @@ def compute_live_data(stock_id: str, market_type: str, hist_last_close: float, h
                         break
         except Exception: pass
 
+    # 🚀 第二線（全新灌入）：強攻高抗體 Yahoo v8 Chart API（免 Crumb 認證，徹底解決價格卡死問題）
+    if not rt_success:
+        yahoo_suffixes = [".TWO", ".TW"] if is_otc_hint else [".TW", ".TWO"]
+        yahoo_headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
+        for suffix in yahoo_suffixes:
+            try:
+                url = f"https://query1.finance.yahoo.com/v8/finance/chart/{stock_id}{suffix}?interval=1m&range=1d"
+                r = session.get(url, headers=yahoo_headers, timeout=3, verify=certifi.where())
+                if r.status_code == 200:
+                    result = r.json().get("chart", {}).get("result", [])
+                    if result and len(result) > 0:
+                        meta = result[0].get("meta", {})
+                        p = safe_float(meta.get("regularMarketPrice"))
+                        v = safe_float(meta.get("regularMarketVolume"))
+                        if p > 0:
+                            rt_price = p
+                            rt_vol = (v / 1000) if v > 0 else hist_last_vol
+                            rt_success = True
+                            rt_source, rt_type = f"Yahoo v8 快照流", "realtime"
+                            break
+            except Exception: pass
+
+    # 🔄 第三線：Yahoo v7 Quote 傳統備援
     if not rt_success:
         yahoo_suffixes = [".TWO", ".TW"] if is_otc_hint else [".TW", ".TWO"]
         yahoo_headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
@@ -161,7 +186,7 @@ def compute_live_data(stock_id: str, market_type: str, hist_last_close: float, h
                             rt_price = p
                             rt_vol = (v / 1000) if v > 0 else hist_last_vol
                             rt_success = True
-                            rt_source, rt_type = f"Yahoo {suffix} 快照流", "realtime"
+                            rt_source, rt_type = f"Yahoo v7 快照流", "realtime"
                             break
             except Exception: pass
         
@@ -377,7 +402,6 @@ def cross_factor_decoupling_engine(macro_bull, trend_phase, fin_conclusion, sitc
     if macro_bull and pe_desc != "🚨 估值瘋狂（高檔吹泡泡）" and f_is_good and c_is_locked and t_is_strong:
         return "🔮 頂級多頭共振：黃金主升飆股", "purple", f"五維度指標達成完美黃金交集！加權指數多頭護航，個股本益比未過熱。月營收與財報同步確認為『基本面擴張』，疊加投信主力鎖碼與散戶融資退場（籌碼極淨）。此時技術面發動『{tech_short}』，且現價已成功跨越分價量表密集區。屬於內資主力籌碼與基本面雙軌驅動的最高勝率飆股型態。策略：敞口調升至 1.5 倍，全力進攻！"
 
-    # 🌟【已修復】：將原本筆誤的 && 修正為 Python 的標準 and 語法，終結編譯錯誤！
     if "主升段" in trend_phase and pe_desc == "🚨 估值瘋狂（高檔吹泡泡）" and (f_is_bad or c_is_leaking):
         return "💥 世紀價值陷阱：高檔出貨盤", "red", f"極度危險！雖然技術型態包裝成『{trend_phase}』且新聞表面熱絡，幕後縱向勾稽發現重大背離：滾動估值已達歷史瘋狂天花板，最新季度財報卻暴露出毛利營益率『雙降退步』。此時主力趁高大舉倒貨給融資散戶（融資暴增）。這完全是主力利用市場散戶樂觀情緒進行的『高檔套現抓交替』型態。策略：一票否決。"
 
@@ -385,7 +409,7 @@ def cross_factor_decoupling_engine(macro_bull, trend_phase, fin_conclusion, sitc
         return "🛡️ 良性回檔：高手低吸黃金右腳", "green", f"中長期大波段季線穩健向上，短線股價跌破月線洗盤。串聯發現：滾動本益比已回踩至具有高度安全邊際的低位水準，且散戶融資不堪折磨、大舉肉退場（籌碼重新沉澱至特定大戶手中）。這屬於典型的主力『良性換手期』而非波段終結。策略：防守性極強，精密低吸潛伏。"
 
     if "橫盤蓄勢期" in trend_phase and not f_is_good and "投信無顯著動作" in sitc_trend:
-        return "💤 邊緣人時間：動能休克無量橫盤", "gray", "大盤隨安全，長線死水一條。月營收動能失速，季度財報缺乏亮點，且內資投信核心金流毫無建倉意願。此時技術面雖然維持橫盤著底，但缺乏催化劑（Catalyst），時間成本高昂。策略：無效資金配額，建議直接換股操作。"
+        return "💤 邊緣人時間：動能休克無量橫盤", "gray", "大盤隨安全，長線死水一條。月營收動能失速，季度財報缺乏亮點，且內資投信核心金流毫無建倉意願。此時技術面雖然維持橫盤築底，但缺乏催化劑（Catalyst），時間成本高昂。策略：無效資金配額，建議直接換股操作。"
 
     if t_is_strong and f_is_good:
         return "🔥 穩健波段主升：多方有序推進", "blue", f"大盤安全，個股短期與長期趨勢維持健康的多頭排列。月營收與獲利結構相符提供實質基本面支撐，主力籌碼無異常失控撤退跡象。技術動能處於有序發散階段，屬於高勝率的常態波段。策略：持股續抱。"
