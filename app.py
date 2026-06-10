@@ -90,7 +90,6 @@ def get_requests_session():
     adapter = HTTPAdapter(max_retries=retry)
     session.mount('http://', adapter)
     session.mount('https://', adapter)
-    # 🌟【已優化】：注入抗封鎖高規真瀏覽器標頭組，防止雲端伺服器被 Yahoo 與證交所集體阻擋
     session.headers.update({
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
@@ -118,7 +117,7 @@ def compute_live_data(stock_id: str, market_type: str, hist_last_close: float, h
 
     is_otc_hint = any(x in str(market_type).upper() for x in ["OTC", "TWO", "櫃", "柜", "上櫃"])
     
-    # ⚡ 第一線：連線台灣證交所官方 API
+    # ⚡ 第一線：連線台灣證交所官方 API (已修正：閹割最高價強佔邏輯)
     twse_channels = ["otc", "tse"] if is_otc_hint else ["tse", "otc"]
     twse_headers = {
         "Referer": "https://mis.twse.com.tw/stock/index.jsp",
@@ -134,15 +133,23 @@ def compute_live_data(stock_id: str, market_type: str, hist_last_close: float, h
                 data = r.json()
                 if "msgArray" in data and len(data["msgArray"]) > 0:
                     info = data["msgArray"][0]
-                    z = safe_float(info.get("z"))
+                    
+                    z_str = str(info.get("z", "")).strip()
                     v = safe_float(info.get("v")) 
-                    if z == 0:
-                        h_val = safe_float(info.get("h"))
-                        b_list = str(info.get("b", "")).split("_")
-                        b_val = safe_float(b_list[0]) if b_list and b_list[0] != "" else 0
-                        if h_val > 0 and h_val >= safe_float(info.get("o")): z = h_val  
-                        elif b_val > 0: z = b_val  
-                        else: z = safe_float(info.get("o")) if safe_float(info.get("o")) > 0 else hist_last_close
+                    
+                    # 🌟【已修正】：精準提取最新撮合價。若為 "-" 則取當下買進委託價或開盤價，嚴禁拿最高價頂替！
+                    if z_str and z_str != "-":
+                        z = safe_float(z_str)
+                    else:
+                        b_str = str(info.get("b", "")).split("_")[0].strip()
+                        o_str = str(info.get("o", "")).strip()
+                        if b_str and b_str != "-":
+                            z = safe_float(b_str)
+                        elif o_str and o_str != "-":
+                            z = safe_float(o_str)
+                        else:
+                            z = hist_last_close
+                            
                     if z > 0:
                         rt_price = z
                         rt_vol = v if v > 0 else hist_last_vol
@@ -151,7 +158,7 @@ def compute_live_data(stock_id: str, market_type: str, hist_last_close: float, h
                         break
         except Exception: pass
 
-    # 🚀 第二線【高階雙重解碼】：強攻 Yahoo v8 Chart API 加上當日分鐘 K 線尾端元素提取，徹底粉碎時區造成的 130.5 舊價，逼出當下的 122.5 真實價
+    # 🚀 第二線：強攻 Yahoo v8 Chart API
     if not rt_success:
         yahoo_suffixes = [".TWO", ".TW"] if is_otc_hint else [".TW", ".TWO"]
         for suffix in yahoo_suffixes:
@@ -165,12 +172,11 @@ def compute_live_data(stock_id: str, market_type: str, hist_last_close: float, h
                         p = safe_float(meta.get("regularMarketPrice"))
                         v = safe_float(meta.get("regularMarketVolume"))
                         
-                        # 核心防卡死：強行剝離今日分鐘線陣列，抓出最新一條有成交的收盤價
                         try:
                             candles = result[0].get("indicators", {}).get("quote", [{}])[0].get("close", [])
                             valid_candles = [safe_float(c) for c in candles if c is not None and safe_float(c) > 0]
                             if valid_candles:
-                                p = valid_candles[-1] # 精準取得最新一分鐘的真實對位現價（122.5）
+                                p = valid_candles[-1] # 拿最新一分鐘的分時K收盤價
                         except Exception: pass
                         
                         if p > 0:
@@ -181,7 +187,7 @@ def compute_live_data(stock_id: str, market_type: str, hist_last_close: float, h
                             break
             except Exception: pass
 
-    # 🔄 第三線：Yahoo v7 Quote 傳統備援
+    # 🔄 第三線：Yahoo v7 Quote 備援
     if not rt_success:
         yahoo_suffixes = [".TWO", ".TW"] if is_otc_hint else [".TW", ".TWO"]
         for suffix in yahoo_suffixes:
@@ -700,7 +706,7 @@ with top_col1:
     else:
         industry_stocks = full_info_df[full_info_df["industry_category"] == scan_mode]["stock_id"].tolist()[:10]
         scan_label = scan_mode
-    scan_trigger = st.button(f"🔍 啟動 【{scan_label}】 當下全因子動態矩陣掃描排行榜", use_container_width=True)
+    scan_trigger = st.button(f"🔍 啟動 【{scan_label}】 當下全因子動態矩阵掃描排行榜", use_container_width=True)
 
 with top_col2:
     st.markdown("""<div style='background-color:#EFF6FF; padding:8px; border-radius:6px; border-left:4px solid #3B82F6; margin-bottom:8px;'><b style='color:#1E40AF; font-size:13.5px;'>流派 B：個股五維度縱向因果深度診斷與策略開火</b></div>""", unsafe_allow_html=True)
