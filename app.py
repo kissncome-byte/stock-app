@@ -109,18 +109,52 @@ def get_api():
 
 # ============ 5. Live Data Streaming Engine ============
 def compute_live_data(stock_id: str, market_type: str, hist_last_close: float, hist_last_vol: float, live_price_override: float = None):
-    # 修正提示：UI顯示需要「張數」，此處確保 fallback 的歷史量也轉化為張數基準
+    # 統一將 fallback 用的歷史成交量轉化為張數基準
     hist_last_vol_lots = hist_last_vol / 1000.0 if hist_last_vol > 0 else 0.0
 
     if live_price_override is not None and live_price_override > 0:
         return live_price_override, hist_last_vol_lots * 1.2, True, "模擬串流", "realtime"
+    
     rt_price, rt_vol, rt_success = None, None, False
     rt_source, rt_type = "歷史收盤", "historical"
     session = get_requests_session()
 
+    # 🌟【第一優先線：富果雲端專屬特快流】持 Token 驗證，徹底穿透 Streamlit Cloud 的 IP 封鎖
+    fugle_token = os.getenv("FUGLE_TOKEN", "") or st.secrets.get("FUGLE_TOKEN", "")
+    if fugle_token:
+        try:
+            url = f"https://api.fugle.tw/marketdata/v1.0/stock/intraday/quote/{stock_id}"
+            headers = {"X-API-KEY": fugle_token}
+            r = session.get(url, headers=headers, timeout=3)
+            if r.status_code == 200:
+                res_data = r.json()
+                
+                # 依據富果 API 最新規格精準提取當前撮合價
+                last_trade = res_data.get("lastTrade", {})
+                p = safe_float(last_trade.get("price"))
+                
+                if p <= 0: # 若盤後或尚未成交，取今日最新收盤價
+                    p = safe_float(res_data.get("closePrice"))
+                if p <= 0: # 萬一都沒開盤，拿平盤參考價頂替
+                    p = safe_float(res_data.get("referencePrice"))
+                
+                # 提取富果總成交量（富果官方預設單位即為「張」）
+                total_data = res_data.get("total", {})
+                v = safe_float(total_data.get("tradeVolume"))
+                
+                if p > 0:
+                    rt_price = p
+                    rt_vol = v if v > 0 else hist_last_vol_lots
+                    rt_success = True
+                    rt_source, rt_type = "Fugle 富果雲端特快流", "realtime"
+                    return rt_price, rt_vol, rt_success, rt_source, rt_type
+        except Exception:
+            pass # 如果富果當下超過流量限制，自動滑入下方原本的 TWSE/Yahoo 備援鏈路
+
+    # ============ 以下維持你原本的線路，絕對不能動 ============
     is_otc_hint = any(x in str(market_type).upper() for x in ["OTC", "TWO", "櫃", "柜", "上櫃"])
     
-    # ⚡ 第一線：連線台灣證交所官方 API
+    # ⚡ 原本的第二線：台灣證交所官方 API
     twse_channels = ["otc", "tse"] if is_otc_hint else ["tse", "otc"]
     twse_headers = {
         "Referer": "https://mis.twse.com.tw/stock/index.jsp",
@@ -136,7 +170,6 @@ def compute_live_data(stock_id: str, market_type: str, hist_last_close: float, h
                 data = r.json()
                 if "msgArray" in data and len(data["msgArray"]) > 0:
                     info = data["msgArray"][0]
-                    
                     z_str = str(info.get("z", "")).strip()
                     v = safe_float(info.get("v")) 
                     
@@ -145,23 +178,19 @@ def compute_live_data(stock_id: str, market_type: str, hist_last_close: float, h
                     else:
                         b_str = str(info.get("b", "")).split("_")[0].strip()
                         o_str = str(info.get("o", "")).strip()
-                        if b_str and b_str != "-":
-                            z = safe_float(b_str)
-                        elif o_str and o_str != "-":
-                            z = safe_float(o_str)
-                        else:
-                            z = hist_last_close
+                        if b_str and b_str != "-": z = safe_float(b_str)
+                        elif o_str and o_str != "-": z = safe_float(o_str)
+                        else: z = hist_last_close
                             
                     if z > 0:
                         rt_price = z
-                        # 修正：TWSE官方 API 的 'v' 本身就是累積張數
                         rt_vol = v if v > 0 else hist_last_vol_lots
                         rt_success = True
                         rt_source, rt_type = f"TWSE {prefix.upper()} 即時", "realtime"
                         break
         except Exception: pass
 
-    # 🚀 第二線：強攻 Yahoo v8 Chart API
+    # 🚀 原本的第三線：Yahoo v8 Chart API
     if not rt_success:
         yahoo_suffixes = [".TWO", ".TW"] if is_otc_hint else [".TW", ".TWO"]
         for suffix in yahoo_suffixes:
@@ -174,24 +203,20 @@ def compute_live_data(stock_id: str, market_type: str, hist_last_close: float, h
                         meta = result[0].get("meta", {})
                         p = safe_float(meta.get("regularMarketPrice"))
                         v = safe_float(meta.get("regularMarketVolume"))
-                        
                         try:
                             candles = result[0].get("indicators", {}).get("quote", [{}])[0].get("close", [])
                             valid_candles = [safe_float(c) for c in candles if c is not None and safe_float(c) > 0]
-                            if valid_candles:
-                                p = valid_candles[-1]
+                            if valid_candles: p = valid_candles[-1]
                         except Exception: pass
-                        
                         if p > 0:
                             rt_price = p
-                            # 修正：Yahoo 原始量為股數，轉換為張數基準
                             rt_vol = (v / 1000.0) if v > 0 else hist_last_vol_lots
                             rt_success = True
                             rt_source, rt_type = f"Yahoo v8 即時流(K線解碼)", "realtime"
                             break
             except Exception: pass
 
-    # 🔄 第三線：Yahoo v7 Quote 備援
+    # 🔄 原本的第四線：Yahoo v7 Quote 備援
     if not rt_success:
         yahoo_suffixes = [".TWO", ".TW"] if is_otc_hint else [".TW", ".TWO"]
         for suffix in yahoo_suffixes:
@@ -205,7 +230,6 @@ def compute_live_data(stock_id: str, market_type: str, hist_last_close: float, h
                         v = safe_float(result[0].get("regularMarketVolume"))
                         if p > 0:
                             rt_price = p
-                            # 修正：Yahoo 原始量為股數，轉換為張數基準
                             rt_vol = (v / 1000.0) if v > 0 else hist_last_vol_lots
                             rt_success = True
                             rt_source, rt_type = f"Yahoo v7 快照流", "realtime"
