@@ -109,15 +109,18 @@ def get_api():
 
 # ============ 5. Live Data Streaming Engine ============
 def compute_live_data(stock_id: str, market_type: str, hist_last_close: float, hist_last_vol: float, live_price_override: float = None):
+    # 修正提示：UI顯示需要「張數」，此處確保 fallback 的歷史量也轉化為張數基準
+    hist_last_vol_lots = hist_last_vol / 1000.0 if hist_last_vol > 0 else 0.0
+
     if live_price_override is not None and live_price_override > 0:
-        return live_price_override, hist_last_vol * 1.2, True, "模擬串流", "realtime"
+        return live_price_override, hist_last_vol_lots * 1.2, True, "模擬串流", "realtime"
     rt_price, rt_vol, rt_success = None, None, False
     rt_source, rt_type = "歷史收盤", "historical"
     session = get_requests_session()
 
     is_otc_hint = any(x in str(market_type).upper() for x in ["OTC", "TWO", "櫃", "柜", "上櫃"])
     
-    # ⚡ 第一線：連線台灣證交所官方 API (已修正：閹割最高價強佔邏輯)
+    # ⚡ 第一線：連線台灣證交所官方 API
     twse_channels = ["otc", "tse"] if is_otc_hint else ["tse", "otc"]
     twse_headers = {
         "Referer": "https://mis.twse.com.tw/stock/index.jsp",
@@ -137,7 +140,6 @@ def compute_live_data(stock_id: str, market_type: str, hist_last_close: float, h
                     z_str = str(info.get("z", "")).strip()
                     v = safe_float(info.get("v")) 
                     
-                    # 🌟【已修正】：精準提取最新撮合價。若為 "-" 則取當下買進委託價或開盤價，嚴禁拿最高價頂替！
                     if z_str and z_str != "-":
                         z = safe_float(z_str)
                     else:
@@ -152,7 +154,8 @@ def compute_live_data(stock_id: str, market_type: str, hist_last_close: float, h
                             
                     if z > 0:
                         rt_price = z
-                        rt_vol = v if v > 0 else hist_last_vol
+                        # 修正：TWSE官方 API 的 'v' 本身就是累積張數
+                        rt_vol = v if v > 0 else hist_last_vol_lots
                         rt_success = True
                         rt_source, rt_type = f"TWSE {prefix.upper()} 即時", "realtime"
                         break
@@ -176,12 +179,13 @@ def compute_live_data(stock_id: str, market_type: str, hist_last_close: float, h
                             candles = result[0].get("indicators", {}).get("quote", [{}])[0].get("close", [])
                             valid_candles = [safe_float(c) for c in candles if c is not None and safe_float(c) > 0]
                             if valid_candles:
-                                p = valid_candles[-1] # 拿最新一分鐘的分時K收盤價
+                                p = valid_candles[-1]
                         except Exception: pass
                         
                         if p > 0:
                             rt_price = p
-                            rt_vol = (v / 1000) if v > 0 else hist_last_vol
+                            # 修正：Yahoo 原始量為股數，轉換為張數基準
+                            rt_vol = (v / 1000.0) if v > 0 else hist_last_vol_lots
                             rt_success = True
                             rt_source, rt_type = f"Yahoo v8 即時流(K線解碼)", "realtime"
                             break
@@ -201,13 +205,14 @@ def compute_live_data(stock_id: str, market_type: str, hist_last_close: float, h
                         v = safe_float(result[0].get("regularMarketVolume"))
                         if p > 0:
                             rt_price = p
-                            rt_vol = (v / 1000) if v > 0 else hist_last_vol
+                            # 修正：Yahoo 原始量為股數，轉換為張數基準
+                            rt_vol = (v / 1000.0) if v > 0 else hist_last_vol_lots
                             rt_success = True
                             rt_source, rt_type = f"Yahoo v7 快照流", "realtime"
                             break
             except Exception: pass
         
-    return (rt_price if rt_success else hist_last_close), (rt_vol if (rt_success and rt_vol > 0) else hist_last_vol), rt_success, rt_source, rt_type
+    return (rt_price if rt_success else hist_last_close), (rt_vol if (rt_success and rt_vol > 0) else hist_last_vol_lots), rt_success, rt_source, rt_type
 
 # ============ 6. Data Fetching Layers ============
 @st.cache_data(ttl=3600)
@@ -290,6 +295,8 @@ def get_financial_statement_df(stock_id: str, years: int = 2):
         df_raw = api.taiwan_stock_financial_statement(stock_id=stock_id, start_date=start_date)
         if df_raw is None or df_raw.empty: return pd.DataFrame()
         df = df_raw.copy()
+        # 修正：FinMind 的原始欄位為 OperatingRevenue，將其對齊轉換為你後續邏輯使用的 Revenue
+        df["type"] = df["type"].replace({"OperatingRevenue": "Revenue"})
         targets = ["EPS", "Revenue", "GrossProfit", "OperatingIncome"]
         df = df[df["type"].isin(targets)]
         if df.empty: return pd.DataFrame()
@@ -420,7 +427,7 @@ def cross_factor_decoupling_engine(macro_bull, trend_phase, fin_conclusion, sitc
         return "🔮 頂級多頭共振：黃金主升飆股", "purple", f"五維度指標達成完美黃金交集！加權指數多頭護航，個股本益比未過熱。月營收與財報同步確認為『基本面擴張』，疊加投信主力鎖碼與散戶融資退場（籌碼極淨）。此時技術面發動『{tech_short}』，且現價已成功跨越分價量表密集區。屬於內資主力籌碼與基本面雙軌驅動的最高勝率飆股型態。策略：敞口調升至 1.5 倍，全力進攻！"
 
     if "主升段" in trend_phase and pe_desc == "🚨 估值瘋狂（高檔吹泡泡）" and (f_is_bad or c_is_leaking):
-        return "💥 世紀價值陷阱：高檔出貨盤", "red", f"極度危險！雖然技術型態包裝成『{trend_phase}』且新聞表面熱絡，幕後縱向勾稽發現重大背離：滾動估值已達歷史瘋狂天花板，最新季度財報卻暴露出毛利營益率『雙降退步』。此時主力趁高大舉倒貨給融資散戶（融資暴增）。這完全是主力利用市場散戶樂觀情緒進行的『高檔套現抓交替』型態。策略：一票否決。"
+        return "💥 世紀價值陷阱：高檔出貨盤", "red", f"極度危險！雖然技術型態包裝成『{trend_phase}』且新聞表面熱絡，幕幕後縱向勾稽發現重大背離：滾動估值已達歷史瘋狂天花板，最新季度財報卻暴露出毛利營益率『雙降退步』。此時主力趁高大舉倒貨給融資散戶（融資暴增）。這完全是主力利用市場散戶樂觀情緒進行的『高檔套現抓交替』型態。策略：一票否決。"
 
     if "拉回洗盤期" in trend_phase and pe_desc in ["🟢 價值鐵板（安全邊際高）", "⚖️ 估值合理區間"] and "融資大量退場" in margin_trend:
         return "🛡️ 良性回檔：高手低吸黃金右腳", "green", f"中長期大波段季線穩健向上，短線股價跌破月線洗盤。串聯發現：滾動本益比已回踩至具有高度安全邊際的低位水準，且散戶融資不堪折磨、大舉肉退場（籌碼重新沉澱至特定大戶手中）。這屬於典型的主力『良性換手期』而非波段終結。策略：防守性極強，精密低吸潛伏。"
@@ -464,16 +471,17 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     today_str = datetime.now(TZ).strftime("%Y-%m-%d")
     
     if rt_success and (rt_type in ["realtime", "delayed"]):
+        # 修正核心：當把即時串流（單位：張）合流進歷史K線庫（單位：股）時，必須將 vol 乘以 1000 轉換為股數，否則技術量能指標（如MA5_Vol、爆量共振）會因 1000 倍的落差完全失靈
         if str(df_for_indicators.iloc[-1]["date"]) == today_str:
             df_for_indicators.iloc[-1, df_for_indicators.columns.get_loc("close")] = current_price
             df_for_indicators.iloc[-1, df_for_indicators.columns.get_loc("high")] = max(current_price, float(df_for_indicators.iloc[-1]["high"]))
             df_for_indicators.iloc[-1, df_for_indicators.columns.get_loc("low")] = min(current_price, float(df_for_indicators.iloc[-1]["low"]))
-            df_for_indicators.iloc[-1, df_for_indicators.columns.get_loc("vol")] = current_vol
+            df_for_indicators.iloc[-1, df_for_indicators.columns.get_loc("vol")] = current_vol * 1000.0
         else:
             new_row = pd.DataFrame([{
                 "date": today_str, "open": float(current_price), "close": float(current_price),
                 "high": float(max(current_price, hist_last_close)), "low": float(min(current_price, hist_last_close)),
-                "vol": float(current_vol), "amount": float(current_price * current_vol * 1000) 
+                "vol": float(current_vol * 1000.0), "amount": float(current_price * current_vol * 1000.0) 
             }])
             df_for_indicators = pd.concat([df_for_indicators, new_row], ignore_index=True)
 
@@ -506,7 +514,8 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
 
     is_heavyweight = df["amount"].tail(20).mean() > 2000000000
     vol_multiplier, compress_quantile = (1.25, 0.35) if is_heavyweight else (2.2, 0.18)
-    vol_spike = current_vol > (vol_ma20_val * vol_multiplier)
+    # 修正後，指標與即時量皆已轉換為統一物理量單位（股），此處爆量判定完美生效
+    vol_spike = (current_vol * 1000.0) > (vol_ma20_val * vol_multiplier)
     is_compressed = current_bandwidth < df["BB_bandwidth"].tail(60).quantile(compress_quantile)
 
     sitc_trend, margin_trend, sitc_3d_sum, margin_diff = get_taiwan_enhanced_chips(stock_id)
@@ -618,7 +627,8 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     open_gap_pct = ((open_p - prev_close_p) / prev_close_p) * 100 if prev_close_p > 0 else 0
     close_to_low_pct = ((close_p - low_p) / (high_p - low_p)) if (high_p - low_p) > 0 else 1
     
-    is_broker_dumping_risk = (open_gap_pct > 3.5) and (close_to_low_pct < 0.35) and (current_vol > vol_ma20_val * 2.5)
+    # 修正後，爆量洗盤機制的實質張數流已獲得完美保護
+    is_broker_dumping_risk = (open_gap_pct > 3.5) and (close_to_low_pct < 0.35) and ((current_vol * 1000.0) > vol_ma20_val * 2.5)
 
     tech_short_status = "🚀 準備起漲" if (current_price >= real_resistance * 0.99 and vol_spike) else "🚀 多頭成形" if (rsi_now > 55 or k9_now > d9_now) else "中性觀望"
     
