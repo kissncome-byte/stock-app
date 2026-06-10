@@ -104,6 +104,7 @@ def get_api():
     return api
 
 # ============ 5. Live Data Streaming Engine ============
+# 🌟【核心即時優化點】：重構資料流先後順序，優先強攻證交所官方 API 達成 0 延遲，Yahoo 退為二線防禦備援
 def compute_live_data(stock_id: str, market_type: str, hist_last_close: float, hist_last_vol: float, live_price_override: float = None):
     if live_price_override is not None and live_price_override > 0:
         return live_price_override, hist_last_vol * 1.2, True, "模擬串流", "realtime"
@@ -113,55 +114,57 @@ def compute_live_data(stock_id: str, market_type: str, hist_last_close: float, h
 
     is_otc_hint = any(x in str(market_type).upper() for x in ["OTC", "TWO", "櫃", "柜", "上櫃"])
     
-    yahoo_suffixes = [".TWO", ".TW"] if is_otc_hint else [".TW", ".TWO"]
-    yahoo_headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-    for suffix in yahoo_suffixes:
+    # ⚡ 第一優先級：直接連線台灣證交所/櫃買中心官方 API (盤中完全零延遲)
+    twse_channels = ["otc", "tse"] if is_otc_hint else ["tse", "otc"]
+    twse_headers = {
+        "Referer": "https://mis.twse.com.tw/stock/index.jsp",
+        "X-Requested-With": "XMLHttpRequest"
+    }
+    for prefix in twse_channels:
         try:
-            url = f"https://query1.finance.yahoo.com/v7/finance/quote?symbols={stock_id}{suffix}"
-            r = session.get(url, headers=yahoo_headers, timeout=3, verify=certifi.where())
+            session.get("https://mis.twse.com.tw/stock/index.jsp", timeout=2, verify=certifi.where())
+            ts = int(time.time() * 1000)
+            url = f"https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch={prefix}_{stock_id}.tw&json=1&delay=0&_={ts}"
+            r = session.get(url, headers=twse_headers, timeout=2, verify=certifi.where())
             if r.status_code == 200:
-                result = r.json().get("quoteResponse", {}).get("result", [])
-                if result and len(result) > 0:
-                    p = safe_float(result[0].get("regularMarketPrice"))
-                    v = safe_float(result[0].get("regularMarketVolume"))
-                    if p > 0:
-                        rt_price = p
-                        rt_vol = (v / 1000) if v > 0 else hist_last_vol
+                data = r.json()
+                if "msgArray" in data and len(data["msgArray"]) > 0:
+                    info = data["msgArray"][0]
+                    z = safe_float(info.get("z"))
+                    v = safe_float(info.get("v")) 
+                    if z == 0:
+                        h_val = safe_float(info.get("h"))
+                        b_list = str(info.get("b", "")).split("_")
+                        b_val = safe_float(b_list[0]) if b_list and b_list[0] != "" else 0
+                        if h_val > 0 and h_val >= safe_float(info.get("o")): z = h_val  
+                        elif b_val > 0: z = b_val  
+                        else: z = safe_float(info.get("o")) if safe_float(info.get("o")) > 0 else hist_last_close
+                    if z > 0:
+                        rt_price = z
+                        rt_vol = v if v > 0 else hist_last_vol
                         rt_success = True
-                        rt_source, rt_type = f"Yahoo {suffix} 快照流", "realtime"
+                        rt_source, rt_type = f"TWSE {prefix.upper()} 即時", "realtime"
                         break
         except Exception: pass
 
+    # 🔄 第二優先級：若官方 API 失敗或受限，才降級啟用 Yahoo Finance 作為防守備援線
     if not rt_success:
-        twse_channels = ["otc", "tse"] if is_otc_hint else ["tse", "otc"]
-        twse_headers = {
-            "Referer": "https://mis.twse.com.tw/stock/index.jsp",
-            "X-Requested-With": "XMLHttpRequest"
-        }
-        for prefix in twse_channels:
+        yahoo_suffixes = [".TWO", ".TW"] if is_otc_hint else [".TW", ".TWO"]
+        yahoo_headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+        for suffix in yahoo_suffixes:
             try:
-                session.get("https://mis.twse.com.tw/stock/index.jsp", timeout=2, verify=certifi.where())
-                ts = int(time.time() * 1000)
-                url = f"https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch={prefix}_{stock_id}.tw&json=1&delay=0&_={ts}"
-                r = session.get(url, headers=twse_headers, timeout=2, verify=certifi.where())
+                url = f"https://query1.finance.yahoo.com/v7/finance/quote?symbols={stock_id}{suffix}"
+                r = session.get(url, headers=yahoo_headers, timeout=3, verify=certifi.where())
                 if r.status_code == 200:
-                    data = r.json()
-                    if "msgArray" in data and len(data["msgArray"]) > 0:
-                        info = data["msgArray"][0]
-                        z = safe_float(info.get("z"))
-                        v = safe_float(info.get("v")) 
-                        if z == 0:
-                            h_val = safe_float(info.get("h"))
-                            b_list = str(info.get("b", "")).split("_")
-                            b_val = safe_float(b_list[0]) if b_list and b_list[0] != "" else 0
-                            if h_val > 0 and h_val >= safe_float(info.get("o")): z = h_val  
-                            elif b_val > 0: z = b_val  
-                            else: z = safe_float(info.get("o")) if safe_float(info.get("o")) > 0 else hist_last_close
-                        if z > 0:
-                            rt_price = z
-                            rt_vol = v if v > 0 else hist_last_vol
+                    result = r.json().get("quoteResponse", {}).get("result", [])
+                    if result and len(result) > 0:
+                        p = safe_float(result[0].get("regularMarketPrice"))
+                        v = safe_float(result[0].get("regularMarketVolume"))
+                        if p > 0:
+                            rt_price = p
+                            rt_vol = (v / 1000) if v > 0 else hist_last_vol
                             rt_success = True
-                            rt_source, rt_type = f"TWSE {prefix.upper()} 即時", "realtime"
+                            rt_source, rt_type = f"Yahoo {suffix} 快照流", "realtime"
                             break
             except Exception: pass
         
@@ -262,7 +265,7 @@ def get_realtime_news_df(stock_id: str, stock_name: str):
         query = f"{str(stock_name)} {str(stock_id)} when:1d"
         encoded_query = urllib.parse.quote(query)
         url = f"https://news.google.com/rss/search?q={encoded_query}&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
-        r = session.get(url, timeout=5)
+        r = session.get(timeout=5)
         if r.status_code == 200:
             root = ET.fromstring(r.content)
             news_list = []
@@ -387,7 +390,7 @@ def cross_factor_decoupling_engine(macro_bull, trend_phase, fin_conclusion, sitc
         return "💤 邊緣人時間：動能休克無量橫盤", "gray", "大盤隨安全，長線死水一條。月營收動能失速，季度財報缺乏亮點，且內資投信核心金流毫無建倉意願。此時技術面雖然維持橫盤築底，但缺乏催化劑（Catalyst），時間成本高昂。策略：無效資金配額，建議直接換股操作。"
 
     if t_is_strong and f_is_good:
-        return "🔥 穩健波段主升：多方有序推進", "blue", f"大盤安全，個股短期與長期趨勢維持健康的多頭排列。月營收與獲利結構相符提供實質基本面支撐，主力籌碼無異常失控撤退跡象。技術動能處於有序發散階段，屬於高勝率的常態波段。策略：持股續抱。"
+        return "🔥 穩健波段主升：多方有序推進", "blue", f"大盤安全，個股短期與長期趨勢維持健康的多頭排列。月營收與獲利結構相符提供實質基本面支撐，主力籌碼無異常失控撤退跡象。技術動能處於有序發散階段，屬於高勝率的常態波段. 策略：持股續抱。"
 
     return "⚖️ 綜合平衡：常規技術藍圖操作", "blue", "後台財務與微觀動能因子互有勝負，並未觸發極端的宏觀、籌碼 or 估值背離共振。請嚴格遵循下方量化交易藍圖精算之價位執行紀律操作。"
 
@@ -487,7 +490,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     else: long_term_trend = "💤 季線橫向延伸（箱型潛伏築底）"
 
     if current_price >= ma20_val and ma20_val >= ma60_val and (df["MA20"].iloc[-1] > df["MA20"].iloc[-5]): trend_phase = "🔥 波段多頭主升段"
-    elif current_price < ma20_val and ma20_val >= ma60_val: trend_phase = "🛡️ 多頭架構拉回洗盤期"
+    elif current_price < ma20_val and ma20_val >= ma60_val: trend_phase = "🛡️ 多頭架回洗盤期"
     elif is_compressed: trend_phase = "💤 潛伏築底蓄勢期"
     else: trend_phase = "📉 空頭波段修正期"
 
@@ -804,10 +807,9 @@ if diag_trigger or (not scan_trigger and stock_input):
             st.markdown("<br>", unsafe_allow_html=True)
             st.markdown("### 🛡️ 量化核心風控配額開火劇本")
             
-            # 🌟【解耦修復核心】：分離「大腦策略拒絕」與「小資金配額不足 1 張」的 UI 警告邏輯
             if res["suggested_lots"] == 0:
                 if res["final_color"] == "red":
-                    st.error("🚨 【核心風控最高警戒：大腦策略拒絕進場】 標的或大盤觸發致命賣壓/空頭共振，敞口強制關閉！")
+                    st.error("🚨 【核心風控最高警戒：大腦策略拒絕進場】 敞口強制關閉！標的或大盤觸發致命賣壓/空頭共振。")
                 else:
                     st.warning("⚠️ 【風控提示：資金配額不足 1 張】 當前標的趨勢極度健康！但因你的『核心大資金池』較小或『風險承受％』設得太嚴格，導致容許虧損金額小於單張股票的停損價差。系統為保護帳戶不給予強行開火建議。請至側邊欄調高資金池或放寬風險％數。")
             
