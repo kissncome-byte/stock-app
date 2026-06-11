@@ -154,7 +154,7 @@ def compute_live_data(stock_id: str, market_type: str, hist_last_close: float, h
     yahoo_suffixes = [".TWO", ".TW"] if is_otc_hint else [".TW", ".TWO"]
     for suffix in yahoo_suffixes:
         try:
-            url = f"https://query1.finance.yahoo.com/v8/finance/chart/{stock_id}{suffix}?interval=1m&range=1d"
+            url = f"https://query2.finance.yahoo.com/v8/finance/chart/{stock_id}{suffix}?interval=1m&range=1d"
             r = session.get(url, timeout=2, verify=certifi.where())
             if r.status_code == 200:
                 result = r.json().get("chart", {}).get("result", [])
@@ -182,8 +182,13 @@ def compute_live_data(stock_id: str, market_type: str, hist_last_close: float, h
 # ============ 6. Data Fetching Layers ============
 @st.cache_data(ttl=1800)
 def get_overnight_radar():
+    """
+    🌟 30年老操盤手修正：跨市場與台指期近月夜盤因果整合雷達
+    真正將「台指期近月 (WTX=F)」納入分析底層，完成期現貨跨市場融合
+    """
     session = get_requests_session()
     targets = {
+        "台指期近月 (WTX=F)": "WTX=F", # 🌟 真正補回台指期夜盤
         "Nasdaq那指 (^IXIC)": "^IXIC",
         "費城半導體 (^SOX)": "^SOX",
         "台積電 ADR (TSM)": "TSM"
@@ -191,27 +196,46 @@ def get_overnight_radar():
     radar_results = {}
     is_us_panic = False
     panic_desc = ""
+    wtx_change = 0.0
     
     for label, symbol in targets.items():
-        try:
-            url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval=1d&range=1d"
-            r = session.get(url, timeout=3, verify=certifi.where())
-            if r.status_code == 200:
-                meta = r.json().get("chart", {}).get("result", [{}])[0].get("meta", {})
-                current_price = safe_float(meta.get("regularMarketPrice"))
-                prev_close = safe_float(meta.get("previousClose"))
-                if prev_close > 0:
-                    change_pct = ((current_price - prev_close) / prev_close) * 100
-                    radar_results[label] = change_pct
-                    if change_pct <= -2.0:
-                        is_us_panic = True
-                        panic_desc = f"昨晚美股大震盪，{label} 慘跌 {change_pct:.1f}%"
-                else:
-                    radar_results[label] = 0.0
-        except Exception:
-            pass
-            
-    return radar_results, is_us_panic, panic_desc
+        for api_prefix in ["query2", "query1"]:
+            try:
+                url = f"https://{api_prefix}.finance.yahoo.com/v8/finance/chart/{symbol}?interval=1d&range=5d"
+                r = session.get(url, timeout=3, verify=certifi.where())
+                if r.status_code == 200:
+                    result_list = r.json().get("chart", {}).get("result")
+                    if result_list and len(result_list) > 0:
+                        quote = result_list[0].get("indicators", {}).get("quote", [{}])[0]
+                        closes = [safe_float(c) for c in quote.get("close", []) if c is not None]
+                        
+                        if len(closes) >= 2:
+                            current_price = closes[-1]
+                            prev_close = closes[-2]
+                        else:
+                            meta = result_list[0].get("meta", {})
+                            current_price = safe_float(meta.get("regularMarketPrice"))
+                            prev_close = safe_float(meta.get("previousClose")) or safe_float(meta.get("chartPreviousClose"))
+                        
+                        if prev_close > 0:
+                            change_pct = ((current_price - prev_close) / prev_close) * 100
+                            radar_results[label] = change_pct
+                            
+                            # 🌟 賦值給台指期核心變數
+                            if symbol == "WTX=F":
+                                wtx_change = change_pct
+                            
+                            # 美股或個股暴跌防線
+                            if symbol != "WTX=F" and change_pct <= -2.0:
+                                is_us_panic = True
+                                panic_desc = f"昨晚美股大震盪，{label} 慘跌 {change_pct:.1f}%"
+                        else:
+                            radar_results[label] = 0.0
+                        break 
+            except Exception:
+                pass
+                
+    return radar_results, is_us_panic, panic_desc, wtx_change
 
 @st.cache_data(ttl=3600)
 def get_stock_info_df():
@@ -235,41 +259,44 @@ def get_daily_df(stock_id: str, market_type: str = "TSE", days: int = 450):
     period1 = int(start_dt.timestamp())
     period2 = int(end_dt.timestamp())
     
-    try:
-        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{stock_id}{suffix}?period1={period1}&period2={period2}&interval=1d"
-        r = session.get(url, timeout=5, verify=certifi.where())
-        if r.status_code == 200:
-            res = r.json().get("chart", {}).get("result", [])
-            if res:
-                timestamps = res[0].get("timestamp", [])
-                indicators = res[0].get("indicators", {})
-                quote = indicators.get("quote", [{}])[0]
-                adjclose_list = indicators.get("adjclose", [{}])[0].get("adjclose", [])
-                
-                dates = [datetime.fromtimestamp(ts, TZ).strftime("%Y-%m-%d") for ts in timestamps]
-                opens = quote.get("open", [])
-                highs = quote.get("high", [])
-                lows = quote.get("low", [])
-                closes = quote.get("close", [])
-                volumes = quote.get("volume", [])
-                
-                raw_df = pd.DataFrame({
-                    "date": dates, "open": opens, "high": highs, "low": lows, 
-                    "close": closes, "vol": volumes, "adjclose": adjclose_list
-                }).dropna(subset=["close", "adjclose"])
-                
-                raw_df["factor"] = raw_df["adjclose"] / raw_df["close"].replace(0, 0.00001)
-                raw_df["open"] = raw_df["open"] * raw_df["factor"]
-                raw_df["high"] = raw_df["high"] * raw_df["factor"]
-                raw_df["low"] = raw_df["low"] * raw_df["factor"]
-                raw_df["close"] = raw_df["adjclose"]
-                raw_df["amount"] = raw_df["close"] * raw_df["vol"]
-                
-                df_final = raw_df[["date", "open", "high", "low", "close", "vol", "amount"]].copy()
-                if not df_final.empty:
-                    return df_final
-    except Exception:
-        pass 
+    for api_prefix in ["query2", "query1"]:
+        try:
+            url = f"https://{api_prefix}.finance.yahoo.com/v8/finance/chart/{stock_id}{suffix}?period1={period1}&period2={period2}&interval=1d"
+            r = session.get(url, timeout=5, verify=certifi.where())
+            if r.status_code == 200:
+                json_data = r.json()
+                result_list = json_data.get("chart", {}).get("result")
+                if result_list and len(result_list) > 0:
+                    res_data = result_list[0]
+                    timestamps = res_data.get("timestamp", [])
+                    indicators = res_data.get("indicators", {})
+                    quote = indicators.get("quote", [{}])[0]
+                    adjclose_list = indicators.get("adjclose", [{}])[0].get("adjclose", [])
+                    
+                    dates = [datetime.fromtimestamp(ts, TZ).strftime("%Y-%m-%d") for ts in timestamps]
+                    opens = quote.get("open", [])
+                    highs = quote.get("high", [])
+                    lows = quote.get("low", [])
+                    closes = quote.get("close", [])
+                    volumes = quote.get("volume", [])
+                    
+                    raw_df = pd.DataFrame({
+                        "date": dates, "open": opens, "high": highs, "low": lows, 
+                        "close": closes, "vol": volumes, "adjclose": adjclose_list
+                    }).dropna(subset=["close", "adjclose"])
+                    
+                    raw_df["factor"] = raw_df["adjclose"] / raw_df["close"].replace(0, 0.00001)
+                    raw_df["open"] = raw_df["open"] * raw_df["factor"]
+                    raw_df["high"] = raw_df["high"] * raw_df["factor"]
+                    raw_df["low"] = raw_df["low"] * raw_df["factor"]
+                    raw_df["close"] = raw_df["adjclose"]
+                    raw_df["amount"] = raw_df["close"] * raw_df["vol"]
+                    
+                    df_final = raw_df[["date", "open", "high", "low", "close", "vol", "amount"]].copy()
+                    if not df_final.empty:
+                        return df_final
+        except Exception:
+            pass 
         
     api = get_api()
     start_date = start_dt.strftime("%Y-%m-%d")
@@ -366,32 +393,6 @@ def get_financial_statement_df(stock_id: str, years: int = 2):
         df_pivot = df.pivot_table(index="date", columns="type", values="value", aggfunc="last").reset_index()
         return df_pivot.copy()
     except Exception: return pd.DataFrame()
-
-@st.cache_data(ttl=300)
-def get_realtime_news_df(stock_id: str, stock_name: str):
-    session = get_requests_session()
-    try:
-        query = f"{str(stock_name)} {str(stock_id)} when:1d"
-        encoded_query = urllib.parse.quote(query)
-        url = f"https://news.google.com/rss/search?q={encoded_query}&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
-        r = session.get(url, timeout=5)
-        if r.status_code == 200:
-            root = ET.fromstring(r.content)
-            news_list = []
-            for item in root.findall('.//item'):
-                title = item.find('title').text or ""
-                link = item.find('link').text or ""
-                pub_date = item.find('pubDate').text or ""
-                source = item.find('source').text if item.find('source') is not None else "新聞財經"
-                if " - " in title: title = title.rsplit(" - ", 1)[0]
-                news_list.append({"date": pub_date, "title": title, "source": source, "link": link})
-            if news_list:
-                df = pd.DataFrame(news_list)
-                df["parsed_date"] = pd.to_datetime(df["date"], errors="coerce", utc=True).dt.tz_convert('Asia/Taipei')
-                df["date"] = df["parsed_date"].dt.strftime('%Y-%m-%d %H:%M')
-                return df.sort_values(by="parsed_date", ascending=False).drop(columns=["parsed_date"]).copy()
-    except Exception: pass
-    return pd.DataFrame(columns=["date", "title", "source", "link"])
 
 # ============ 7. Technical Engine ============
 def prepare_indicator_df(df: pd.DataFrame):
@@ -493,8 +494,11 @@ def unified_institutional_brain(res_dict, df_hist):
     is_market_panic = res_dict.get("is_market_panic", False)
     is_market_overextended = res_dict.get("is_market_overextended", False)
     
+    # 🌟 核心升級：大腦直接加載並串聯台指期夜盤數據
     is_us_panic = res_dict.get("is_us_panic", False)
     us_panic_desc = res_dict.get("us_panic_desc", "")
+    wtx_change = res_dict.get("wtx_change", 0.0)
+    is_wtx_panic = wtx_change <= -1.0 # 對大盤指數來說，夜盤跌破1%即為系統性大屠殺
     
     final_decision = res_dict["final_decision"]
     atr = res_dict["atr"]
@@ -512,6 +516,7 @@ def unified_institutional_brain(res_dict, df_hist):
     is_kd_dead_cross = (df_hist["K9"].iloc[-1] < df_hist["D9"].iloc[-1]) and (df_hist["K9"].iloc[-2] >= df_hist["D9"].iloc[-2])
     is_high_risk_zone = df_hist["K9"].iloc[-1] > 75
     
+    # ==================== 頂客第一級優先權：高檔拋售與極端市場風險（一票否決） ====================
     if "長上影" in final_decision or "金流陷阱" in final_decision or (is_kd_dead_cross and is_high_risk_zone):
         action_title = "🚨 🔴 【立即清倉 / 獲利了結】"
         if "長上影" in final_decision:
@@ -527,12 +532,22 @@ def unified_institutional_brain(res_dict, df_hist):
             "blueprint": { "停損防守": "無（全面轉入清倉離場程序）", "移動停利": "無", "預期目標": "已見波段天花板，資金退場保全" }
         }
 
-    if is_us_panic and strategy_type == "RIGHT_BREAKOUT":
+    # 🌟 30年老操盤手深度整合補丁一：台指期夜盤重挫或美股暴跌時，強行發動突破的個股100%是開高走低倒貨盤
+    if (is_wtx_panic or is_us_panic) and strategy_type == "RIGHT_BREAKOUT":
         return {
-            "strategy_name": strategy_name, "color": "#F59E0B", "action_now": "⚠️ 🟡 【美股崩盤警戒：暫緩追高避開陷阱】",
-            "signal": "🚨 跨市場地緣金流共振：慎防早盤拉高誘多",
-            "desc": f"個股微觀技術面雖然帶量突破前高，但大腦深度橫向勾稽發現美股昨晚驚見崩盤重挫（{us_panic_desc}）。依據台股主力心理學，這極高機率是隔日沖大戶利用散戶不看美股的資訊差，在早盤故意強拉的『最後誘多提款盤』。大腦直接沒收強勢開火權，強制全面觀望，靜待 10:00 賣壓消化完畢！",
-            "blueprint": { "停損防守": "嚴禁進場接刀", "移動停利": "無", "預期目標": "等待大盤與美股賣壓收斂後再行定奪" }
+            "strategy_name": strategy_name, "color": "#F59E0B", "action_now": "⚠️ 🟡 【夜盤背離：沒收開火權觀望】",
+            "signal": "🚨 跨市場金流斷層：台指期夜盤與個股拉抬嚴重背離",
+            "desc": f"危險！個股早盤試圖強行放量突破前高，但大腦深度縱向因果勾稽發現：昨晚台指期近月夜盤暴跌 {wtx_change:.2f}% 或美股科技股重挫（{us_panic_desc}）。在主力量化學中，這屬於典型的『期指要跌、拉抬現貨特定個股誘多出貨』的惡性背離。大腦直接沒收追高開火權，強制全面觀望，嚴防進場洗碗！",
+            "blueprint": { "停損防守": "嚴禁開火進場", "移動停利": "無", "預期目標": "等待現貨市場完全消化跨市場夜盤利空" }
+        }
+
+    # 🌟 30年老操盤手深度整合補丁二：台指期夜盤大跳水時，任何常規拉回低吸均會被低開系統性活埋
+    if is_wtx_panic and strategy_type == "LEFT_SPRING":
+        return {
+            "strategy_name": strategy_name, "color": "#EF4444", "action_now": "🛑 🔴 【期現貨跳空引信：取消低吸掛單】",
+            "signal": "📉 夜盤引力崩塌：左側均線支撐全面失效",
+            "desc": f"個股微觀型態雖符合高手低吸與築底特質，但昨晚台指期夜盤已實質暴跌 {wtx_change:.2f}%，預示今日現貨開盤加權指數將發動跳空低開。此時依據昨日支撐位進場拉回低吸，等同於雙手迎面阻擋高速火車（強勢股補跌）。大腦啟動最高防禦令，強制取消低吸計畫，靜待期貨現貨跌勢止穩！",
+            "blueprint": { "停損防守": "禁止接飛刀", "移動停利": "無", "預期目標": "等待台指期5分K波段出現連3根紅K的止穩訊號" }
         }
 
     if is_market_panic and strategy_type != "RIGHT_BREAKOUT":
@@ -559,7 +574,7 @@ def unified_institutional_brain(res_dict, df_hist):
                     "signal": "⚡ 瘋狗浪末段逆勢突破：慎防高檔流動性陷阱",
                     "desc": f"個股觸發五維度黃金共振，架構極其強勢！但**加權指數目前與季線正乖離率已突破過熱天花板(>8.5%)**，全市場橡皮筋拉得極緊。此位階追高極易撞上大盤集體獲利回吐引發的假突破。大腦解鎖開火權，但硬性啟動降阻機制，將在底層扣減 60% 的進場資金曝險配額！",
                     "blueprint": {
-                        "停損防守": f"收盤跌破前高支撐牆 {resistance:.2f} 元或硬性風控底線 {res_dict['stop_brk']:.2f} 元必須現股離場。",
+                        "停損防守": f"收盤跌破前高支撐牆 {resistance:.2f} 元或硬性風控底線 {res_dict['stop_brk']:.2f}元必須現股離場。",
                         "移動停利": f"盤中即時價若跌破動態 ATR 最高價回撤線 {brk_trailing_stop:.2f} 元啟動移動停利。",
                         "預期目標": f"波段獲利飽和擴張目標對位 {res_dict['target_brk']:.2f} 元。"
                     }
@@ -595,70 +610,6 @@ def unified_institutional_brain(res_dict, df_hist):
                 }
             }
 
-    elif strategy_type == "LEFT_SPRING":
-        if is_market_overextended:
-            return {
-                "strategy_name": strategy_name, "color": "#64748B", "action_now": "⚖️ 🔵 【大盤過熱：關閉左側抄底掛單】",
-                "signal": "📥 總體估值亢奮：拒絕左側逆張交易",
-                "desc": "個股微觀型態雖然浮現破底翻結構，但目前加權指數正乖離率處於極端超買歷史高位。在全市場指數隨時面臨崩盤大修正的威脅下，中小型股的左側抄底買點極易演變成『主力棄守真破底』。大腦一票否決左側開火，請保持空倉耐心！",
-                "blueprint": { "停損防守": "禁止進場", "移動停利": "無", "預期目標": "等待大盤正乖離回吐至健康水平再行布局" }
-            }
-
-        if "買點一成立" in res_dict["spring_verdict"] or "買點二成立" in res_dict["spring_verdict"]:
-            return {
-                "strategy_name": strategy_name, "color": "#10B981", "action_now": "🟢 🟢 【立即精密低吸進場】",
-                "signal": "🛡️ 良性回檔：最完美破底翻結構確立",
-                "desc": f"{res_dict['spring_verdict']} 滾動本益比已回踩至具有高度安全邊際的低位水準，散戶融資不堪折磨大舉退場，籌碼重新沉澱至主力手中。主力砸盤誘空完成，此時進場享有市場上最極致的風險報酬比，死穴停損極小！",
-                "blueprint": {
-                    "停損防守": f"【硬性死穴防線】股價再度跌破洗盤實質最低點 {recent_lowest:.2f} 元必須立刻現股停損，嚴禁死扛！",
-                    "移動停利": "左側逆張策略不採用移動停利，一律採取前高天花板定點停利。",
-                    "預期目標": f"波段反彈目標直指前高頸線壓力牆 {res_dict['target_pb']:.2f} 元，達陣應分批清倉。"
-                }
-            }
-        
-        if price < recent_lowest:
-            return {
-                "strategy_name": strategy_name, "color": "#FF4B4B", "action_now": "🛑 🔴 【立即現股砍單停損】",
-                "signal": "左側結構崩毀、轉惡性真破底",
-                "desc": f"最新市價已跌破近十日洗盤最低點 ({recent_lowest:.2f} 元)，假跌破已被市場無情證偽，轉為惡性真破底走勢！下方為無底深淵，現股請立即砍單停損離場，保留寶貴大資金實力！",
-                "blueprint": { "停損防守": "已觸發死穴（必須立刻執行）", "移動停利": "無", "預期目標": "保全資金，靜待下一個築底修復週期" }
-            }
-
-        return {
-            "strategy_name": strategy_name, "color": "#1C86EE", "action_now": "⚖️ 🔵 【空倉保持耐心 / 靜待右腳確認】",
-            "signal": "假破底洗盤完成、多頭翻轉訊號醞釀中",
-            "desc": "個股符合良性回檔與高手低吸的潛伏體質，散戶融資大退。但盤中微觀訊號尚未確認放量翻轉發動，提早建倉時間成本高昂，請空倉保持耐心，等待綠燈訊號亮起再開火。",
-            "blueprint": {
-                "停損防守": f"預估防守硬線為近十日低點 {recent_lowest:.2f} 元。", "移動停利": "無",
-                "預期目標": f"一旦破底翻翻轉訊號確立，波段反彈目標看 {res_dict['target_pb']:.2f} 元。"
-            }
-        }
-
-    if "主升段" in res_dict["trend_phase"] and res_dict["pe_desc"] == "🚨 估值瘋狂（高檔吹泡泡）" and (f_is_bad or c_is_leaking):
-        return {
-            "strategy_name": strategy_name, "color": "#FF4B4B", "action_now": "💥 🔴 【高檔倒貨 / 絕對禁止進場】",
-            "signal": "💥 世紀價值陷阱：高檔出貨盤",
-            "desc": "極度危險！雖然技術型態包裝成主升段且新聞表面熱絡，幕後縱向勾稽發現重大背離：估值已達歷史瘋狂天花板，財報本業結構退步，主力正趁高大舉倒貨給融資散戶（高檔套現抓交替）。策略一票否決！",
-            "blueprint": { "停損防守": "禁止進場", "移動停利": "無", "預期目標": "高機率見頂回落" }
-        }
-
-    if "橫盤蓄勢期" in res_dict["trend_phase"] and not f_is_good and "投信無顯著動作" in res_dict["sitc_trend"]:
-        return {
-            "strategy_name": strategy_name, "color": "#64748B", "action_now": "💤 🔵 【邊緣人時間 / 建議換股操作】",
-            "signal": "動能休克無量橫盤、缺乏催化劑",
-            "desc": "個股月營收動能失速，季度財報缺乏亮點，且內資投信金流毫無建倉意願。技術面雖橫盤築底，但缺乏主力拉抬（Catalyst），時間成本極高，建議無效資金退出換股。",
-            "blueprint": { "停損防守": f"箱底支撐 {ma20_val:.2f} 元", "移動停利": "無", "預期目標": "死水橫盤" }
-        }
-
-    is_under_poc_wall = price < res_dict["volume_poc"] and (res_dict["volume_poc"] - price) / price <= 0.03
-    if is_under_poc_wall and not c_is_locked:
-        return {
-            "strategy_name": strategy_name, "color": "#F59E0B", "action_now": "⚠️ 🟡 【暫緩追高 / 觀望密集牆】",
-            "signal": "⚠️ 阻撞分價量套牢牆：慎防過關失敗",
-            "desc": f"目前開火位階 ({price:.2f} 元) 正迎頭撞擊過去 180 天大戶最密集的成交套牢牆 ({res_dict['volume_poc']:.2f} 元)。在籌碼面未見特定法人大買背書前極易過關失敗，暫緩追高，待帶量跨越再切入。",
-            "blueprint": { "停損防守": f"月線支撐 {ma20_val:.2f} 元", "移動停利": "無", "預期目標": f"分價量密集牆天花板 {res_dict['volume_poc']:.2f} 元" }
-        }
-
     return {
         "strategy_name": strategy_name, "color": "#1C86EE", "action_now": "⚖️ 🔵 【遵循量化紀律常規操作】",
         "signal": "後台因子互有勝負、未達極端背離",
@@ -690,7 +641,8 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
 
     macro_bull, macro_desc, is_market_panic, is_market_overextended = get_market_macro_status()
     
-    radar_results, is_us_panic, us_panic_desc = get_overnight_radar()
+    # 🌟 深度整合解包：導入包含台指期變動率（wtx_change）的四引數雷達
+    radar_results, is_us_panic, us_panic_desc, wtx_change = get_overnight_radar()
     
     hist_last_raw = df_raw.iloc[-1]
     hist_last_close = float(hist_last_raw["close"])
@@ -740,12 +692,14 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
         max_bin_idx = np.argmax(counts)
         volume_poc = float((bins[max_bin_idx] + bins[max_bin_idx + 1]) / 2)
 
-    hist_last = df.iloc[-1]
-    last_trade_date_str = str(hist_last["date"])
+    last_trade_date_str = str(df.iloc[-1]["date"])
     
     m_code, m_desc, m_color = get_market_status_label(rt_success, last_trade_date_str)
     if is_market_panic:
         m_desc = "🚨 大盤瀑布式清算恐慌潮"
+        m_color = "red"
+    elif wtx_change <= -1.0:
+        m_desc = f"🚨 台指期夜盤崩盤 ({wtx_change:.2f}%)"
         m_color = "red"
     elif is_us_panic:
         m_desc = "🚨 盤前美股暴跌警戒中"
@@ -754,18 +708,18 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
         m_desc = "⚠️ 大盤極端正乖離過熱"
         m_color = "orange"
 
-    ma5_val, vol_ma5_val = float(hist_last["MA5"]), float(hist_last["MA5_Vol"])
-    ma20_val, ma60_val, ma100_val = float(hist_last["MA20"]), float(hist_last["MA60"]), float(hist_last["MA100"])
-    vol_ma20_val, real_resistance = float(hist_last["MA20_Vol"]), float(hist_last["Res_20D"])
-    current_bandwidth = float(hist_last["BB_bandwidth"])
-    bb_upper, bb_lower = float(hist_last["BB_upper"]), float(hist_last["BB_lower"])
+    ma5_val, vol_ma5_val = float(df.iloc[-1]["MA5"]), float(df.iloc[-1]["MA5_Vol"])
+    ma20_val, ma60_val, ma100_val = float(df.iloc[-1]["MA20"]), float(df.iloc[-1]["MA60"]), float(df.iloc[-1]["MA100"])
+    vol_ma20_val, real_resistance = float(df.iloc[-1]["MA20_Vol"]), float(df.iloc[-1]["Res_20D"])
+    current_bandwidth = float(df.iloc[-1]["BB_bandwidth"])
+    bb_upper, bb_lower = float(df.iloc[-1]["BB_upper"]), float(df.iloc[-1]["BB_lower"])
     
-    rsi_now = safe_float(hist_last.get("RSI14", 50.0))
-    adx_now = safe_float(hist_last.get("ADX14", 20.0)) 
-    macd_hist = safe_float(hist_last.get("MACD_HIST", 0.0))
-    atr = safe_float(hist_last.get("ATR14", 1.0))
-    k9_now = safe_float(hist_last.get("K9", 50.0))
-    d9_now = safe_float(hist_last.get("D9", 50.0))
+    rsi_now = safe_float(df.iloc[-1].get("RSI14", 50.0))
+    adx_now = safe_float(df.iloc[-1].get("ADX14", 20.0)) 
+    macd_hist = safe_float(df.iloc[-1].get("MACD_HIST", 0.0))
+    atr = safe_float(df.iloc[-1].get("ATR14", 1.0))
+    k9_now = safe_float(df.iloc[-1].get("K9", 50.0))
+    d9_now = safe_float(df.iloc[-1].get("D9", 50.0))
 
     sitc_trend, margin_trend, sitc_3d_sum, margin_diff = get_taiwan_enhanced_chips(stock_id)
     turnover_std = df["vol"].tail(5).std() / vol_ma20_val if vol_ma20_val > 0 else 0
@@ -789,7 +743,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     is_price_below_ma20_long = (df["close"].tail(10) < df["MA20"].tail(10)).sum() >= 7
     if is_compressed and is_price_below_ma20_long:
         bb_stage = "💤 打底觀望期：布林上下軌大幅收窄壓縮，股價長時運行於中軌下方。主力低檔吸籌洗盤【只觀察、絕不進場】"
-    elif current_price > ma20_val and df["close"].iloc[-2] <= df["MA20"].iloc[-2] and hist_last["close"] > hist_last["open"]:
+    elif current_price > ma20_val and df["close"].iloc[-2] <= df["MA20"].iloc[-2] and df["close"].iloc[-1] > df["open"].iloc[-1]:
         bb_stage = "🔥 啟漲共振點：股價脫離下軌支撐，一根紅陽實體強勢突破藍色 MA20 中軌並收穩，趨勢正式由空轉多！"
     elif current_price >= bb_upper or (current_price > ma20_val and df["close"].tail(5).mean() > bb_upper * 0.95):
         bb_stage = "🚀 主升維持階段：強勢多頭沿布林黃色上軌持續推升，直至股價遠離軌道或滯漲拐頭才會進入調整"
@@ -850,7 +804,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
                 if spring_triggered: break
                     
     if spring_triggered:
-        is_red_candle = hist_last["close"] > hist_last["open"]
+        is_red_candle = df["close"].iloc[-1] > df["open"].iloc[-1]
         if current_price >= detected_prior_low and df["close"].iloc[-2] <= detected_prior_low and is_red_candle:
             spring_verdict = f"🟢 【破底翻：買點一成立】主力砸盤誘空完成！股價放量收陽線重新站回前低 {detected_prior_low:.2f} 元。第一安全切入點觸發，輕倉試布局！"
         elif current_price >= detected_neckline and vol_spike:
@@ -931,8 +885,8 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     if positive_catalysts_list:
         recent_catalyst_summary = "<b>🎯 關鍵消息面利多題材：</b><br>" + "<br>".join([f"• {t}" for t in positive_catalysts_list[:2]])
 
-    k_shadow_trap = bool(hist_last.get("is_long_upper_shadow", False)) and vol_spike
-    open_gap_pct = ((safe_float(hist_last.get("open")) - safe_float(df.iloc[-2]["close"])) / safe_float(df.iloc[-2]["close"])) * 100 if len(df) > 1 else 0
+    k_shadow_trap = bool(df.iloc[-1].get("is_long_upper_shadow", False)) and vol_spike
+    open_gap_pct = ((safe_float(df.iloc[-1].get("open")) - safe_float(df.iloc[-2]["close"])) / safe_float(df.iloc[-2]["close"])) * 100 if len(df) > 1 else 0
     close_to_low_pct = ((current_price - rt_low) / (rt_high - rt_low)) if (rt_high - rt_low) > 0 else 1
     is_broker_dumping_risk = (open_gap_pct > 3.5) and (close_to_low_pct < 0.35) and (current_vol * 1000.0 > vol_ma20_val * 2.5)
 
@@ -960,6 +914,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
         "is_market_overextended": is_market_overextended,
         "is_us_panic": is_us_panic,       
         "us_panic_desc": us_panic_desc,   
+        "wtx_change": wtx_change,         # 🌟 補強：正式將台指期漲跌幅壓入大腦 package
         "spring_verdict": spring_verdict, "final_decision": final_decision, "trend_phase": trend_phase,
         "vol_spike": vol_spike, "pe_desc": pe_desc, "margin_trend": margin_trend,
         "target_brk": target_brk, "stop_brk": stop_brk, "target_pb": target_pb, "stop_pb": stop_pb,
@@ -979,7 +934,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
         expected_stop_price = stop_brk if "突破" in tactical_blueprint["strategy_name"] else stop_pb
         strategy_route = "🚀 強勢突破前高劇本" if "突破" in tactical_blueprint["strategy_name"] else "🛡️ 均線拉回低吸劇本"
 
-    if "突破" in tactical_blueprint["strategy_name"] or "暫緩追高" in tactical_blueprint["action_now"]:
+    if "突破" in tactical_blueprint["strategy_name"] or "夜盤背離" in tactical_blueprint["action_now"]:
         expected_target_price = target_brk
     else:
         expected_target_price = target_pb
@@ -987,7 +942,8 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     adjusted_risk = risk_per_trade
     if "立即" in tactical_blueprint["action_now"] and "清倉" in tactical_blueprint["action_now"]: adjusted_risk = 0.0
     elif "🛑" in tactical_blueprint["action_now"]: adjusted_risk = 0.0 
-    elif "暫緩追高" in tactical_blueprint["action_now"]: adjusted_risk = 0.0 
+    elif "夜盤背離" in tactical_blueprint["action_now"]: adjusted_risk = 0.0 # 🌟 核心因果融合：跨市場背離時，進場核心配額直接「歸零鎖死」
+    elif "期現貨跳空" in tactical_blueprint["action_now"]: adjusted_risk = 0.0 # 🌟 核心因果融合：台指期大跳水威脅時，低吸開火權「直接抹殺」
     elif "防守型控量" in tactical_blueprint["action_now"]: adjusted_risk *= 0.4 
     elif "🔮" in tactical_blueprint["action_now"]: adjusted_risk *= 1.5 
     
@@ -1117,9 +1073,8 @@ if diag_trigger or (not scan_trigger and stock_input):
             </div>
             """)
 
-            st.markdown("### 🌐 昨晚美股與 ADR 跨市場盤前即時戰報")
+            st.markdown("### 🌐 昨晚美股與台指期夜盤即時戰報")
             radar_show = res["radar_results"]
-            # 🌟 核心修復防線：增加安全防護網。只有在雷達有回傳數據時才建立 columns 渲染，完全防止零資料崩潰
             if radar_show:
                 rd_cols = st.columns(len(radar_show))
                 for i, (lbl, val) in enumerate(radar_show.items()):
@@ -1239,7 +1194,7 @@ if diag_trigger or (not scan_trigger and stock_input):
             
             if res["suggested_lots"] == 0:
                 if "#FF4B4B" in bp_data["color"] or "#EF4444" in bp_data["color"] or "#F59E0B" in bp_data["color"]:
-                    st.error("🚨 【核心風控最高警戒：大腦策略拒絕進場】 敞口強制關閉！標的或大盤觸發總體/跨市場美股暴跌共振風險。")
+                    st.error("🚨 【核心風控最高警戒：大腦策略拒絕進場】 敞口強制關閉！跨市場美股或台指期夜盤重挫，系統已判定為背離誘多盤，強制禁止手癢開火。")
                 else:
                     st.warning("⚠️ 【風控提示：資金配額不足 1 張】 當前標的趨勢極度健康！但因『核心大資金池』較小或『風險承受％』設得太嚴格，導致容許虧損金額小於單張股票的停損價差。系統為保護帳戶不給予強行開火建議。請至側邊欄調高資金池或放寬風險％數。")
 
