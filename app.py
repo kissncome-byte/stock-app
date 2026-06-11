@@ -182,10 +182,6 @@ def compute_live_data(stock_id: str, market_type: str, hist_last_close: float, h
 # ============ 6. Data Fetching Layers ============
 @st.cache_data(ttl=1800)
 def get_overnight_radar():
-    """
-    🌟 30年老操盤手補丁：跨市場夜盤雷達
-    自動連線 Yahoo Finance 抓取昨晚美股三大 AI 領航指標
-    """
     session = get_requests_session()
     targets = {
         "Nasdaq那指 (^IXIC)": "^IXIC",
@@ -207,14 +203,13 @@ def get_overnight_radar():
                 if prev_close > 0:
                     change_pct = ((current_price - prev_close) / prev_close) * 100
                     radar_results[label] = change_pct
-                    # 🚨 機構級風控內規：美股科技股/費半/TSM ADR 昨晚只要暴跌逾 -2.0%，盤前警報直接拉響
                     if change_pct <= -2.0:
                         is_us_panic = True
                         panic_desc = f"昨晚美股大震盪，{label} 慘跌 {change_pct:.1f}%"
                 else:
                     radar_results[label] = 0.0
         except Exception:
-            radar_results[label] = 0.0
+            pass
             
     return radar_results, is_us_panic, panic_desc
 
@@ -498,7 +493,6 @@ def unified_institutional_brain(res_dict, df_hist):
     is_market_panic = res_dict.get("is_market_panic", False)
     is_market_overextended = res_dict.get("is_market_overextended", False)
     
-    # 🌟 核心升級：大腦直接讀取並勾稽美股盤前夜盤雷達神經元，拒絕只做常規展示
     is_us_panic = res_dict.get("is_us_panic", False)
     us_panic_desc = res_dict.get("us_panic_desc", "")
     
@@ -518,7 +512,6 @@ def unified_institutional_brain(res_dict, df_hist):
     is_kd_dead_cross = (df_hist["K9"].iloc[-1] < df_hist["D9"].iloc[-1]) and (df_hist["K9"].iloc[-2] >= df_hist["D9"].iloc[-2])
     is_high_risk_zone = df_hist["K9"].iloc[-1] > 75
     
-    # ==================== 頂客第一級優先權：高檔拋售與極端市場風險（一票否決） ====================
     if "長上影" in final_decision or "金流陷阱" in final_decision or (is_kd_dead_cross and is_high_risk_zone):
         action_title = "🚨 🔴 【立即清倉 / 獲利了結】"
         if "長上影" in final_decision:
@@ -531,15 +524,14 @@ def unified_institutional_brain(res_dict, df_hist):
         return {
             "strategy_name": strategy_name, "color": "#FF4B4B", "action_now": action_title,
             "signal": "極端出貨與慣性改變訊號共振", "desc": verdict_msg,
-            "blueprint": { "停損防守": "無（全面轉入清倉離場程序）", "移動停利": "無", "預期目標": "已見波段天天花板，資金退場保全" }
+            "blueprint": { "停損防守": "無（全面轉入清倉離場程序）", "移動停利": "無", "預期目標": "已見波段天花板，資金退場保全" }
         }
 
-    # 🌟 30年老操盤手深度因果整合補丁：美股夜盤暴跌時，強行開高的右側突破90%皆為開高走低套牢盤
     if is_us_panic and strategy_type == "RIGHT_BREAKOUT":
         return {
             "strategy_name": strategy_name, "color": "#F59E0B", "action_now": "⚠️ 🟡 【美股崩盤警戒：暫緩追高避開陷阱】",
             "signal": "🚨 跨市場地緣金流共振：慎防早盤拉高誘多",
-            "desc": f"個股微觀技術面雖然帶量突破前高，但大腦深度橫向勾稽發現美股昨晚驚見崩盤重挫（{us_panic_desc}）。依據台股主力心理學，這極高機率是隔日沖大戶利用散戶不看美股的資訊差，在早盤故意強拉的『最後誘多提款盤』。大腦直接沒收強勢開火權，強制全網觀望，靜待 10:00 賣壓消化完畢！",
+            "desc": f"個股微觀技術面雖然帶量突破前高，但大腦深度橫向勾稽發現美股昨晚驚見崩盤重挫（{us_panic_desc}）。依據台股主力心理學，這極高機率是隔日沖大戶利用散戶不看美股的資訊差，在早盤故意強拉的『最後誘多提款盤』。大腦直接沒收強勢開火權，強制全面觀望，靜待 10:00 賣壓消化完畢！",
             "blueprint": { "停損防守": "嚴禁進場接刀", "移動停利": "無", "預期目標": "等待大盤與美股賣壓收斂後再行定奪" }
         }
 
@@ -559,7 +551,6 @@ def unified_institutional_brain(res_dict, df_hist):
             "blueprint": { "停損防守": "禁止進場", "移動停利": "觀望", "預期目標": "等待加權指數重新站穩 20MA 多頭安全區" }
         }
 
-    # ==================== 路線 A：右側突破流決策藍圖 ====================
     if strategy_type == "RIGHT_BREAKOUT":
         if macro_safe and price >= ma100_val and price >= resistance * 0.99 and res_dict["vol_spike"] and sitc_3d > 300 and f_is_good and c_is_locked:
             if is_market_overextended:
@@ -604,7 +595,6 @@ def unified_institutional_brain(res_dict, df_hist):
                 }
             }
 
-    # ==================== 路線 B：左側破底翻決策藍圖 ====================
     elif strategy_type == "LEFT_SPRING":
         if is_market_overextended:
             return {
@@ -644,12 +634,11 @@ def unified_institutional_brain(res_dict, df_hist):
             }
         }
 
-    # ==================== 路線 C：混沌常態其餘特殊型態 ====================
     if "主升段" in res_dict["trend_phase"] and res_dict["pe_desc"] == "🚨 估值瘋狂（高檔吹泡泡）" and (f_is_bad or c_is_leaking):
         return {
             "strategy_name": strategy_name, "color": "#FF4B4B", "action_now": "💥 🔴 【高檔倒貨 / 絕對禁止進場】",
             "signal": "💥 世紀價值陷阱：高檔出貨盤",
-            "desc": "極度危險！雖然技術型態包裝成主升段且新聞表面熱絡，但幕後縱向勾稽發現重大背離：估值已達歷史瘋狂天花板，財報本業結構退步，主力正趁高大舉倒貨給融資散戶（高檔套現抓交替）。策略一票否決！",
+            "desc": "極度危險！雖然技術型態包裝成主升段且新聞表面熱絡，幕後縱向勾稽發現重大背離：估值已達歷史瘋狂天花板，財報本業結構退步，主力正趁高大舉倒貨給融資散戶（高檔套現抓交替）。策略一票否決！",
             "blueprint": { "停損防守": "禁止進場", "移動停利": "無", "預期目標": "高機率見頂回落" }
         }
 
@@ -701,7 +690,6 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
 
     macro_bull, macro_desc, is_market_panic, is_market_overextended = get_market_macro_status()
     
-    # 🌟 整合：將夜盤雷達與美股崩盤訊號直接與核心分析串聯
     radar_results, is_us_panic, us_panic_desc = get_overnight_radar()
     
     hist_last_raw = df_raw.iloc[-1]
@@ -970,8 +958,8 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
         "sitc_3d_sum": sitc_3d_sum, "margin_diff": margin_diff, "macro_desc": macro_desc,
         "is_market_panic": is_market_panic, 
         "is_market_overextended": is_market_overextended,
-        "is_us_panic": is_us_panic,       # 🌟 補強：將美股雷達訊號塞入大腦
-        "us_panic_desc": us_panic_desc,   # 🌟 補強：將美股描述塞入大腦
+        "is_us_panic": is_us_panic,       
+        "us_panic_desc": us_panic_desc,   
         "spring_verdict": spring_verdict, "final_decision": final_decision, "trend_phase": trend_phase,
         "vol_spike": vol_spike, "pe_desc": pe_desc, "margin_trend": margin_trend,
         "target_brk": target_brk, "stop_brk": stop_brk, "target_pb": target_pb, "stop_pb": stop_pb,
@@ -979,7 +967,6 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
         "sitc_trend": sitc_trend, "short_term_trend": short_term_trend, "volume_poc": volume_poc
     }
     
-    tactical_blueprint = []
     tactical_blueprint = unified_institutional_brain(package, df.copy())
     
     if "破底翻" in tactical_blueprint["strategy_name"] and ("買點一成立" in spring_verdict or "買點二成立" in spring_verdict):
@@ -1000,7 +987,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     adjusted_risk = risk_per_trade
     if "立即" in tactical_blueprint["action_now"] and "清倉" in tactical_blueprint["action_now"]: adjusted_risk = 0.0
     elif "🛑" in tactical_blueprint["action_now"]: adjusted_risk = 0.0 
-    elif "暫緩追高" in tactical_blueprint["action_now"]: adjusted_risk = 0.0 # 🌟 核心風控整合：美股暴跌觸發警戒，進場曝險強制降為 0%，全面禁止手癢開火
+    elif "暫緩追高" in tactical_blueprint["action_now"]: adjusted_risk = 0.0 
     elif "防守型控量" in tactical_blueprint["action_now"]: adjusted_risk *= 0.4 
     elif "🔮" in tactical_blueprint["action_now"]: adjusted_risk *= 1.5 
     
@@ -1031,7 +1018,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
         "k9_now": k9_now, "d9_now": d9_now,
         "spring_verdict": spring_verdict, "bb_stage": bb_stage, "kd_timing": kd_timing, "volume_verdict": volume_verdict,
         "tactical_blueprint": tactical_blueprint,
-        "radar_results": radar_results # 🌟 傳遞至 UI 層渲染
+        "radar_results": radar_results 
     }
 
 # ============ 10. UI Presentation Layer ============
@@ -1130,20 +1117,23 @@ if diag_trigger or (not scan_trigger and stock_input):
             </div>
             """)
 
-            # 🌟 補強：在畫面中段直接噴出跨市場夜盤雷達動態，一目了然
             st.markdown("### 🌐 昨晚美股與 ADR 跨市場盤前即時戰報")
             radar_show = res["radar_results"]
-            rd_cols = st.columns(len(radar_show))
-            for i, (lbl, val) in enumerate(radar_show.items()):
-                with rd_cols[i]:
-                    color = "#10B981" if val >= 0 else "#EF4444"
-                    arrow = "🔺" if val >= 0 else "🔻"
-                    st.markdown(f"""
-                    <div style="background-color:#F8FAFC; border:1px solid #E2E8F0; padding:10px; border-radius:6px; text-align:center;">
-                        <span style="font-size:12px; color:#64748B; font-weight:600;">{lbl}</span>
-                        <h4 style="margin:4px 0 0 0; color:{color}; font-weight:800;">{arrow} {val:.2f}%</h4>
-                    </div>
-                    """, unsafe_allow_html=True)
+            # 🌟 核心修復防線：增加安全防護網。只有在雷達有回傳數據時才建立 columns 渲染，完全防止零資料崩潰
+            if radar_show:
+                rd_cols = st.columns(len(radar_show))
+                for i, (lbl, val) in enumerate(radar_show.items()):
+                    with rd_cols[i]:
+                        color = "#10B981" if val >= 0 else "#EF4444"
+                        arrow = "🔺" if val >= 0 else "🔻"
+                        st.markdown(f"""
+                        <div style="background-color:#F8FAFC; border:1px solid #E2E8F0; padding:10px; border-radius:6px; text-align:center;">
+                            <span style="font-size:12px; color:#64748B; font-weight:600;">{lbl}</span>
+                            <h4 style="margin:4px 0 0 0; color:{color}; font-weight:800;">{arrow} {val:.2f}%</h4>
+                        </div>
+                        """, unsafe_allow_html=True)
+            else:
+                st.warning("⚠️ 跨市場夜盤雷達連線逾時或盤前伺服器維護中，暫無即時戰報數據。")
 
             st.markdown("<br>", unsafe_allow_html=True)
 
