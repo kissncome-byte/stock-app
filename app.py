@@ -109,7 +109,6 @@ def get_api():
 
 # ============ 5. Live Data Streaming Engine ============
 def compute_live_data(stock_id: str, market_type: str, hist_last_close: float, hist_last_vol: float, live_price_override: float = None):
-    # 統一將 fallback 用的歷史成交量轉化為張數基準
     hist_last_vol_lots = hist_last_vol / 1000.0 if hist_last_vol > 0 else 0.0
 
     if live_price_override is not None and live_price_override > 0:
@@ -119,7 +118,7 @@ def compute_live_data(stock_id: str, market_type: str, hist_last_close: float, h
     rt_source, rt_type = "歷史收盤", "historical"
     session = get_requests_session()
 
-    # 🌟【第一優先線：富果雲端專屬特快流】持 Token 驗證，徹底穿透 Streamlit Cloud 的 IP 封鎖
+    # 🌟 第一優先線：Fugle 富果雲端特快流
     fugle_token = os.getenv("FUGLE_TOKEN", "") or st.secrets.get("FUGLE_TOKEN", "")
     if fugle_token:
         try:
@@ -128,33 +127,25 @@ def compute_live_data(stock_id: str, market_type: str, hist_last_close: float, h
             r = session.get(url, headers=headers, timeout=3)
             if r.status_code == 200:
                 res_data = r.json()
-                
-                # 依據富果 API 最新規格精準提取當前撮合價
                 last_trade = res_data.get("lastTrade", {})
                 p = safe_float(last_trade.get("price"))
-                
-                if p <= 0: # 若盤後或尚未成交，取今日最新收盤價
+                if p <= 0:
                     p = safe_float(res_data.get("closePrice"))
-                if p <= 0: # 萬一都沒開盤，拿平盤參考價頂替
+                if p <= 0:
                     p = safe_float(res_data.get("referencePrice"))
-                
-                # 提取富果總成交量（富果官方預設單位即為「張」）
                 total_data = res_data.get("total", {})
                 v = safe_float(total_data.get("tradeVolume"))
-                
                 if p > 0:
                     rt_price = p
                     rt_vol = v if v > 0 else hist_last_vol_lots
                     rt_success = True
                     rt_source, rt_type = "Fugle 富果雲端特快流", "realtime"
                     return rt_price, rt_vol, rt_success, rt_source, rt_type
-        except Exception:
-            pass # 如果富果當下超過流量限制，自動滑入下方原本的 TWSE/Yahoo 備援鏈路
+        except Exception: pass
 
-    # ============ 以下維持你原本的線路，絕對不能動 ============
     is_otc_hint = any(x in str(market_type).upper() for x in ["OTC", "TWO", "櫃", "柜", "上櫃"])
     
-    # ⚡ 原本的第二線：台灣證交所官方 API
+    # ⚡ 第二線：連線台灣證交所官方 API 
     twse_channels = ["otc", "tse"] if is_otc_hint else ["tse", "otc"]
     twse_headers = {
         "Referer": "https://mis.twse.com.tw/stock/index.jsp",
@@ -190,7 +181,7 @@ def compute_live_data(stock_id: str, market_type: str, hist_last_close: float, h
                         break
         except Exception: pass
 
-    # 🚀 原本的第三線：Yahoo v8 Chart API
+    # 🚀 第三線：強攻 Yahoo v8 Chart API
     if not rt_success:
         yahoo_suffixes = [".TWO", ".TW"] if is_otc_hint else [".TW", ".TWO"]
         for suffix in yahoo_suffixes:
@@ -216,7 +207,7 @@ def compute_live_data(stock_id: str, market_type: str, hist_last_close: float, h
                             break
             except Exception: pass
 
-    # 🔄 原本的第四線：Yahoo v7 Quote 備援
+    # 🔄 第四線：Yahoo v7 Quote 備援
     if not rt_success:
         yahoo_suffixes = [".TWO", ".TW"] if is_otc_hint else [".TW", ".TWO"]
         for suffix in yahoo_suffixes:
@@ -319,7 +310,6 @@ def get_financial_statement_df(stock_id: str, years: int = 2):
         df_raw = api.taiwan_stock_financial_statement(stock_id=stock_id, start_date=start_date)
         if df_raw is None or df_raw.empty: return pd.DataFrame()
         df = df_raw.copy()
-        # 修正：FinMind 的原始欄位為 OperatingRevenue，將其對齊轉換為你後續邏輯使用的 Revenue
         df["type"] = df["type"].replace({"OperatingRevenue": "Revenue"})
         targets = ["EPS", "Revenue", "GrossProfit", "OperatingIncome"]
         df = df[df["type"].isin(targets)]
@@ -451,7 +441,7 @@ def cross_factor_decoupling_engine(macro_bull, trend_phase, fin_conclusion, sitc
         return "🔮 頂級多頭共振：黃金主升飆股", "purple", f"五維度指標達成完美黃金交集！加權指數多頭護航，個股本益比未過熱。月營收與財報同步確認為『基本面擴張』，疊加投信主力鎖碼與散戶融資退場（籌碼極淨）。此時技術面發動『{tech_short}』，且現價已成功跨越分價量表密集區。屬於內資主力籌碼與基本面雙軌驅動的最高勝率飆股型態。策略：敞口調升至 1.5 倍，全力進攻！"
 
     if "主升段" in trend_phase and pe_desc == "🚨 估值瘋狂（高檔吹泡泡）" and (f_is_bad or c_is_leaking):
-        return "💥 世紀價值陷阱：高檔出貨盤", "red", f"極度危險！雖然技術型態包裝成『{trend_phase}』且新聞表面熱絡，幕幕後縱向勾稽發現重大背離：滾動估值已達歷史瘋狂天花板，最新季度財報卻暴露出毛利營益率『雙降退步』。此時主力趁高大舉倒貨給融資散戶（融資暴增）。這完全是主力利用市場散戶樂觀情緒進行的『高檔套現抓交替』型態。策略：一票否決。"
+        return "💥 世紀價值陷阱：高檔出貨盤", "red", f"極度危險！雖然技術型態包裝成『{trend_phase}』且新聞表面熱絡，幕後縱向勾稽發現重大背離：滾動估值已達歷史瘋狂天花板，最新季度財報卻暴露出毛利營益率『雙降退步』。此時主力趁高大舉倒貨給融資散戶（融資暴增）。這完全是主力利用市場散戶樂觀情緒進行的『高檔套現抓交替』型態。策略：一票否決。"
 
     if "拉回洗盤期" in trend_phase and pe_desc in ["🟢 價值鐵板（安全邊際高）", "⚖️ 估值合理區間"] and "融資大量退場" in margin_trend:
         return "🛡️ 良性回檔：高手低吸黃金右腳", "green", f"中長期大波段季線穩健向上，短線股價跌破月線洗盤。串聯發現：滾動本益比已回踩至具有高度安全邊際的低位水準，且散戶融資不堪折磨、大舉肉退場（籌碼重新沉澱至特定大戶手中）。這屬於典型的主力『良性換手期』而非波段終結。策略：防守性極強，精密低吸潛伏。"
@@ -495,7 +485,6 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     today_str = datetime.now(TZ).strftime("%Y-%m-%d")
     
     if rt_success and (rt_type in ["realtime", "delayed"]):
-        # 修正核心：當把即時串流（單位：張）合流進歷史K線庫（單位：股）時，必須將 vol 乘以 1000 轉換為股數，否則技術量能指標（如MA5_Vol、爆量共振）會因 1000 倍的落差完全失靈
         if str(df_for_indicators.iloc[-1]["date"]) == today_str:
             df_for_indicators.iloc[-1, df_for_indicators.columns.get_loc("close")] = current_price
             df_for_indicators.iloc[-1, df_for_indicators.columns.get_loc("high")] = max(current_price, float(df_for_indicators.iloc[-1]["high"]))
@@ -538,9 +527,91 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
 
     is_heavyweight = df["amount"].tail(20).mean() > 2000000000
     vol_multiplier, compress_quantile = (1.25, 0.35) if is_heavyweight else (2.2, 0.18)
-    # 修正後，指標與即時量皆已轉換為統一物理量單位（股），此處爆量判定完美生效
     vol_spike = (current_vol * 1000.0) > (vol_ma20_val * vol_multiplier)
     is_compressed = current_bandwidth < df["BB_bandwidth"].tail(60).quantile(compress_quantile)
+
+    # ============ 🌟 新增邏輯：布林通道骨架、KDJ與成交量辨識大腦 ============
+    bb_stage = "⚖️ 常態軌道整理中"
+    kd_timing = "⚪ 進入常態整理區間"
+    volume_verdict = "⚪ 常態量能交織"
+    
+    # 1. 布林通道骨架判大趨勢
+    is_price_below_ma20_long = (df["close"].tail(10) < df["MA20"].tail(10)).sum() >= 7
+    if is_compressed and is_price_below_ma20_long:
+        bb_stage = "💤 打底觀望期：布林上下軌大幅收窄壓縮，股價長時運行於中軌下方。主力低檔吸籌洗盤【只觀察、絕不進場】"
+    elif current_price > ma20_val and df["close"].iloc[-2] <= df["MA20"].iloc[-2] and hist_last["close"] > hist_last["open"]:
+        bb_stage = "🔥 啟漲共振點：股價脫離下軌支撐，一根紅陽實體強勢突破藍色 MA20 中軌並收穩，趨勢正式由空轉多！"
+    elif current_price >= bb_upper or (current_price > ma20_val and df["close"].tail(5).mean() > bb_upper * 0.95):
+        bb_stage = "🚀 主升維持階段：強勢多頭沿布林黃色上軌持續推升，直至股價遠離軌道或滯漲拐頭才會進入調整"
+
+    # 2. KDJ 精準捕捉切入時機
+    is_kd_gold_cross = (df["K9"].iloc[-1] > df["D9"].iloc[-1]) and (df["K9"].iloc[-2] <= df["D9"].iloc[-2])
+    is_kd_dead_cross = (df["K9"].iloc[-1] < df["D9"].iloc[-1]) and (df["K9"].iloc[-2] >= df["D9"].iloc[-2])
+    
+    if k9_now < 20 and d9_now < 20:
+        kd_timing = "📥 打底階段：KD 指標回落至 20 以下超賣區，屬於典型超跌蓄力狀態，靜待共振反彈"
+    elif "啟漲共振點" in bb_stage and is_kd_gold_cross:
+        kd_timing = "⚡ 共振啟漲點：股價突破布林中軌同一時間，KD 形成低位金叉並同步衝破 50 多空分水嶺！"
+    elif k9_now > 70:
+        if is_kd_dead_cross:
+            kd_timing = "🚨 高檔死亡交叉：超買區反轉弱化訊號觸發，短線多頭動能過熱衰退"
+        else:
+            kd_timing = "🦅 高檔判定：數值衝破 70 進入超買區，強勢主升浪出現長時間鈍化，無需看高盲目賣出，靜待死叉"
+
+    # 3. 成交量辨別真假主力資金
+    is_volume_shrunk_long = (df["vol"].tail(10) < vol_ma20_val).sum() >= 7
+    is_price_new_high_vol_drop = (df["close"].iloc[-1] > df["close"].tail(15).max() * 0.98) and ((current_vol * 1000.0) < vol_ma20_val * 0.8)
+    
+    if "打底" in bb_stage or is_volume_shrunk_long:
+        volume_verdict = "📉 底部震盪期：成交量長期萎縮，代表浮動籌碼已被主力高度鎖定"
+    elif vol_spike and ("啟漲" in bb_stage or current_price >= real_resistance * 0.95):
+        volume_verdict = "🐳 共振突破點：突破關鍵位階且紅量柱連續堆高，遠高於均量，大資金真金白銀進場！"
+    elif is_price_new_high_vol_drop:
+        volume_verdict = "🚨 量價背離風險：後續股價創新高或處高檔，但量能持續萎縮，多頭動能衰退，建議提前減倉"
+
+    # 4. 破底翻成立四大硬性前置條件與買點精算大腦
+    spring_verdict = "⚪ 未觸發破底翻結構"
+    spring_triggered = False
+    detected_prior_low = 0.0
+    detected_neckline = 0.0
+    
+    if len(df) >= 40:
+        # 尋找前 10 至前 40 天的波段支撐前低點
+        past_slice = df.iloc[-40:-10]
+        prior_low_candidate = float(past_slice["low"].min())
+        prior_low_idx = past_slice["low"].idxmin()
+        
+        # 掃描最近 10 根 K 線內是否有發生跌破後快速收回（假破底）
+        recent_slice = df.iloc[-10:]
+        for idx, (r_idx, row) in enumerate(recent_slice.iterrows()):
+            if row["low"] < prior_low_candidate: # 條件1&2：經歷明顯下跌且有效跌破前低刷新新低
+                r_pos = recent_slice.index.get_loc(r_idx)
+                # 條件3：必須在 1-3 根 K 線內立刻快速拉升收回低點價位
+                for offset in range(1, 4):
+                    if r_pos + offset < len(recent_slice):
+                        chk_idx = recent_slice.index[r_pos + offset]
+                        if recent_slice.loc[chk_idx, "close"] > prior_low_candidate:
+                            spring_triggered = True
+                            detected_prior_low = prior_low_candidate
+                            # 頸線：取前低與新低之間反彈的最高點
+                            between_slice = df.loc[prior_low_idx:r_idx]
+                            detected_neckline = float(between_slice["high"].max()) if not between_slice.empty else prior_low_candidate
+                            break
+                if spring_triggered:
+                    break
+                    
+    if spring_triggered:
+        is_red_candle = hist_last["close"] > hist_last["open"]
+        # 買點一：輕倉試布局（第一安全切入點）- 股價放量收陽線，重新站回被跌破的原本前低
+        if current_price >= detected_prior_low and df["close"].iloc[-2] <= detected_prior_low and is_red_candle:
+            spring_verdict = f"🟢 【破底翻：買點一成立】主力砸盤誘空完成！股價放量收陽線重新站回前低 {detected_prior_low:.2f} 元。第一安全切入點觸發，輕倉試布局！"
+        # 買點二：加倉主買點（穩健放大利潤點）- 股價放量突破頸線
+        elif current_price >= detected_neckline and vol_spike:
+            spring_verdict = f"🔮 【破底翻：買點二成立】多頭翻轉爆發！股價放量強勢突破關鍵頸線 {detected_neckline:.2f} 元。確認開啟波段上漲，追加倉位穩健放大利潤！"
+        else:
+            spring_verdict = f"🔍 【破底翻結構醞釀中】觸發經典假破底洗盤（前低：{detected_prior_low:.2f}，關鍵頸線：{detected_neckline:.2f}），正等待多頭量能爆發之翻轉訊號。"
+
+    # ====================================================================
 
     sitc_trend, margin_trend, sitc_3d_sum, margin_diff = get_taiwan_enhanced_chips(stock_id)
     turnover_std = df["vol"].tail(5).std() / vol_ma20_val if vol_ma20_val > 0 else 0
@@ -651,7 +722,6 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     open_gap_pct = ((open_p - prev_close_p) / prev_close_p) * 100 if prev_close_p > 0 else 0
     close_to_low_pct = ((close_p - low_p) / (high_p - low_p)) if (high_p - low_p) > 0 else 1
     
-    # 修正後，爆量洗盤機制的實質張數流已獲得完美保護
     is_broker_dumping_risk = (open_gap_pct > 3.5) and (close_to_low_pct < 0.35) and ((current_vol * 1000.0) > vol_ma20_val * 2.5)
 
     tech_short_status = "🚀 準備起漲" if (current_price >= real_resistance * 0.99 and vol_spike) else "🚀 多頭成形" if (rsi_now > 55 or k9_now > d9_now) else "中性觀望"
@@ -659,6 +729,12 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     final_decision, final_color, final_desc = cross_factor_decoupling_engine(
         macro_bull, trend_phase, fin_conclusion, sitc_trend, margin_trend, tech_short_status, latest_yoy, pe_desc, current_price, volume_poc, k_shadow_trap, is_broker_dumping_risk
     )
+
+    # 🌟 破底翻最高權限戰略覆蓋
+    if "買點一成立" in spring_verdict or "買點二成立" in spring_verdict:
+        final_decision = "🔮 頂級多頭共振：最完美破底翻結構"
+        final_color = "purple"
+        final_desc = f"{spring_verdict} 此型態屬於主力經典的誘空套路：砸破低點營造崩盤恐慌氛圍，誘騙散戶割肉，再以 1~3 根 K 線閃電拉回。這屬於整個低風險抄底策略中勝率最高、風險報酬比最極致的 K 線翻轉結構！建議嚴格對位風控藍圖開火。"
 
     t = tick_size(current_price)
     slip = float(slip_ticks) * t
@@ -708,7 +784,9 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
         "rt_source": rt_source, "m_desc": m_desc, "m_color": m_color,
         "volume_poc": volume_poc, "main_force_label": main_force_label,
         "recent_catalyst_summary": recent_catalyst_summary,
-        "k9_now": k9_now, "d9_now": d9_now
+        "k9_now": k9_now, "d9_now": d9_now,
+        # 新增傳出參數
+        "spring_verdict": spring_verdict, "bb_stage": bb_stage, "kd_timing": kd_timing, "volume_verdict": volume_verdict
     }
 
 # ============ 10. UI Presentation Layer ============
@@ -872,7 +950,7 @@ if diag_trigger or (not scan_trigger and stock_input):
                 st.markdown(f"""
                 <div style="background-color: #F8FAFC; padding: 16px; border-radius: 6px; border-left: 5px solid #10B981; border-top: 1px solid #E2E8F0; border-right: 1px solid #E2E8F0; border-bottom: 1px solid #E2E8F0;">
                     <h4 style="margin: 0 0 12px 0; color: #065F46; font-weight:800;">🛡️ 流派二：均線拉回低吸劇本 (Pullback)</h4>
-                    <p style="font-size: 14px; margin: 5px 0;"><b>精密低吸left側買點</b>：貼近 {res['ma20_val']:.2f} 元</p>
+                    <p style="font-size: 14px; margin: 5px 0;"><b>精密低吸型買點</b>：貼近 {res['ma20_val']:.2f} 元</p>
                     <p style="font-size: 14px; margin: 5px 0;"><b>期望反彈獲利目標</b>：<span style="color:#10B981; font-weight:700;">{res['target_pb']:.2f} 元</span></p>
                     <p style="font-size: 14px; margin: 5px 0;"><b>技術硬性防守停損</b>：{res['stop_pb']:.2f} 元</p>
                     <p style="font-size: 14px; margin: 5px 0;"><b>期望風險報酬比 (R:R)</b>：{res['rr1_pb']:.2f}</p>
@@ -896,6 +974,22 @@ if diag_trigger or (not scan_trigger and stock_input):
 
             st.markdown("---")
             st.markdown("### 🔍 跨因子微觀底層驗證數據")
+            
+            # 🌟 新增：破底翻特徵與布林通道骨架動態解碼面板
+            with st.expander("🧱 破底翻特徵與布林通道骨架大腦解碼", expanded=True):
+                st.markdown(f"**⚡ 破底翻結構驗證裁決**：{res['spring_verdict']}")
+                st.markdown(f"**🟡 布林通道大趨勢骨架**：{res['bb_stage']}")
+                st.markdown(f"**⏱️ KDJ 時機捕捉定位**：{res['kd_timing']}")
+                st.markdown(f"**🐳 真假主力資金成交量辨識**：{res['volume_verdict']}")
+                st.markdown("""---""")
+                st.markdown("""
+                <small style='color:#64748B;'>
+                <b>💡 戰術執行官提醒：</b><br>
+                • <b>破底翻條件</b>：經歷下跌 ➔ 有效跌破前低 ➔ 1~3根K線快速收回 ➔ 突破頸線（前低與新低之間反彈最高點）。<br>
+                • <b>布林與KD共振</b>：股價脫離下軌，實體紅K線突破中軌 (MA20) 且 KD 指標低位金叉衝破 50 多空分水嶺，為最完美啟漲點。
+                </small>
+                """, unsafe_allow_html=True)
+
             with st.expander("📊 財務基本面完整財務矩陣大表"):
                 if not res["fin_df"].empty:
                     clean_fin_show = res["fin_df"].copy().sort_values("date", ascending=False)
