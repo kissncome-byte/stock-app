@@ -347,7 +347,7 @@ def unified_institutional_brain(res_dict, df_hist):
             return {"strategy_name": st_name, "color": "#FF4B4B", "action_now": "⚠️ 🔴 【動態多頭防線破防：分批落袋】", "signal": "右側動能高位衰竭回撤", "desc": f"市價已回撤擊穿動態 ATR 安全防線 ({t_stop:.2f} 元)，微觀慣性已改，爆發力凍結。進入防守獲利程序！", "blueprint": {"停損防守": "無", "移動停利": "已觸發", "預期目標": "鎖住波段利潤資金退場"}}
         
         if res_dict["short_term_trend"] and f_good:
-            return {"strategy_name": st_name, "color": "#1C86EE", "action_now": "🔥 🔵 【穩健波段主升：持股續抱】", "signal": "多方有序推進、基本面實質支撐", "desc": "短長期趨勢健康排列，營收結構扎實，主力籌碼未見異常流失。手中有部位者現股續抱，讓利潤在主升浪中奔跑。", "blueprint": {"停損防守": f"技術硬風控底線 {res_dict['stop_brk']:.2f} 元", "移動停利": f"動態移動安全線為 {t_stop:.2f} 元", "預期目標": f"持續看好對位目標 {res_dict['target_brk']:.2f} 元"}}
+            return {"strategy_name": st_name, "color": "#1C86EE", "action_now": "🔥 🔵 【穩健波段主升：持股續抱】", "signal": "多方有序推進、基本面實實質支撐", "desc": "短長期趨勢健康排列，營收結構扎實，主力籌碼未見異常流失。手中有部位者現股續抱，讓利潤在主升浪中奔跑。", "blueprint": {"停損防守": f"技術硬風控底線 {res_dict['stop_brk']:.2f} 元", "移動停利": f"動態移動安全線為 {t_stop:.2f} 元", "預期目標": f"持續看好對位目標 {res_dict['target_brk']:.2f} 元"}}
 
     elif st_type == "LEFT_SPRING":
         if overextended:
@@ -361,7 +361,10 @@ def unified_institutional_brain(res_dict, df_hist):
 
 # ============ 9. Main Core Executor ============
 def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, slip_ticks: int):
+    # 🌟 戰略最高防守補丁：在第一行直接強制初始化 fin_df 作用域，徹底斬草除根 NameError 隱患！
+    fin_df = pd.DataFrame()
     trend_phase, short_term_trend, long_term_trend = "⚖️ 綜合平衡盤整期", "⚪ 技術因子調整中", "⚪ 波段底蘊定型中"
+    
     info_df_local = get_stock_info_df()
     match = info_df_local[info_df_local["stock_id"] == stock_id]
     if match.empty: return None
@@ -486,10 +489,11 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
         rev_clean["revenue_year_growth_rate"] = rev_clean["revenue"].pct_change(12) * 100
         if not rev_clean.dropna(subset=["revenue_year_growth_rate"]).empty: latest_yoy = float(rev_clean.dropna(subset=["revenue_year_growth_rate"]).sort_values("date").iloc[-1]["revenue_year_growth_rate"])
 
-    fin_df = get_financial_statement_df(stock_id, years=2)
+    # 🌟 修改點：將覆蓋複寫邏輯理順，優先執行賦值
+    fin_df_raw = get_financial_statement_df(stock_id, years=2)
     fin_conclusion, pe_desc, pe_val, sum_eps_4q, gpm_now, opm_now = "📋 該標的暫無足夠季度財報數據。", "⚪ 數據不足無法計算估值", 0.0, 0.0, 0.0, 0.0
-    if not fin_df.empty and "Revenue" in fin_df.columns and "EPS" in fin_df.columns:
-        fin_df = fin_df.sort_values("date").reset_index(drop=True)
+    if not fin_df_raw.empty and "Revenue" in fin_df_raw.columns and "EPS" in fin_df_raw.columns:
+        fin_df = fin_df_raw.sort_values("date").reset_index(drop=True)
         for col_name in ["Revenue", "EPS", "GrossProfit", "OperatingIncome"]:
             if col_name not in fin_df.columns: fin_df[col_name] = 0.0
         for idx in range(len(fin_df)):
@@ -525,7 +529,6 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     target_pb = round_to_tick(real_resistance, t)
     stop_pb = round_to_tick(ma20_val - atr - (float(slip_ticks) * t), t) if round_to_tick(ma20_val - atr - (float(slip_ticks) * t), t) < current_price else round_to_tick(current_price - (1.5 * atr), t)
     
-    # 🌟 核心修正補丁：補回完整被遺漏的隔日沖惡性金流陷阱演算法變數，徹底根除 NameError
     open_gap_pct = ((safe_float(df["open"].iloc[-1]) - safe_float(df["close"].iloc[-2])) / safe_float(df["close"].iloc[-2]) * 100) if len(df) > 1 else 0
     close_to_low_pct = ((current_price - rt_low) / (rt_high - rt_low)) if (rt_high - rt_low) > 0 else 1
     is_broker_dumping_risk = (open_gap_pct > 3.5) and (close_to_low_pct < 0.35) and ((current_vol * 1000.0) > (vol_ma20_val * 2.5))
