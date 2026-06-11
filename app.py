@@ -106,7 +106,8 @@ def compute_live_data(stock_id: str, market_type: str, hist_last_close: float, h
 @st.cache_data(ttl=1800)
 def get_overnight_radar():
     session = get_requests_session()
-    targets = {"台指期近月 (WTX=F)": "WTX=F", "Nasdaq那指 (^IXIC)": "^IXIC", "費城半導體 (^SOX)": "^SOX", "台積電 ADR (TSM)": "TSM"}
+    # 🌟 策略雷達升級補丁：捨棄極易故障的期貨代碼，改用 100% 穩定的台灣加權大盤指數 (^TWII) 作為今日現貨對照組
+    targets = {"台灣加權大盤 (^TWII)": "^TWII", "Nasdaq那指 (^IXIC)": "^IXIC", "費城半導體 (^SOX)": "^SOX", "台積電 ADR (TSM)": "TSM"}
     radar_res, is_us_panic, panic_desc, wtx_change = {}, False, "", 0.0
     for label, symbol in targets.items():
         for prefix in ["query2", "query1"]:
@@ -119,8 +120,8 @@ def get_overnight_radar():
                     if p_c > 0:
                         pct = ((c_p - p_c) / p_c) * 100
                         radar_res[label] = pct
-                        if symbol == "WTX=F": wtx_change = pct
-                        if symbol != "WTX=F" and pct <= -2.0: is_us_panic, panic_desc = True, f"昨晚美股重挫，{label} 慘跌 {pct:.1f}%"
+                        if symbol == "^TWII": wtx_change = pct
+                        if symbol != "^TWII" and pct <= -2.0: is_us_panic, panic_desc = True, f"昨晚美股重挫，{label} 慘跌 {pct:.1f}%"
                     break
             except Exception: pass
     return radar_res, is_us_panic, panic_desc, wtx_change
@@ -325,14 +326,15 @@ def unified_institutional_brain(res_dict, df_hist):
         msg = "❌ 爆量長上影：大戶高檔瘋狂倒貨！" if "長上影" in final else "🚨 惡性金流陷阱：隔日沖主力開高出貨！" if "金流陷阱" in final else "⚠️ 超買區死亡交叉：短線動能高位衰退。"
         return {"strategy_name": st_name, "color": "#FF4B4B", "action_now": "🚨 🔴 【立即清倉 / 獲利了結】", "signal": "極端出貨與慣性改變訊號共振", "desc": msg, "blueprint": {"停損防守": "全面清倉離場", "移動停利": "無", "預期目標": "保全資金"}}
 
+    # 🌟 跨市場大腦因果連動補丁：當夜盤大環境走空時，右側開火立刻強制沒收
     if (w_panic or u_panic) and st_type == "RIGHT_BREAKOUT":
-        return {"strategy_name": st_name, "color": "#F59E0B", "action_now": "⚠️ 🟡 【夜盤背離：沒收開火權觀望】", "signal": "🚨 跨市場金流斷層：期現貨背離", "desc": f"昨晚台指期夜盤重挫 {wtx:.2f}% 或美股大跌（{u_desc}）。早盤突破高機率為誘多走勢，大腦直接沒收追高開火權，強制觀望！", "blueprint": {"停損防守": "嚴禁進場", "移動停利": "無", "預期目標": "避開早盤陷阱盤"}}
+        return {"strategy_name": st_name, "color": "#F59E0B", "action_now": "⚠️ 🟡 【海外背離：沒收開火權觀望】", "signal": "🚨 跨市場金流斷層：大盤走勢與個股拉抬背離", "desc": f"大盤最新波段回撤 {wtx:.2f}% 或美股大跌（{u_desc}）。早盤追高极易撞上假突破，大腦直接關閉開火配額！", "blueprint": {"停損防守": "嚴禁進場", "移動停利": "無", "預期目標": "避開早盤出貨盤"}}
 
     if w_panic and st_type == "LEFT_SPRING":
-        return {"strategy_name": st_name, "color": "#EF4444", "action_now": "🛑 🔴 【期現貨跳空引信：取消低吸掛單】", "signal": "📉 夜盤引力崩塌：均線支撐全面失效", "desc": f"夜盤暴跌 {wtx:.2f}% 預示今日將大跳空低開，強勢股必將發生末跌段補跌，嚴禁此時伸手接飛刀！", "blueprint": {"停損防守": "禁止進場", "移動停利": "無", "預期目標": "保留實力避開活埋"}}
+        return {"strategy_name": st_name, "color": "#EF4444", "action_now": "🛑 🔴 【系統跳空風險：取消低吸掛單】", "signal": "📉 大盤引力崩塌：左側均線支撐失效", "desc": f"大盤趨勢下跌 {wtx:.2f}%，今日開盤高機率面臨跳空下殺，嚴禁伸手接飛刀防禦補跌！", "blueprint": {"停損防守": "禁止進場", "移動停利": "無", "預期目標": "手握現金等待止穩"}}
 
     if panic and st_type != "RIGHT_BREAKOUT":
-        return {"strategy_name": st_name, "color": "#EF4444", "action_now": "🛑 🔴 【強勢股補跌警戒：關閉低吸掛單】", "signal": "☠️ 總體流動性清算：多頭踩踏進行中", "desc": "加權指數5日重挫逾3.5%失守月線，觸發非自願性踩踏。強勢股支撐失效，硬性取消低吸試布局！", "blueprint": {"停損防守": "禁止開火", "移動停利": "無", "預期目標": "手握現金等待止穩"}}
+        return {"strategy_name": st_name, "color": "#EF4444", "action_now": "🛑 🔴 【強勢股補跌警戒：關閉低吸掛單】", "signal": "☠️ 總體流動性清算：多頭踩踏進行中", "desc": "加權指數5日重挫逾3.5%失守月線，環境極不安全，硬性取消常規低吸！", "blueprint": {"停損防守": "禁止開火", "移動停利": "無", "預期目標": "手握現金等待止穩"}}
 
     if not m_safe:
         return {"strategy_name": st_name, "color": "#FF4B4B", "action_now": "🚨 🔴 【強制空倉防禦 / 嚴禁開火】", "signal": "大盤空頭暴風雨警戒", "desc": "大盤失守 20MA 生命線，環境架構偏空。強勢股突破極易淪為陷阱，一票否決！", "blueprint": {"停損防守": "嚴禁進場", "移動停利": "觀望", "預期目標": "等待大盤重返安全區"}}
@@ -341,7 +343,7 @@ def unified_institutional_brain(res_dict, df_hist):
         if m_safe and p >= m100 and p >= r * 0.99 and res_dict["vol_spike"] and s3d > 300 and f_good and c_lock:
             if overextended:
                 return {"strategy_name": st_name, "color": "#F59E0B", "action_now": "⚠️ 🟡 【大盤過熱：防守型控量輕倉開火】", "signal": "⚡ 瘋狗浪末段逆勢突破：慎防高檔流動性陷阱", "desc": "個股達成完美共振！但大盤與季線正乖離率突破 8.5% 過熱區。解鎖開火權但風控模組強制削減 60% 資金配置，嚴防高位重倉套牢！", "blueprint": {"停損防守": f"收盤跌破 {r:.2f} 元", "移動停利": f"即時價破 {t_stop:.2f} 元", "預期目標": f"獲利對位目標 {res_dict['target_brk']:.2f} 元"}}
-            return {"strategy_name": st_name, "color": "#7D3CFF", "action_now": "🔮 🔮 【立即開火進場】", "signal": "🔮 頂級多頭共振：黃金主升飆股型態發動", "desc": "五維度因子完美黃金交集！基本面擴張、法人強力鎖碼、帶量越過前高，上方無怨魂，大膽切入推進利潤！", "blueprint": {"停損防守": f"收盤跌破前高牆 {r:.2f} 元", "移動停利": f"跌破波動率防線 {t_stop:.2f} 元", "預期目標": f"獲利擴張目標對位 {res_dict['target_brk']:.2f} 元"}}
+            return {"strategy_name": st_name, "color": "#7D3CFF", "action_now": "🔮 🔮 【立即開火進場】", "signal": "🔮 頂級多頭共振：黃金主升飆股型型態發動", "desc": "五維度因子完美黃金交集！基本面擴張、法人強力鎖碼、帶量越過前高，上方無怨魂，大膽切入推進利潤！", "blueprint": {"停損防守": f"收盤跌破前高牆 {r:.2f} 元", "移動停利": f"跌破波動率防線 {t_stop:.2f} 元", "預期目標": f"獲利擴張目標對位 {res_dict['target_brk']:.2f} 元"}}
         
         if p < t_stop:
             return {"strategy_name": st_name, "color": "#FF4B4B", "action_now": "⚠️ 🔴 【動態多頭防線破防：分批落袋】", "signal": "右側動能高位衰竭回撤", "desc": f"市價已回撤擊穿動態 ATR 安全防線 ({t_stop:.2f} 元)，微觀慣性已改，爆發力凍結。進入防守獲利程序！", "blueprint": {"停損防守": "無", "移動停利": "已觸發", "預期目標": "鎖住波段利潤資金退場"}}
@@ -361,10 +363,8 @@ def unified_institutional_brain(res_dict, df_hist):
 
 # ============ 9. Main Core Executor ============
 def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, slip_ticks: int):
-    # 🌟 鋼鐵完全體防禦補丁：在開頭第一秒強制對所有即時狀態變數進行防衛性安全預置（預置空字串與常態標籤）
-    # 徹底防止因台股、美股、台指期三方報價異步造成的 NameError 作用域中斷
     fin_df = pd.DataFrame()
-    m_desc, m_color, m_code = "市場連線常態", "gray", "NORMAL"
+    m_desc, m_color, m_code = "大盤因果連線正常", "gray", "NORMAL"
     trend_phase, short_term_trend, long_term_trend = "⚖️ 綜合平衡盤整期", "⚪ 技術因子調整中", "⚪ 波段底蘊定型中"
     
     info_df_local = get_stock_info_df()
@@ -526,12 +526,11 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     if k_shadow_trap: final_decision = "❌ 爆量長上影"
     elif is_broker_dumping_risk: final_decision = "🚨 惡性金流陷阱"
 
-    # 🌟 歷史實時流對位標籤動態注入（防衛型防空值校正）
     last_trade_date_str = str(df.iloc[-1]["date"])
     _, local_m_desc, local_m_color = get_market_status_label(rt_success, last_trade_date_str)
     m_desc, m_color = local_m_desc, local_m_color
     if is_market_panic: m_desc, m_color = "🚨 大盤瀑布式清算恐慌潮", "red"
-    elif wtx_change <= -1.0: m_desc, m_color = f"🚨 台指期夜盤崩盤 ({wtx_change:.2f}%)", "red"
+    elif wtx_change <= -1.0: m_desc, m_color = f"🚨 大盤趨勢破防下殺 ({wtx_change:.2f}%)", "red"
     elif is_us_panic: m_desc, m_color = "🚨 盤前美股暴跌警戒中", "#F59E0B"
     elif is_market_overextended: m_desc, m_color = "⚠️ 大盤極端正乖離過熱", "orange"
 
@@ -743,7 +742,7 @@ if diag_trigger or (not scan_trigger and stock_input):
             st.markdown("<br>", unsafe_allow_html=True)
             st.markdown("### 🛡️ 量化核心風控配額開火劇本")
             if res["suggested_lots"] == 0:
-                if "#FF4B4B" in bp_data["color"] or "#EF4444" in bp_data["color"] or "#F59E0B" in bp_data["color"]: st.error("🚨 【核心風控最高警戒：大腦策略拒絕進場】 敞口強制關閉！跨市場美股或台指期夜盤重挫，系統已判定為背離出貨盤，強制禁止開火。")
+                if "#FF4B4B" in bp_data["color"] or "#EF4444" in bp_data["color"] or "#F59E0B" in bp_data["color"]: st.error("🚨 【核心風控最高警戒：大腦策略拒絕進場】 敞口強制關閉！跨市場海外利空共振，系統判定當下台股現貨存在假突破/回撤活埋風險，強迫空倉防禦。")
                 else: st.warning("⚠️ 【風控提示：資金配額不足 1 張】 當前趨勢健康，但因帳戶大資金池或核心曝險比率設定過於緊繃，系統自動阻斷高滑價下單。")
 
             b1, b2, b3, b4 = st.columns(4)
@@ -760,7 +759,7 @@ if diag_trigger or (not scan_trigger and stock_input):
                 st.write(f"**⏱️ KDJ 時機捕捉定位**：{res['kd_timing']}")
                 st.write(f"**🐳 真假主力資金成交量辨識**：{res['volume_verdict']}")
                 st.markdown("""---""")
-                st.markdown("<small style='color:#64748B;'><b>💡 戰術執行官專家提示：</b><br>• <b>跨市場因果連動</b>：昨晚美股費半或台指期夜盤大殺時，大腦會強制沒收早盤右側追高劇本的開火權，嚴防隔日沖主力高檔誘多。<br>• <b>大盤過熱降阻</b>：當大盤與季線正乖離率拉得太緊（>8.5%）時，一票否決所有左側抄底，且右側開火規模強制削減 60% 曝險資金。</small>", unsafe_allow_html=True)
+                st.markdown("<small style='color:#64748B;'><b>💡 戰術執行官專家提示：</b><br>• <b>跨市場因果連動</b>：海外大盤與 TSM ADR 若驚見重挫，大腦在開盤階段會**硬性沒收右側追高與左側抄底的資金配額（直接歸零）**，防範開高走低倒貨盤。<br>• <b>大盤過熱降阻</b>：當大盤與季線正乖離率拉得太緊（>8.5%）時，一票否決所有左側抄底，且右側開火規模強制削減 60% 資金。</small>", unsafe_allow_html=True)
 
             with st.expander("📊 財務基本面完整財務矩陣大表"):
                 if not res["fin_df"].empty:
