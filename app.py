@@ -326,7 +326,7 @@ def unified_institutional_brain(res_dict, df_hist):
         return {"strategy_name": st_name, "color": "#FF4B4B", "action_now": "🚨 🔴 【立即清倉 / 獲利了結】", "signal": "極端出貨與慣性改變訊號共振", "desc": msg, "blueprint": {"停損防守": "全面清倉離場", "移動停利": "無", "預期目標": "保全資金"}}
 
     if (w_panic or u_panic) and st_type == "RIGHT_BREAKOUT":
-        return {"strategy_name": st_name, "color": "#F59E0B", "action_now": "⚠️ 🟡 【夜盤背離：沒收開火權觀望】", "signal": "🚨 跨市場金流斷層：期現貨背利", "desc": f"昨晚台指期夜盤重挫 {wtx:.2f}% 或美股大跌（{u_desc}）。早盤突破高機率為誘多走勢，大腦直接沒收追高開火權，強制觀望！", "blueprint": {"停損防守": "嚴禁進場", "移動停利": "無", "預期目標": "避開早盤陷阱盤"}}
+        return {"strategy_name": st_name, "color": "#F59E0B", "action_now": "⚠️ 🟡 【夜盤背離：沒收開火權觀望】", "signal": "🚨 跨市場金流斷層：期現貨背離", "desc": f"昨晚台指期夜盤重挫 {wtx:.2f}% 或美股大跌（{u_desc}）。早盤突破高機率為誘多走勢，大腦直接沒收追高開火權，強制觀望！", "blueprint": {"停損防守": "嚴禁進場", "移動停利": "無", "預期目標": "避開早盤陷阱盤"}}
 
     if w_panic and st_type == "LEFT_SPRING":
         return {"strategy_name": st_name, "color": "#EF4444", "action_now": "🛑 🔴 【期現貨跳空引信：取消低吸掛單】", "signal": "📉 夜盤引力崩塌：均線支撐全面失效", "desc": f"夜盤暴跌 {wtx:.2f}% 預示今日將大跳空低開，強勢股必將發生末跌段補跌，嚴禁此時伸手接飛刀！", "blueprint": {"停損防守": "禁止進場", "移動停利": "無", "預期目標": "保留實力避開活埋"}}
@@ -361,8 +361,10 @@ def unified_institutional_brain(res_dict, df_hist):
 
 # ============ 9. Main Core Executor ============
 def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, slip_ticks: int):
-    # 🌟 戰略安全網補丁：在第一行直接初始化基本 DataFrame 物件作用域
+    # 🌟 鋼鐵完全體防禦補丁：在開頭第一秒強制對所有即時狀態變數進行防衛性安全預置（預置空字串與常態標籤）
+    # 徹底防止因台股、美股、台指期三方報價異步造成的 NameError 作用域中斷
     fin_df = pd.DataFrame()
+    m_desc, m_color, m_code = "市場連線常態", "gray", "NORMAL"
     trend_phase, short_term_trend, long_term_trend = "⚖️ 綜合平衡盤整期", "⚪ 技術因子調整中", "⚪ 波段底蘊定型中"
     
     info_df_local = get_stock_info_df()
@@ -434,13 +436,12 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     elif current_price > ma20_val and df["close"].iloc[-2] <= df["MA20"].iloc[-2] and df["close"].iloc[-1] > df["open"].iloc[-1]: bb_stage = "🔥 啟漲共振點：實體強勢突破藍色 MA20 中軌，趨勢正式由空轉多！"
     elif current_price >= bb_upper or (current_price > ma20_val and df["close"].tail(5).mean() > bb_upper * 0.95): bb_stage = "🚀 主升維持階段：強勢多頭沿布林上軌推升"
 
-    is_kd_dead_cross = (df["K9"].iloc[-1] < df["D9"].iloc[-1]) and (df["K9"].iloc[-2] >= df["D9"].iloc[-2])
     is_kd_had_low_cross_recently = False
     for i in range(-5, 0):
         if df["K9"].iloc[i] > df["D9"].iloc[i] and df["K9"].iloc[i-1] <= df["D9"].iloc[i-1] and df["K9"].iloc[i] < 35: is_kd_had_low_cross_recently = True; break
     if k9_now < 20 and d9_now < 20: kd_timing = "📥 打底階段：KD 指標落入超賣區，靜待共振反彈"
     elif "啟漲" in bb_stage and k9_now >= 45 and is_kd_had_low_cross_recently: kd_timing = "⚡ 共振啟漲點：KD 金叉順勢衝破 50 多空分水嶺共振發動！"
-    elif k9_now > 70: kd_timing = "🚨 高檔死亡交叉：超買區反轉弱化訊號觸發" if is_kd_dead_cross else "🦅 高檔判定：強勢主升浪出現高位鈍化，靜待死叉"
+    elif k9_now > 70: kd_timing = "🚨 高檔死亡交叉：超買區反轉弱化訊號觸發" if (df["K9"].iloc[-1] < df["D9"].iloc[-1]) and (df["K9"].iloc[-2] >= df["D9"].iloc[-2]) else "🦅 高檔判定：強勢主升浪出現高位鈍化，靜待死叉"
 
     if "打底" in bb_stage or (df["vol"].tail(10) < vol_ma20_val).sum() >= 7: volume_verdict = "📉 底部震盪期：成交量長期萎縮，代表浮動籌碼已被主力高度鎖定"
     elif vol_spike and ("啟漲" in bb_stage or current_price >= real_resistance * 0.95): volume_verdict = "🐳 共振突破點：突破關鍵位階且紅量柱連續堆高，大資金進場！"
@@ -467,21 +468,6 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
         elif current_price >= detected_neckline and vol_spike: spring_verdict = f"🔮 【破底翻：買點二成立】多頭翻轉爆發！強勢突破關鍵頸線 {detected_neckline:.2f} 元，追加倉位！"
         else: spring_verdict = f"🔍 【破底翻結構醞釀中】觸發經典假破底洗盤（前低：{detected_prior_low:.2f}，關鍵頸線：{detected_neckline:.2f}），正等待翻轉訊號。"
 
-    kd_status = "黃金交叉" if k9_now > d9_now else "死亡交叉"
-    if current_price >= ma5_val and ma5_val >= ma20_val: short_term_trend = f"🚀 五日線多頭噴發 (KD {kd_status})"
-    elif current_price >= ma5_val and current_price < ma20_val: short_term_trend = f"📈 週線跌深反彈 (KD {kd_status})"
-    elif current_price < ma5_val and current_price >= ma20_val: short_term_trend = f"⚠️ 短線跌破週線 (KD {kd_status})"
-    else: short_term_trend = f"📉 均線全面蓋頭 (KD {kd_status})"
-        
-    if current_price >= ma60_val and (df["MA60"].iloc[-1] > df["MA60"].iloc[-5]): long_term_trend = "🔥 季線全面向上（主升段架構）"
-    elif current_price < ma60_val and (df["MA60"].iloc[-1] < df["MA60"].iloc[-5]): long_term_trend = "📉 季線下彎蓋頭（空頭修正架構）"
-    else: long_term_trend = "💤 季線橫向延伸（箱型潛伏築底）"
-
-    if current_price >= ma20_val and ma20_val >= ma60_val and (df["MA20"].iloc[-1] > df["MA20"].iloc[-5]): trend_phase = "🔥 波段多頭主升段"
-    elif current_price < ma20_val and ma20_val >= ma60_val: trend_phase = "🛡️ 多頭架獲拉回洗盤期"
-    elif is_compressed: trend_phase = "💤 潛伏築底蓄勢期"
-    else: trend_phase = "📉 空頭波段修正期"
-
     latest_yoy = 0.0
     rev_df = get_rev_df(stock_id, days=730)
     if rev_df is not None and not rev_df.empty and "revenue" in rev_df.columns:
@@ -493,11 +479,9 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     fin_df_raw = get_financial_statement_df(stock_id, years=2)
     fin_conclusion, pe_desc, pe_val, sum_eps_4q, gpm_now, opm_now = "📋 該標的暫無足夠季度財報數據。", "⚪ 數據不足無法計算估值", 0.0, 0.0, 0.0, 0.0
     if not fin_df_raw.empty and "Revenue" in fin_df_raw.columns and "EPS" in fin_df_raw.columns:
-        # 🌟 專用欄位硬核鎖定排序：將 pivot 的隨機字母排序強制鎖定，防止 style.format 列錯位
         fin_df_work = fin_df_raw.copy()
         for col_name in ["Revenue", "EPS", "GrossProfit", "OperatingIncome"]:
             if col_name not in fin_df_work.columns: fin_df_work[col_name] = 0.0
-        
         fin_df_work = fin_df_work.sort_values("date").reset_index(drop=True)
         for idx in range(len(fin_df_work)):
             rev_amt = safe_float(fin_df_work.loc[idx, "Revenue"])
@@ -514,8 +498,6 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
         if len(fin_df_work) >= 5:
             prev_fin = fin_df_work.iloc[-5] 
             fin_conclusion = "📈 【財報年增擴張】 最新季度獲利指標全數超越去年同期！" if gpm_now > safe_float(prev_fin.get("gpm", 0.0)) and opm_now > safe_float(prev_fin.get("opm", 0.0)) else "📉 【本業結構退步】 獲利結構遜於去年同期，需提高警覺。"
-        
-        # 🌟 專用對位排序補丁：重新對齊
         fin_df = fin_df_work[["date", "EPS", "Revenue", "GrossProfit", "OperatingIncome", "gpm", "opm"]].copy()
 
     news_analysis_report, positive_catalysts_list, raw_news_list = "⚪ 暫無最新重要輿情。", [], get_realtime_news_list(stock_id, stock_name)
@@ -544,6 +526,15 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     if k_shadow_trap: final_decision = "❌ 爆量長上影"
     elif is_broker_dumping_risk: final_decision = "🚨 惡性金流陷阱"
 
+    # 🌟 歷史實時流對位標籤動態注入（防衛型防空值校正）
+    last_trade_date_str = str(df.iloc[-1]["date"])
+    _, local_m_desc, local_m_color = get_market_status_label(rt_success, last_trade_date_str)
+    m_desc, m_color = local_m_desc, local_m_color
+    if is_market_panic: m_desc, m_color = "🚨 大盤瀑布式清算恐慌潮", "red"
+    elif wtx_change <= -1.0: m_desc, m_color = f"🚨 台指期夜盤崩盤 ({wtx_change:.2f}%)", "red"
+    elif is_us_panic: m_desc, m_color = "🚨 盤前美股暴跌警戒中", "#F59E0B"
+    elif is_market_overextended: m_desc, m_color = "⚠️ 大盤極端正乖離過熱", "orange"
+
     package = {
         "current_price": current_price, "current_vol": current_vol, "vol_ma20_val": vol_ma20_val, "real_resistance": real_resistance, "ma20_val": ma20_val, "ma100_val": ma100_val,
         "sitc_3d_sum": sitc_3d_sum, "margin_diff": margin_diff, "macro_desc": macro_desc, "is_market_panic": is_market_panic, "is_market_overextended": is_market_overextended,
@@ -569,7 +560,6 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     rr1_pb = (target_pb - current_price) / (current_price - stop_pb) if (current_price - stop_pb) > 0 else 0
     suggested_lots = min(int((total_capital * (adjusted_risk / 100) * 10000 / (current_price - expected_stop_price)) / 1000), int((total_capital * 10000) / (current_price * 1000))) if (current_price - expected_stop_price > 0 and adjusted_risk > 0) else 0
 
-    # 🌟 結構化改裝補丁：將單行過長字典改為乾淨的多行結構化宣告，100% 免疫快取雜湊溢位
     res_dict = {}
     res_dict["stock_id"] = stock_id
     res_dict["stock_name"] = stock_name
@@ -774,7 +764,6 @@ if diag_trigger or (not scan_trigger and stock_input):
 
             with st.expander("📊 財務基本面完整財務矩陣大表"):
                 if not res["fin_df"].empty:
-                    # 🌟 徹底杜絕格式對位失誤補丁：強制使用工作作用域相同的對位特徵，100% 根除格式化標頭名稱不相容錯誤
                     clean_fin_show = res["fin_df"].copy().sort_values("date", ascending=False)
                     clean_fin_show.columns = ["季度日期", "單季 EPS", "營業收入", "營業毛利", "營業利益", "單季毛利率 (%)", "單季營益率 (%)"]
                     st.dataframe(clean_fin_show.style.format({"單季 EPS": "{:.2f}", "營業收入": "{:,.0f}", "營業毛利": "{:,.0f}", "營業利益": "{:,.0f}", "單季毛利率 (%)": "{:.2f}%", "單季營益率 (%)": "{:.2f}%"}), use_container_width=True)
