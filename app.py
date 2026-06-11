@@ -764,7 +764,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
             spring_verdict = f"🔍 【破底翻結構醞釀中】觸發經典假破底洗盤（前低：{detected_prior_low:.2f}，關鍵頸線：{detected_neckline:.2f}），正等待多頭量能爆發之翻轉訊號。"
 
     kd_status = "黃金交叉" if k9_now > d9_now else "死亡交叉"
-    if current_price >= ma5_val && ma5_val >= ma20_val: short_term_trend = f"🚀 五日線多頭噴發 (KD {kd_status})"
+    if current_price >= ma5_val and ma5_val >= ma20_val: short_term_trend = f"🚀 五日線多頭噴發 (KD {kd_status})"
     elif current_price >= ma5_val and current_price < ma20_val: short_term_trend = f"📈 週線跌深反彈 (KD {kd_status})"
     elif current_price < ma5_val and current_price >= ma20_val: short_term_trend = f"⚠️ 短線跌破週線 (KD {kd_status})"
     else: short_term_trend = f"📉 均線全面蓋頭 (KD {kd_status})"
