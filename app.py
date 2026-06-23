@@ -271,7 +271,6 @@ def prepare_indicator_df(df: pd.DataFrame):
     loss = -delta.clip(upper=0).ewm(com=13, adjust=False).mean().replace(0, 0.00001)
     x["RSI14"] = 100 - (100 / (1 + (gain / loss)))
     
-    # 🌟 補齊雙軌 RSI 指標 (5日與10日)
     x["RSI5"] = 100 - (100 / (1 + (delta.clip(lower=0).ewm(com=4, adjust=False).mean() / -delta.clip(upper=0).ewm(com=4, adjust=False).mean().replace(0, 0.00001))))
     x["RSI10"] = 100 - (100 / (1 + (delta.clip(lower=0).ewm(com=9, adjust=False).mean() / -delta.clip(upper=0).ewm(com=9, adjust=False).mean().replace(0, 0.00001))))
     
@@ -316,14 +315,13 @@ def unified_institutional_brain(res_dict, df_hist):
     m_safe = "安全" in res_dict["macro_desc"] or "站穩" in res_dict["macro_desc"] or "過熱" in res_dict["macro_desc"]
     panic, overextended = res_dict.get("is_market_panic", False), res_dict.get("is_market_overextended", False)
     u_panic, u_desc, wtx = res_dict.get("is_us_panic", False), res_dict.get("us_panic_desc", ""), res_dict.get("wtx_change", 0.0)
+    w_panic = wtx <= -1.0
     final, atr = res_dict["final_decision"], res_dict["atr"]
     
-    # 🌟 指標深度勾稽神經元
     k9, d9 = df_hist["K9"].iloc[-1], df_hist["D9"].iloc[-1]
     dif, signal, hist = df_hist["MACD_DIF"].iloc[-1], df_hist["MACD_SIGNAL"].iloc[-1], df_hist["MACD_HIST"].iloc[-1]
     rsi5, rsi10 = df_hist["RSI5"].iloc[-1], df_hist["RSI10"].iloc[-1]
     
-    # 🌟 指標核心硬體過濾閥門
     is_kd_noise = (k9 > d9) and (k9 < 50)
     is_macd_bear = (dif < 0) or (signal < 0)
     is_rsi_weak = rsi10 < 50
@@ -332,7 +330,6 @@ def unified_institutional_brain(res_dict, df_hist):
         msg = "❌ 爆量長上影：大戶高檔瘋狂倒貨！" if "長上影" in final else "🚨 惡性金流陷阱：隔日沖主力開高出貨！" if "金流陷阱" in final else "⚠️ 超買區死亡交叉：短線動能高位衰退。"
         return {"strategy_name": st_name, "color": "#FF4B4B", "action_now": "🚨 🔴 【立即清倉 / 獲利了結】", "signal": "極端出貨與慣性改變訊號共振", "desc": msg, "blueprint": {"停損防守": "全面清倉離場", "移動停利": "無", "預期目標": "保全資金"}}
 
-    # 🌟 指標一票否決硬性策略路由：當符合右側突破型態，但指標未達多頭門檻時，無條件強制沒收開火權
     if st_type == "RIGHT_BREAKOUT" and (is_kd_noise or is_macd_bear or is_rsi_weak):
         reasons = []
         if is_kd_noise: reasons.append("KD未突破50分水嶺")
@@ -377,6 +374,7 @@ def unified_institutional_brain(res_dict, df_hist):
         if p < r_low:
             return {"strategy_name": st_name, "color": "#FF4B4B", "action_now": "🛑 🔴 【立即現股砍單停損】", "signal": "左側結構崩毀、轉惡性真破底", "desc": f"現價已破近十日洗盤實質最低點 ({r_low:.2f} 元)，假跌破被無情證偽轉為惡性真破底！請立即砍單，保全實力！", "blueprint": {"停損防守": "已觸發死穴立刻執行", "移動停利": "無", "預期目標": "保全資金實力"}}
         return {"strategy_name": st_name, "color": "#1C86EE", "action_now": "⚖️ 🔵 【空倉保持耐心 / 靜待右腳確認】", "signal": "假破底洗盤完成、多頭翻轉訊號醞釀中", "desc": "體質符合高手低吸潛伏範疇，融資大退。但微觀翻轉訊號尚未放量確立，請空倉保持耐心，等待右腳出量點火訊號。", "blueprint": {"停損防守": f"預估防守硬線為 {r_low:.2f} 元", "移動停利": "無", "預期目標": f"反彈目標看 {res_dict['target_pb']:.2f} 元"}}
+    
     return {"strategy_name": st_name, "color": "#1C86EE", "action_now": "⚖️ 🔵 【遵循量化紀律常規操作】", "signal": "後台因子互有勝負、未達極端背離", "desc": "財務與動能因子未觸發極端共振背離。個股處於箱型常態調整區，請嚴格遵循下方精密雙軌交易藍圖紀律操作。", "blueprint": {"停損防守": f"突破防守線 {res_dict['stop_brk']:.2f} 元 ｜ 低吸防守線 {res_dict['stop_pb']:.2f} 元", "移動停利": "常態整理區暫不啟動", "預期目標": f"突破目標看 {res_dict['target_brk']:.2f} 元 ｜ 低吸目標看 {res_dict['target_pb']:.2f} 元"}}
 
 # ============ 9. Main Core Executor ============
@@ -392,6 +390,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     m_col = "type" if "type" in match.columns else "market_type" if "market_type" in match.columns else "market" if "market" in match.columns else None
     market_type = str(match[m_col].values[0]).strip().upper() if m_col else "TSE"
     stock_name, industry = str(match["stock_name"].values[0]), str(match["industry_category"].values[0])
+    
     df_raw = get_daily_df(stock_id, market_type=market_type, days=450)
     if df_raw is None or df_raw.empty: return None
 
@@ -400,6 +399,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     
     hist_last_raw = df_raw.iloc[-1]
     rt_open, rt_high, rt_low, rt_close, rt_vol_lots, rt_success, rt_source, rt_type = compute_live_data(stock_id, market_type, float(hist_last_raw["close"]), float(hist_last_raw["vol"]))
+    
     current_price, current_vol = rt_close, rt_vol_lots 
     df_for_indicators = df_raw.copy().sort_values("date").reset_index(drop=True)
     today_str = datetime.now(TZ).strftime("%Y-%m-%d")
@@ -435,7 +435,9 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     bb_upper, bb_lower = float(hist_last["BB_upper"]), float(hist_last["BB_lower"])
     rsi_now, adx_now, macd_hist, atr, k9_now, d9_now = safe_float(hist_last.get("RSI14", 50.0)), safe_float(hist_last.get("ADX14", 20.0)), safe_float(hist_last.get("MACD_HIST", 0.0)), safe_float(hist_last.get("ATR14", 1.0)), safe_float(hist_last.get("K9", 50.0)), safe_float(hist_last.get("D9", 50.0))
     
-    # 🌟 解包副圖特定提取特徵
+    # 🌟 核心修復防線：在資料提取的最前線立刻定義 kd_status，確保全局作用域絕對不遺漏
+    kd_status = "黃金交叉" if k9_now > d9_now else "死亡交叉"
+    
     rsi5_now, rsi10_now = safe_float(hist_last.get("RSI5")), safe_float(hist_last.get("RSI10"))
     dif_now, signal_now = safe_float(hist_last.get("MACD_DIF")), safe_float(hist_last.get("MACD_SIGNAL"))
 
@@ -451,14 +453,13 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     main_force_label = f"🔥 強力控盤 ({main_force_score:.0f}%)" if main_force_score >= 65 else f"❄️ 籌碼散落 ({main_force_score:.0f}%)" if main_force_score <= 35 else f"⚖️ 常態調整 ({main_force_score:.0f}%)"
     is_compressed = current_bandwidth < df["BB_bandwidth"].tail(60).quantile(0.35 if df["amount"].tail(20).mean() > 2000000000 else 0.18)
 
-    # 🌟 100% 織入：KD、MACD、RSI 三大指標副圖的專家解碼文字流
     if k9_now < 20 and d9_now < 20: kd_timing = "📥 超賣打底區：指標跌至 20 以下代表短期超跌蓄力。教學重點：KD 跌到 20 只能代表超跌，不能直接抄底，必須等同步突破 50 分水線才算多頭反轉。"
     elif k9_now > 70 and d9_now > 70: kd_timing = "🦅 超買區區間：強勢主升允許長時間鈍化，未死叉無需恐慌賣出。常見散戶坑：看 KD 衝 70 就急於賣出，錯過大半主升行情；只有高檔死叉才是減倉訊號。"
     elif (k9_now > d9_now) and (k9_now < 50): kd_timing = "⚠️ 短線修復雜訊：雖出現低位金叉，但未突破 50 分水線，僅屬短線修復雜訊，不具備進場條件。核心規則：KD 金叉＋站上 50 分水線，兩個條件同時達成才具備多頭基礎。"
     else: kd_timing = f"⚖️ KD 指標定位：當前數值 K={k9_now:.1f} / D={d9_now:.1f} 處於多空常態調整箱型區間。"
 
     if dif_now > 0 and signal_now > 0: bb_stage = "🟢 多頭波段：雙線站上 0 軌才是完整多頭波段；多頭動能柱持續放大，代表上漲力道充足。戰法核心分水嶺：0 軌是多空力道分界，雙線在 0 軌下方一律定義為空頭/弱勢盤。"
-    elif macd_hist < 0 and df["MACD_HIST"].iloc[-2] >= 0: bb_stage = "📉 高點下跌區：空頭釋放力道，綠柱連續堆積，多頭行情結束。"
+    elif macd_hist < 0 and df["MACD_HIST"].iloc[-2] >= 0: bb_stage = "📉 高點下跌區：空頭釋放力道，綠柱連續堆建立，多頭行情結束。"
     else: bb_stage = f"❌ 弱勢盤整走勢：當前 DIF={dif_now:.2f}、MACD={signal_now:.2f}，雙線仍在 0 軌下方，僅綠柱縮短、尚未黃金交叉，不具備上車條件。關鍵門檻：MACD 必須低位金叉、綠柱全翻紅、雙線站上 0 軌，才算多頭力道重啟。"
 
     volume_verdict = f"⚖️ RSI相對強弱解讀：RSI50 為多空分水。5日 RSI={rsi5_now:.1f} ({'短線小幅偏多' if rsi5_now > 50 else '短線弱勢區'}), 10日 RSI={rsi10_now:.1f} ({'長線偏多' if rsi10_now > 50 else '仍處弱勢區'})。當前特徵：RSI 開口金叉向上，但長線指標仍未突破 50 分水。重點：單純 RSI 金叉無參考價值，必須搭配布林、MACD、KD、量能交叉驗證，避免假誘多訊號。"
@@ -479,8 +480,8 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
                             break
                 if spring_triggered: break
     if spring_triggered:
-        if current_price >= detected_prior_low and df["close"].iloc[-2] <= detected_prior_low and df["close"].iloc[-1] > df["open"].iloc[-1]: spring_verdict = f"🟢 【破底翻：買點一成立】重新站回前低 {detected_prior_low:.2f} 元，輕倉試布局！"
-        elif current_price >= detected_neckline and vol_spike: spring_verdict = f"🔮 【破底翻：買點二成立】強勢突破關鍵頸線 {detected_neckline:.2f} 元，追加倉位！"
+        if current_price >= detected_prior_low and df["close"].iloc[-2] <= detected_prior_low and df["close"].iloc[-1] > df["open"].iloc[-1]: spring_verdict = f"🟢 【破底翻：買點一成立】主力砸盤誘空完成！重新站回前低 {detected_prior_low:.2f} 元，輕倉試布局！"
+        elif current_price >= detected_neckline and vol_spike: spring_verdict = f"🔮 【破底翻：買點二成立】多頭翻轉爆發！強勢突破關鍵頸線 {detected_neckline:.2f} 元，追加倉位！"
         else: spring_verdict = f"🔍 【破底翻結構醞釀中】觸發經典假破底洗盤（前低：{detected_prior_low:.2f}，關鍵頸線：{detected_neckline:.2f}），正等待翻轉訊號。"
 
     if current_price >= ma5_val and ma5_val >= ma20_val: short_term_trend = f"🚀 五日線多頭噴發 (KD {kd_status})"
@@ -586,7 +587,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     
     rr1_brk = (target_brk - current_price) / (current_price - stop_brk) if (current_price - stop_brk) > 0 else 0
     rr1_pb = (target_pb - current_price) / (current_price - stop_pb) if (current_price - stop_pb) > 0 else 0
-    suggested_lots = min(int((total_capital * (adjusted_risk / 100) * 10000 / (current_price - expected_stop_price)) / 1000), int((total_capital * 10000) / (current_price * 1000))) if (current_price - expected_stop_price > 0 and adjusted_risk > 0) else 0
+    suggest_lots = min(int((total_capital * (adjusted_risk / 100) * 10000 / (current_price - expected_stop_price)) / 1000), int((total_capital * 10000) / (current_price * 1000))) if (current_price - expected_stop_price > 0 and adjusted_risk > 0) else 0
 
     res_dict = {}
     res_dict["stock_id"] = stock_id
@@ -632,7 +633,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     res_dict["target_pb"] = target_pb
     res_dict["stop_pb"] = stop_pb
     res_dict["rr1_pb"] = rr1_pb
-    res_dict["suggested_lots"] = suggested_lots
+    res_dict["suggested_lots"] = suggest_lots
     res_dict["expected_stop_price"] = expected_stop_price
     res_dict["strategy_route"] = strategy_route
     res_dict["expected_target_price"] = target_brk if "突破" in tactical_blueprint["strategy_name"] or "暫緩追高" in tactical_blueprint["action_now"] else target_pb
@@ -771,7 +772,7 @@ if diag_trigger or (not scan_trigger and stock_input):
             st.markdown("<br>", unsafe_allow_html=True)
             st.markdown("### 🛡️ 量化核心風控配額開火劇本")
             if res["suggested_lots"] == 0:
-                if "#FF4B4B" in bp_data["color"] or "#EF4444" in bp_data["color"] or "#F59E0B" in bp_data["color"]: st.error("🚨 【核心風控最高警戒：大腦策略拒絕進場】 敞口強制關閉！大盤走勢不佳、或副圖指標確診為『短線修復雜訊 / 假誘多訊號』，強制禁止開火。")
+                if "#FF4B4B" in bp_data["color"] or "#EF4444" in bp_data["color"] or "#F59E0B" in bp_data["color"]: st.error("🚨 【核心風控最高警戒：大腦策略拒絕進場】 敞口強制關閉！跨市場海外利空共振，系統判定當下台股現貨存在假突破/回撤活埋風險，強迫空倉防禦。")
                 else: st.warning("⚠️ 【風控提示：資金配額不足 1 張】 當前趨勢健康，但因帳戶大資金池或核心曝險比率設定過於緊繃，系統自動阻斷高滑價下單。")
 
             b1, b2, b3, b4 = st.columns(4)
