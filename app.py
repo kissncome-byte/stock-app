@@ -99,7 +99,6 @@ def compute_live_data(stock_id: str, market_type: str, hist_last_close: float, h
                 info = r.json()["msgArray"][0]
                 p_c = safe_float(info.get("z")) or safe_float(info.get("b", "").split("_")[0]) or safe_float(info.get("o"))
                 if p_c > 0: 
-                    # 🌟 累積張數最高級防禦校正：鋼鐵鎖定累積總張數欄位 (g)，絕不退回單秒撮合欄位 (v)
                     total_vol_lots = safe_float(info.get("g")) or safe_float(info.get("v")) or hist_lots
                     return safe_float(info.get("o")) or p_c, safe_float(info.get("h")) or p_c, safe_float(info.get("l")) or p_c, p_c, total_vol_lots, True, f"TWSE {prefix.upper()} 官方流", "realtime"
         except Exception: pass
@@ -328,6 +327,10 @@ def unified_institutional_brain(res_dict, df_hist):
     is_macd_bear = (dif < 0) or (signal < 0)
     is_rsi_weak = rsi10 < 50
     
+    # 🌟 核心修正補丁：重新補回被刪減的基本面與籌碼面高階過濾變數，排除 Line 368 的 NameError 斷層
+    f_good = "【財報年增擴張】" in res_dict["fin_conclusion"] or res_dict["latest_yoy"] >= 20
+    c_lock = "強力鎖碼" in res_dict["sitc_trend"] or "融資大退" in res_dict["margin_trend"]
+    
     if "長上影" in final or "金流陷阱" in final or ((k9 < d9) and k9 > 75):
         msg = "❌ 爆量長上影：大戶高檔瘋狂倒貨！" if "長上影" in final else "🚨 惡性金流陷阱：隔日沖主力開高出貨！" if "金流陷阱" in final else "⚠️ 超買區死亡交叉：短線動能高位衰退。"
         return {"strategy_name": st_name, "color": "#FF4B4B", "action_now": "🚨 🔴 【立即清倉 / 獲利了結】", "signal": "極端出貨與慣性改變訊號共振", "desc": msg, "blueprint": {"停損防守": "全面清倉離場", "移動停利": "無", "預期目標": "保全資金"}}
@@ -456,7 +459,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     if k9_now < 20 and d9_now < 20: kd_timing = "📥 超賣打底區：指標跌至 20 以下代表短期超跌蓄力。教學重點：KD 跌到 20 只能代表超跌，不能直接抄底，必須等同步突破 50 分水線才算多頭反轉。"
     elif k9_now > 70 and d9_now > 70: kd_timing = "🦅 超買區區間：強勢主升允許長時間鈍化，未死叉無需恐慌賣出。常見散戶坑：看 KD 衝 70 就急於賣出，錯過大半主升行情；只有高檔死叉才是減倉訊號。"
     elif (k9_now > d9_now) and (k9_now < 50): kd_timing = "⚠️ 短線修復雜訊：雖出現低位金叉，但未突破 50 分水線，僅屬短線修復雜訊，不具備進場條件。核心規則：KD 金叉＋站上 50 分水線，兩個條件同時達成才具備多頭基礎。"
-    else: kd_timing = f"⚖️ KD 指補位定位：當前數值 K={k9_now:.1f} / D={d9_now:.1f} 處於多空常態調整箱型區間。"
+    else: kd_timing = f"⚖️ KD 指標定位：當前數值 K={k9_now:.1f} / D={d9_now:.1f} 處於多空常態調整箱型區間。"
 
     if dif_now > 0 and signal_now > 0: bb_stage = "🟢 多頭波段：雙線站上 0 軌才是完整多頭波段；多頭動能柱持續放大，代表上漲力道充足。戰法核心分水嶺：0 軌是多空力道分界，雙線在 0 軌下方一律定義為空頭/弱勢盤。"
     elif macd_hist < 0 and df["MACD_HIST"].iloc[-2] >= 0: bb_stage = "📉 高點下跌區：空頭釋放力道，綠柱連續堆建立，多頭行情結束。"
@@ -481,7 +484,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
                 if spring_triggered: break
     if spring_triggered:
         if current_price >= detected_prior_low and df["close"].iloc[-2] <= detected_prior_low and df["close"].iloc[-1] > df["open"].iloc[-1]: spring_verdict = f"🟢 【破底翻：買點一成立】主力砸盤誘空完成！重新站回前低 {detected_prior_low:.2f} 元，輕倉試布局！"
-        elif current_price >= detected_neckline and vol_spike: spring_verdict = f"🔮 【破底翻：買點二成立】強勢突破關鍵頸線 {detected_neckline:.2f} 元，追加倉位！"
+        elif current_price >= detected_neckline and vol_spike: spring_verdict = f"🔮 【破底翻：買點二成立】多頭翻轉爆發！強勢突破關鍵頸線 {detected_neckline:.2f} 元，追加倉位！"
         else: spring_verdict = f"🔍 【破底翻結構醞釀中】觸發經典假破底洗盤（前低：{detected_prior_low:.2f}，關鍵頸線：{detected_neckline:.2f}），正等待翻轉訊號。"
 
     if current_price >= ma5_val and ma5_val >= ma20_val: short_term_trend = f"🚀 五日線多頭噴發 (KD {kd_status})"
@@ -587,7 +590,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     
     rr1_brk = (target_brk - current_price) / (current_price - stop_brk) if (current_price - stop_brk) > 0 else 0
     rr1_pb = (target_pb - current_price) / (current_price - stop_pb) if (current_price - stop_pb) > 0 else 0
-    suggest_lots = min(int((total_capital * (adjusted_risk / 100) * 10000 / (current_price - expected_stop_price)) / 1000), int((total_capital * 10000) / (current_price * 1000))) if (current_price - expected_stop_price > 0 and adjusted_risk > 0) else 0
+    suggested_lots = min(int((total_capital * (adjusted_risk / 100) * 10000 / (current_price - expected_stop_price)) / 1000), int((total_capital * 10000) / (current_price * 1000))) if (current_price - expected_stop_price > 0 and adjusted_risk > 0) else 0
 
     stop_line_text = "未啟動"
     if "跌破" in tactical_blueprint.get("blueprint", {}).get("移動停利", "") or "安全線" in tactical_blueprint.get("blueprint", {}).get("移動停利", ""):
@@ -637,7 +640,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     res_dict["target_pb"] = target_pb
     res_dict["stop_pb"] = stop_pb
     res_dict["rr1_pb"] = rr1_pb
-    res_dict["suggested_lots"] = suggest_lots
+    res_dict["suggested_lots"] = suggested_lots
     res_dict["expected_stop_price"] = expected_stop_price
     res_dict["strategy_route"] = strategy_route
     res_dict["expected_target_price"] = target_brk if "突破" in tactical_blueprint["strategy_name"] or "暫緩追高" in tactical_blueprint["action_now"] else target_pb
