@@ -485,6 +485,7 @@ def unified_institutional_brain(res_dict, df_hist, is_holding=False, entry_cost=
 
 # ============ 9. Main Core Executor ============
 def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, slip_ticks: int, is_holding=False, entry_cost=0.0, sector_panic=False):
+    fin_df = pd.DataFrame()
     info_df_local = get_stock_info_df()
     match = info_df_local[info_df_local["stock_id"] == stock_id]
     if match.empty: return None
