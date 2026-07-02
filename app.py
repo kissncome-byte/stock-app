@@ -742,6 +742,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     res_dict["strategy_route"] = strategy_route
     res_dict["expected_target_price"] = target_brk if "突破" in tactical_blueprint["strategy_name"] or "暫緩追高" in tactical_blueprint["action_now"] else target_pb
     res_dict["trailing_stop_line"] = stop_line_text
+    res_dict["atr"] = atr
     res_dict["rt_source"] = rt_source
     res_dict["m_desc"] = m_desc
     res_dict["m_color"] = m_color
