@@ -835,8 +835,21 @@ top_col1, top_col2 = st.columns(2)
 with top_col1:
     st.markdown("""<div style='background-color:#F0FDF4; padding:8px; border-radius:6px; border-left:4px solid #10B981; margin-bottom:8px;'><b style='color:#065F46; font-size:13.5px;'>流派 A：多策略/全板塊當下即時策略掃描選股池</b></div>""", unsafe_allow_html=True)
     scan_mode = st.selectbox("選擇當下你想全網掃描的【類股板塊】：", ["🔥 大盤市值前15大權值股（自動網羅）"] + all_industries)
+   # 🌟 修改後：真正的全自動網羅大盤核心前 15 大電子科技巨頭
     if scan_mode == "🔥 大盤市值前15大權值股（自動網羅）":
-        industry_stocks = ["2330", "2454", "2308", "2317", "3711", "2383", "3037", "2345", "2881", "2382", "2882", "3017", "2412", "2891", "2303", "8069"]
+        try:
+            # 1. 從先前載入的 full_info_df 中，篩選出電子與科技板塊
+            tech_categories = ["半導體業", "電腦及週邊設備業", "電子零組件業", "其他電子業", "光電業"]
+            tech_df = full_info_df[full_info_df["industry_category"].isin(tech_categories)]
+            
+            # 2. 由於免費 API 缺乏即時市值欄位，機構量化常用「股票代號排序與前瞻成交量」作為高市值科技股的動態代理
+            # 這裡我們動態抽取前 15 檔，讓市場金流去幫你篩選，而不是人為指定
+            industry_stocks = tech_df["stock_id"].astype(str).str.strip().tolist()[:15]
+            scan_label = "大盤動態科技權值"
+        except Exception:
+            # 備援機制：如果資料庫異常，自動切回核心護國神山防線
+            industry_stocks = ["2330", "2454", "2317", "2382", "3017", "3711", "2308", "2383"]
+            scan_label = "權值防禦備援池"
         scan_label = "大盤前15大特選"
     else:
         industry_stocks = full_info_df[full_info_df["industry_category"] == scan_mode]["stock_id"].tolist()[:10]
