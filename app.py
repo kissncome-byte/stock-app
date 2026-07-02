@@ -862,17 +862,18 @@ st.markdown("---")
 if scan_trigger:
     st.subheader(f"📊 【{scan_mode}】即時動態連線量化篩選排行榜")
     
-    # 1. 拒絕指定！直接拉出該板塊「全網所有個股代碼」
+    # 🌟 強制手動清除 Streamlit 的快取殘留，防止類股數據交叉污染
+    st.cache_data.clear()
+    
     if scan_mode == "🔥 大盤市值前15大權值股（自動網羅）":
         raw_stocks = ["2330", "2454", "2308", "2317", "3711", "2383", "3037", "2345", "2881", "2382", "2882", "3017", "2412", "2891", "2303", "8069"]
     else:
-        raw_stocks = full_info_df[full_info_df["industry_category"] == scan_mode]["stock_id"].tolist()
+        # 確保只拉出「真正符合該類股」的乾淨名單
+        raw_stocks = full_info_df[full_info_df["industry_category"] == scan_mode]["stock_id"].astype(str).str.strip().tolist()
     
-    # 為防範超大類股（如半導體上百檔）在盤中秒刷導致 API 流量被鎖 IP
-    # 機構風控原則：動態抽取前 30 檔進行即時矩陣洗滌
-    scan_pool = raw_stocks[:30] 
+    # 機構風控：盤中高頻掃描，單次上限縮緊至最精華的 20 檔，確保 API 絕對安全
+    scan_pool = raw_stocks[:20] 
     
-    # 引進盤中視覺進度條（讓你知道大腦正在動態計算，不是隨便排的）
     progress_bar = st.progress(0)
     status_text = st.empty()
     
@@ -881,45 +882,49 @@ if scan_trigger:
         status_text.text(f"🐺 狼王大腦正在即時解耦第 {idx+1}/{len(scan_pool)} 檔個股: {sid}...")
         progress_bar.progress((idx + 1) / len(scan_pool))
         
-        # 執行精密診斷
+        # 🌟 狼王防彈衣：引進 0.25 秒的微型時間交錯（Pacing），完美規避第三方 API 的 429 流量封鎖
+        time.sleep(0.25)
+        
         res = evaluate_stock(sid, capital, risk_pct, slip_input, is_holding=False, entry_cost=0.0, sector_panic=sector_panic_toggle)
-        if res:
+        
+        # 雙重驗證：只有當個股的「真實板塊」與當下選擇的「掃描模式」完全一致時，才允許入榜（徹底消滅圓展跨界Bug）
+        if res and (scan_mode == "🔥 大盤市值前15大權值股（自動網羅）" or str(res["industry"]).strip() == str(scan_mode).strip()):
             bp_data = res["tactical_blueprint"]
             
-            # 🌟 終極改進：多因子動態權重評分系統（Screener Ranking Formula）
-            score = float(res["relative_strength"])    # 1. 基礎分：超額相對強度 (RS)
-            if res["vol_spike"]: score += 15.0         # 2. 盤中爆量攻擊加 15 分
-            if res["sitc_3d_sum"] > 500: score += 20.0   # 3. 投信強力鎖碼加 20 分
-            if res["latest_yoy"] >= 20: score += 10.0    # 4. 實質財報營收擴張加 10 分
+            # 多因子動態權重評分
+            score = float(res["relative_strength"])    
+            if res["vol_spike"]: score += 15.0         
+            if res["sitc_3d_sum"] > 500: score += 20.0   
+            if res["latest_yoy"] >= 20: score += 10.0    
             
-            # 5. 大腦路由風控加減分
             if "立即" in bp_data["action_now"] and "🔴" not in bp_data["action_now"]: 
-                score += 25.0  # 黃金共振開火訊號加 25 分
+                score += 25.0  
             if "🔴" in bp_data["action_now"] or "🛑" in bp_data["action_now"]: 
-                score -= 50.0  # 惡性出貨陷阱/結構破防重扣 50 分
+                score -= 50.0  
             
             scan_results.append({
-                "代碼": res["stock_id"], "股名": res["stock_name"], 
+                "代碼": res["stock_id"], 
+                "股名": res["stock_name"], 
                 "盤中市價": f"{res['current_price']:.2f} 元", 
                 "超額強度(RS)": f"{res['relative_strength']:+.2f}%",
                 "大腦路由分類": bp_data["strategy_name"].split("：")[-1], 
                 "當下即時動作": bp_data["action_now"], 
-                "短期動能": res["short_term_trend"], "波段底蘊": res["long_term_trend"], 
+                "短期動能": res["short_term_trend"], 
+                "波段底蘊": res["long_term_trend"], 
                 "量化綜合得分": round(score, 1),
                 "color_code": bp_data["color"]
             })
             
-    # 清空進度條
     status_text.empty()
     progress_bar.empty()
     
     if scan_results:
         df_scan = pd.DataFrame(scan_results)
-        
-        # 🌟 實質量化篩選核心：依照綜合得分由高到低「自動排行」！
         df_scan = df_scan.sort_values(by="量化綜合得分", ascending=False).reset_index(drop=True)
         
         st.dataframe(df_scan.style.apply(lambda r: [f'background-color: {r["color_code"]}15; font-weight: 600;'] * len(r), axis=1), column_order=["代碼", "股名", "盤中市價", "超額強度(RS)", "大腦路由分類", "當下即時動作", "短期動能", "波段底蘊", "量化綜合得分"], use_container_width=True, height=400)
+    else:
+        st.info("💡 當前類股板塊在盤中金流平淡，或外部數據源連線繁忙，暫無符合共振之排行標的。")
 if diag_trigger or (not scan_trigger and stock_input):
     with st.spinner("五維度大腦深度因果解耦中..."):
         res = evaluate_stock(stock_input, capital, risk_pct, slip_input, is_holding=user_holding, entry_cost=user_cost, sector_panic=sector_panic_toggle)
