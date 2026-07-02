@@ -223,7 +223,13 @@ def get_taiwan_enhanced_chips(stock_id: str, days: int = 30):
 
 @st.cache_data(ttl=900)
 def get_rev_df(stock_id: str, days: int = 730):
-    return get_api().taiwan_stock_month_revenue(stock_id=stock_id, start_date=(datetime.now()-timedelta(days=days)).strftime("%Y-%m-%d"))
+    try:
+        return get_api().taiwan_stock_month_revenue(
+            stock_id=stock_id, 
+            start_date=(datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+        )
+    except Exception:
+        return None  #
 
 @st.cache_data(ttl=86400)
 def get_financial_statement_df(stock_id: str, years: int = 2):
