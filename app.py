@@ -321,125 +321,127 @@ def unified_institutional_brain(res_dict, df_hist, is_holding=False, entry_cost=
     
     k9, d9 = df_hist["K9"].iloc[-1], df_hist["D9"].iloc[-1]
     
-    # 🌟 核心防線
+    # 🌟 核心結構防線
     p20_max = float(df_hist["close"].tail(20).max())
     trailing_stop = p20_max - (2.5 * atr)
     r_low_10d = float(df_hist["low"].tail(10).min())
     
-    # 統一投信核心因子定義
+    # 統一投信核心進攻因子
     f_good = "【財報年增擴張】" in res_dict["fin_conclusion"] or res_dict["latest_yoy"] >= 20
     c_lock = "強力鎖碼" in res_dict["sitc_trend"] or res_dict["sitc_3d_sum"] > 500
     is_ai_momentum = (p > m20) and c_lock and res_dict["vol_spike"]
     
-    # [新注入進攻因子] 
-    is_rs_gold = res_dict["is_rs_gold"]                  # 🚀 改進三：逆境強勢度黃金箭頭
-    is_volume_gap_spike = res_dict["is_volume_gap_spike"]  # ⚡ 改進二：09:15 早盤量能斷層突擊
+    # 機構衍生進攻因子
+    is_rs_gold = res_dict["is_rs_gold"]                  
+    is_volume_gap_spike = res_dict["is_volume_gap_spike"]  
     
-    # 計算真實帳面損益
+    # 計算實質帳面損益
     pnl_pct = ((p - entry_cost) / entry_cost * 100) if (is_holding and entry_cost > 0) else 0.0
 
     # =============================================================
-    # 🎭 劇本 A：【已持有部位管理劇本】(含金字塔加碼演算法)
+    # 🎭 劇本 A：【已持有部位管理劇本】
     # =============================================================
     if is_holding and entry_cost > 0:
-        # 1. 硬性本金最大極限停損線 (7%) - 鐵律優先
+        # 1. 死穴停損線 (7%)
         if pnl_pct <= -7.0:
             return {
                 "strategy_name": "🚨 觸發硬性資本停損", "color": "#FF4B4B", "action_now": "🛑 🔴 【部位重傷：全額立刻清倉】", "signal": "本金敞口破防",
-                "desc": f"您成本為 {entry_cost:.2f} 元。目前帳面虧損達 {pnl_pct:.1f}%，觸發自營部清算極限，立刻執行全額市價離場！",
+                "desc": f"您成本為 {entry_cost:.2f} 元。目前帳面虧損達 {pnl_pct:.1f}%，已觸發自營部硬性清算底線，立刻執行全額市價離場！",
                 "blueprint": {"停損防守": "全額清倉", "移動停利": "無", "預期目標": "保全資金殘餘"}
             }
 
-        # 2. 🌟 統一狼王改進一：【金字塔式動態加碼邏輯】
-        # 條件：已持有、獲利豐厚（>15%）、當下再次觸發右側突破、且無族群共振利空
+        # 2. 金字塔式動態加碼邏輯
         if pnl_pct >= 15.0 and st_type == "RIGHT_BREAKOUT" and res_dict["vol_spike"] and not sector_panic:
             return {
-                "strategy_name": "🔮 獲利擴張：金字塔加碼劇本發動", "color": "#7D3CFF", "action_now": "🔮 🔮 【利潤奔跑：啟動金字塔多頭加碼開火】",
-                "signal": "主升段中繼暴量突圍共振",
-                "desc": f"**【老股東利潤擴張】**：您的初始持股成本為 {entry_cost:.2f} 元，目前帳面大賺 {pnl_pct:+.1f}%。個股當下再度爆發量能、強勢穿刺前高牆 {r:.2f} 元！這在量化上是標準的主升浪加碼點。大腦命令：**立即執行金字塔式加碼買進！** 將加碼部位的硬停損線設定在 5MA，讓總部位利潤翻倍奔跑！",
+                "strategy_name": "🔮 獲利擴張：金字塔加碼劇本發動", "color": "#7D3CFF", "action_now": "🔮 🔮 【利潤奔跑：啟動金字塔多頭加碼開火】", "signal": "主升段中繼暴量突圍共振",
+                "desc": f"**【老股東利潤擴張】**：您的初始持股成本為 {entry_cost:.2f} 元，目前帳面大賺 {pnl_pct:+.1f}%。個股當下再度爆發量能突圍前高墙 {r:.2f} 元！大腦命令：**立即執行金字塔式加碼買進！** 加碼部位守 5MA，讓利潤翻倍！",
                 "blueprint": {"停損防守": f"加碼部位守 5MA ({ma5:.2f} 元)", "移動停利": f"母部位續守 ATR ({trailing_stop:.2f} 元)", "預期目標": f"目標看擴張位 {res_dict['target_brk']:.2f} 元"}
             }
 
-        # 3. 族群共振防禦（若觸發逆境黃金箭頭 RS Gold，則一票否決族群恐慌，展現強者恆強）
+        # 3. 族群共振防禦 (若具備 RS 超額黃金箭頭則特許豁免)
         if sector_panic and not is_rs_gold:
             return {
                 "strategy_name": "🚨 族群共振危機防禦", "color": "#EF4444", "action_now": "🚨 🔴 【同族群崩盤：立即執行全面減碼 50%】", "signal": "板塊流動性集體踩踏",
-                "desc": f"您持股成本為 {entry_cost:.2f} 元。同族群龍頭股集體下殺破5%。該股票雖相對抗跌但尚未觸發RS超額黃金箭頭。請遵循紀律先落袋 50% 鎖定短線價差，降低曝險！",
+                "desc": f"您持股成本為 {entry_cost:.2f} 元。同族群龍頭股集體下殺破 5%。該股票雖抗跌但尚未發射 RS 黃金箭頭，請先落袋 50% 鎖定短線價差防身！",
                 "blueprint": {"停損防守": f"剩餘部位守 {trailing_stop:.2f} 元", "移動停利": "已提前防守減碼", "預期目標": "保全核心資產"}
             }
 
-        # 4. 大波段母部位終結線：跌破 ATR 移動停利線
+        # 4. 🌟【大波段母部位終結線】(在此完美修復因果研判文字)
         if p < trailing_stop:
+            if pnl_pct > 0:
+                action_msg = "🛑 🔴 【波段獲利終結：剩餘母部位全數清倉】"
+                desc_msg = f"**【波段趨勢終結】**：您的持股成本為 {entry_cost:.2f} 元（帳面獲利：{pnl_pct:+.1f}%）。即時價已實質跌破近20日高點回撤的 ATR 防禦線 ({trailing_stop:.2f} 元)。雖然利潤從高點回吐，但目前仍屬獲利狀態，結構徹底改變，請全額清倉落袋！"
+            else:
+                action_msg = "🛑 🔴 【中線結構破防：全額認賠清倉】"
+                desc_msg = f"**【中線結構破防】**：您的持股成本為 {entry_cost:.2f} 元（帳面虧損：{pnl_pct:.1f}%）。即時價已實質跌破技術防線 ({trailing_stop:.2f} 元)。這檔股票先前拉高建立的防護網已被擊穿，目前已跌破您的本金成本，慣性徹底轉惡。請全額清倉認賠，嚴防虧損失控！"
+            
             return {
-                "strategy_name": "⏳ 中線波段趨勢終結", "color": "#EF4444", "action_now": "🛑 🔴 【波段獲利終結：剩餘母部位全數清倉】", "signal": "跌破 ATR 波動防線",
-                "desc": f"持股成本 {entry_cost:.2f} 元。即時價已實質跌破防線 ({trailing_stop:.2f} 元)。慣性徹底改變，請全額清倉，鎖住波段大獲利。",
+                "strategy_name": "⏳ 中線波段趨勢終結", "color": "#EF4444",
+                "action_now": action_msg,
+                "signal": "跌破動態 ATR 波動防線",
+                "desc": desc_msg,
                 "blueprint": {"停損防守": "全額清倉離場", "移動停利": "已觸發", "預期目標": "資金全額退場"}
             }
 
-        # 5. 子部位短線衝刺落袋：帳面有獲利，但跌破短線 5MA 週線
+        # 5. 子部位短線衝刺落袋演算法
         if pnl_pct > 0 and p < ma5:
             return {
                 "strategy_name": "🚀 短線達標・子部位獲利落袋", "color": "#F59E0B", "action_now": "⚠️ 🟡 【短線轉弱：減碼 50% 鎖定價差，剩餘放飛】", "signal": "股價跌破 5MA 短線攻擊線",
-                "desc": f"**【短線價差防衛】**：成本為 {entry_cost:.2f} 元（目前即時損益：{pnl_pct:+.1f}%）。個股短線噴發速率減緩跌破 5MA ({ma5:.2f} 元)。**立即執行「現股賣出 50% 倉位」，把短線衝刺利潤鎖進口袋！** 剩下的 50% 倉位放飛大波段主升段！",
+                "desc": f"**【短線價差防衛】**：成本為 {entry_cost:.2f} 元（帳面損益：{pnl_pct:+.1f}%）。個股短線噴發速率減緩跌破 5MA ({ma5:.2f} 元)。立即執行「現股賣出 50% 倉位」，把短線衝刺價差鎖進口袋！剩下的 50% 倉位繼續跟隨長線主升段！",
                 "blueprint": {"停損防守": "已化為無風險種子部位", "移動停利": f"剩餘50%守技術底線 {trailing_stop:.2f} 元", "預期目標": f"長線目標看 {res_dict['target_brk']:.2f} 元"}
             }
 
-        # 6. 強勢主升段全額續抱
-      # =============================================================
-        # 🌟 統一狼王終極修復：區分【獲利狂飆】與【虧損被動防守緩衝】
-        # =============================================================
-        if pnl_pct >= 0:
-            # 軌道一：帳面獲利，信心增強，讓利潤奔跑
+        # 6. 極端金流出貨陷阱預警
+        if "長上影" in final or "金流陷阱" in final:
             return {
-                "strategy_name": "🔥 強勢主升浪完美續抱", "color": "#7D3CFF",
-                "action_now": "🔮 🔮 【強勢狂飆：全額持股續抱】",
-                "signal": "短長雙速動能多頭共振",
-                "desc": f"**【部位對位定錨】**：持股成本 {entry_cost:.2f} 元（帳面獲利：{pnl_pct:+.1f}%）。當前個股高高在上、完美運行於 5MA ({ma5:.2f} 元) 與長線防線 ({trailing_stop:.2f} 元) 之上。量價結構極度健康，請全額咬死不賣，最大化您的波段暴利！",
+                "strategy_name": "🚨 爆量高檔出貨預警", "color": "#EF4444", "action_now": "🚨 🔴 【主力高檔出貨：主動執行減碼 50%】", "signal": "惡性 K 線結構與主力清算共振",
+                "desc": f"目前部位損益 {pnl_pct:+.1f}%。個股盤中爆量且留長上影線，符合惡性主力倒貨特徵。為防範踩踏，強烈建議主動落袋一半部位，不允許利潤吐回！",
+                "blueprint": {"停損防守": f"技術底線 {trailing_stop:.2f} 元", "移動停利": "啟動防守落袋", "預期目標": "防禦性鎖利"}
+            }
+
+        # 7. 🌟 獲利/虧損常態續抱分流（解決微幅套牢的心理衝突）
+        if pnl_pct >= 0:
+            return {
+                "strategy_name": "🔥 強勢主升浪完美續抱", "color": "#7D3CFF", "action_now": "🔮 🔮 【強勢狂飆：全額持股續抱】", "signal": "短長雙速動能多頭共振",
+                "desc": f"**【部位對位定錨】**：持股成本 {entry_cost:.2f} 元（帳面獲利：{pnl_pct:+.1f}%）。個股完美運行於 5MA ({ma5:.2f} 元) 之上。量價結構健康，盤中波動皆為洗盤雜訊，全額咬死不賣，放飛波段暴利！",
                 "blueprint": {"停損防守": f"短線利潤線 {ma5:.2f} 元 ｜ 中線波段線 {trailing_stop:.2f} 元", "移動停利": "多頭超買鈍化常態中", "預期目標": f"獲利對位目標 {res_dict['target_brk']:.2f} 元"}
             }
         else:
-            # 軌道二：帳面虧損，但未破防線。正面回應 user 痛點：這就是「只是動盪」的良性容忍帶！
             return {
                 "strategy_name": "🛡️ 虧損被動防守緩衝區", "color": "#1C86EE",
-                "action_now": "⚖️ 🔵 【微幅套牢：屬於正常波動容忍，持股續抱】",
-                "signal": "未破結構技術底線",
-                "desc": f"**【部位對位定錨】**：持股成本 {entry_cost:.2f} 元（目前帳面微幅套牢：{pnl_pct:.1f}%）。你說得完全沒錯！個股短線天天都在震盪，目前帳面的浮虧**完全處於量化模型的良性波動容忍帶內**。它既沒有跌破 7% 的核心本金死穴，也沒有實質擊穿中線結構防禦線 ({trailing_stop:.2f} 元)。機構操盤不靠盲目猜測或祈禱，只要結構防線沒破，我們就給予大戶洗盤的空間。請忽略日內雜訊，保持紀律現股續抱，靜待主力洗盤結束後的翻轉拉回！",
-                "blueprint": {"停損防守": f"硬性停損線 {entry_cost * 0.93:.2f} 元 ｜ 技術防線 {trailing_stop:.2f} 元", "移動停利": "暫無利潤可鎖", "預期目標": f"先看解套拉回成本價，再看主升段目標 {res_dict['target_brk']:.2f} 元"}
+                "action_now": "⚖️ 🔵 【微幅套牢：屬於正常波動容忍，持股續抱】", "signal": "未破結構技術底線",
+                "desc": f"**【部位對位定錨】**：持股成本 {entry_cost:.2f} 元（帳面微幅套牢：{pnl_pct:.1f}%）。當前浮虧完全處於量化模型的良性波動容忍帶內。它既沒有跌破 7% 的本金死穴，也沒有實質擊穿中線結構防禦線 ({trailing_stop:.2f} 元)。只要結構線沒破，請忽略日內雜訊保持續抱，靜待主力洗盤結束後的翻轉拉回！",
+                "blueprint": {"停損防守": f"硬性停損線 {entry_cost * 0.93:.2f} 元 ｜ 技術防線 {trailing_stop:.2f} 元", "移動停利": "暫無利潤可鎖", "預期目標": f"先看解套拉回成本價，再看目標 {res_dict['target_brk']:.2f} 元"}
             }
+
     # =============================================================
-    # 🎯 劇本 B：【未持有・全新開倉劇本】(含量能斷層與RS免疫機制)
+    # 🎯 劇本 B：【未持有・全新開倉劇本】
     # =============================================================
     else:
-        # 🌟 統一狼王改進三：【大盤暴跌時的個股相對強度（RS）免疫機制】
-        # 如果大盤瀑布重挫（或破月線），但該個股大於大盤超額強度3%以上（即 is_rs_gold=True），一票否決大盤恐慌，直接開啟最高買進通行權
+        is_momentum_decelerate = (k9 < d9) and k9 > 75
+        
         if is_rs_gold and p >= m20 and not sector_panic:
             return {
-                "strategy_name": "🚀 統一特許：逆境黃金飆股劇本發動", "color": "#7D3CFF", "action_now": "🔮 🔮 【強者恆強：無視大盤恐慌立即開火】",
-                "signal": "個股超額相對強度（RS）爆表",
-                "desc": f"**【大盤逆境真金】**：大盤目前處於大跌或破位空頭區（大盤變動: {wtx:.2f}%）。但該個股今日相較於大盤表現出高達 {res_dict['relative_strength']:.1f}% 的**超額相對強度(RS)**！這是標準的『主力逆勢進駐、全場最強箭頭』。大腦一票否決總體市場恐慌警報，給予特許全額開火權！",
+                "strategy_name": "🚀 統一特許：逆境黃金飆股劇本發動", "color": "#7D3CFF", "action_now": "🔮 🔮 【強者恆強：無視大盤恐慌立即開火】", "signal": "個股超額相對強度（RS）爆表",
+                "desc": f"**【大盤逆境真金】**：大盤目前處於大跌或破位空頭區（大盤變動: {wtx:.2f}%）。但該個股今日表現出高達 {res_dict['relative_strength']:.1f}% 的超額相對強度(RS)！大腦一票否決總體市場恐慌警報，給予特許全額開火權！",
                 "blueprint": {"停損防守": f"收盤跌破昨日收盤價或當日低點", "移動停利": f"波動防線 {trailing_stop:.2f} 元", "預期目標": f"獲利對位目標 {res_dict['target_brk']:.2f} 元"}
             }
 
-        # 🌟 統一狼王改進二：【09:15 早盤量能斷層突擊邏輯】
         if is_volume_gap_spike and p >= m20 and not sector_panic:
             return {
-                "strategy_name": "⚡ 突擊劇本：09:15 早盤量能斷層發動", "color": "#10B981", "action_now": "🔮 🟢 【量能斷層確立：全新開火進場熱錢追擊】",
-                "signal": "開盤特大法人單極速掃貨",
-                "desc": "您目前空倉。該個股在**開盤前15~30分鐘內，成交量直接灌爆超越 5MA 均量的 25%**！這代表市場有絕對特大資金在進行不計價的瘋狂掃貨（量能斷層）。大腦自動無視任何副圖指標的技術超買或滯後死叉，啟動狼王突擊買進指令，強行跟隨主力熱錢第一時間咬住起漲點！",
+                "strategy_name": "⚡ 突擊劇本：09:15 早盤量能斷層發動", "color": "#10B981", "action_now": "🔮 🟢 【量能斷層確立：全新開火進場熱錢追擊】", "signal": "開盤特大法人單極速掃貨",
+                "desc": "您目前空倉。該個股在開盤前 15~30 分鐘內成交量直接灌爆超越 5MA 均量的 25%！代表市場有絕對特大資金在進行不計價掃貨（量能斷層）。大腦自動無視任何指標死叉，啟動狼王突擊買進指令！",
                 "blueprint": {"停損防守": f"開盤第一盤最低價 ｜ 收盤破月線", "移動停利": f"波動防線 {trailing_stop:.2f} 元", "預期目標": f"短線價差衝刺目標 {res_dict['target_brk']:.2f} 元"}
             }
 
-        # 常規突破判斷
         if st_type == "RIGHT_BREAKOUT":
-            is_momentum_decelerate = (k9 < d9) and k9 > 75
             if is_momentum_decelerate:
                 return {
                     "strategy_name": st_name, "color": "#F59E0B", "action_now": "⚠️ 🟡 【全新開倉指標過熱：暫緩追高觀望】", "signal": "短線指標高位修正雜訊",
-                    "desc": "您目前空倉。個股型態強勢但隨機指標 (KD) 出現高位洗盤死叉。為防範早盤衝進去撞上短線良性洗盤，請暫緩追高，等待拉回 5MA 再行開火。",
+                    "desc": "您目前空倉。個股型態強勢但隨機指標 (KD) 出現高位洗盤死叉。為防範早盤衝進去撞上短線洗盤，請暫緩追高，等待拉回 5MA 再行開火。",
                     "blueprint": {"停損防守": "嚴禁盲目進場", "移動停利": "無", "預期目標": f"靜待突破壓制牆 {r:.2f} 元"}
                 }
             
-            # 常規大盤不安全限制
             if not m_safe:
                 if is_ai_momentum and f_good and not sector_panic:
                     return {
@@ -454,7 +456,6 @@ def unified_institutional_brain(res_dict, df_hist, is_holding=False, entry_cost=
                         "blueprint": {"停損防守": "嚴禁進場", "移動停利": "無", "預期目標": "手握現金等待安全期"}
                     }
 
-            # 正常環境，五維共振開火
             if p >= r * 0.98 and res_dict["vol_spike"] and c_lock and f_good and not sector_panic:
                 if overextended:
                     return {
