@@ -863,16 +863,10 @@ if scan_trigger:
                 bp_data = res["tactical_blueprint"]
                 scan_results.append({"代碼": res["stock_id"], "股名": res["stock_name"], "盤中市價": f"{res['current_price']:.2f} 元", "大腦路由分類": bp_data["strategy_name"].split("：")[-1], "當下即時動作": bp_data["action_now"], "短期動能": res["short_term_trend"], "波段底蘊": res["long_term_trend"], "color_code": bp_data["color"]})
         if scan_results:
-            # 🌟 修改後的正確代碼：引進實質數學排序！
-        if scan_results:
             df_scan = pd.DataFrame(scan_results)
-            
-            # 【機構級改進】把盤中市價的「元」拿掉，轉成數字，並跟相對強度（RS）做權重排序
-            # 這裡我們直接讓系統依照大腦的「顏色風控等級」與「動能強度」排序，把紫色和綠色的優先排在最上面！
             color_priority = {"#7D3CFF": 1, "#10B981": 2, "#1C86EE": 3, "#F59E0B": 4, "#EF4444": 5, "#FF4B4B": 6}
             df_scan["priority"] = df_scan["color_code"].map(color_priority).fillna(9)
             
-            # 依風控最高指導原則排序：最值得開火/最安全的（紫、綠）永遠排在最上方！
             df_scan = df_scan.sort_values(by="priority", ascending=True).reset_index(drop=True)
             
             st.dataframe(df_scan.style.apply(lambda r: [f'background-color: {r["color_code"]}15; font-weight: 600;'] * len(r), axis=1), column_order=["代碼", "股名", "盤中市價", "大腦路由分類", "當下即時動作", "短期動能", "波段底蘊"], use_container_width=True, height=360)
