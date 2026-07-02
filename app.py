@@ -314,7 +314,7 @@ def auto_strategy_classifier(res_dict):
 def unified_institutional_brain(res_dict, df_hist, is_holding=False, entry_cost=0.0, sector_panic=False):
     st_type, st_name = auto_strategy_classifier(res_dict)
     p, r, m20, m100, ma5 = res_dict["current_price"], res_dict["real_resistance"], res_dict["ma20_val"], res_dict["ma100_val"], res_dict["ma5_val"]
-    m_safe = "安全" in res_dict["macro_desc"] or "站穩" in res_dict["macro_desc"] or "過熱" in res_dict["macro_desc"]
+    m_safe = res_dict["macro_bull"]
     panic, overextended = res_dict.get("is_market_panic", False), res_dict.get("is_market_overextended", False)
     u_panic, u_desc, wtx = res_dict.get("is_us_panic", False), res_dict.get("us_panic_desc", ""), res_dict.get("wtx_change", 0.0)
     final, atr = res_dict["final_decision"], res_dict["atr"]
@@ -680,6 +680,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     elif is_market_overextended: m_desc, m_color = "⚠️ 大盤極端正乖離過熱", "orange"
 
     package = {
+        "macro_bull": macro_bull,
         "current_price": current_price, "current_vol": current_vol, "vol_ma20_val": vol_ma20_val, "real_resistance": real_resistance, "ma20_val": ma20_val, "ma100_val": ma100_val, "ma5_val": ma5_val,
         "sitc_3d_sum": sitc_3d_sum, "margin_diff": margin_diff, "macro_desc": macro_desc, "is_market_panic": is_market_panic, "is_market_overextended": is_market_overextended,
         "is_us_panic": is_us_panic, "us_panic_desc": us_panic_desc, "wtx_change": wtx_change, "spring_verdict": spring_verdict, "final_decision": final_decision, "trend_phase": trend_phase,
@@ -826,7 +827,7 @@ top_col1, top_col2 = st.columns(2)
 
 with top_col1:
     st.markdown("""<div style='background-color:#F0FDF4; padding:8px; border-radius:6px; border-left:4px solid #10B981; margin-bottom:8px;'><b style='color:#065F46; font-size:13.5px;'>流派 A：多策略/全板塊當下即時策略掃描選股池</b></div>""", unsafe_allow_html=True)
-    scan_mode = st.selectbox("選擇當下你想全網掃描的篩選大環境：", ["🔥 大盤市值前15大權值股（自動網羅）"] + all_industries)
+    scan_mode = st.selectbox("選擇當下你想全網掃描的【類股板塊】：", ["🔥 大盤市值前15大權值股（自動網羅）"] + all_industries)
     if scan_mode == "🔥 大盤市值前15大權值股（自動網羅）":
         industry_stocks = ["2330", "2454", "2308", "2317", "3711", "2383", "3037", "2345", "2881", "2382", "2882", "3017", "2412", "2891", "2303", "8069"]
         scan_label = "大盤前15大特選"
