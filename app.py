@@ -859,7 +859,7 @@ with top_col2:
 
 st.markdown("---")
 
-iif scan_trigger:
+if scan_trigger:
     st.subheader(f"📊 【{scan_mode}】即時動態連線量化篩選排行榜")
     
     # 1. 拒絕指定！直接拉出該板塊「全網所有個股代碼」
