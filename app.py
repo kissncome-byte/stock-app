@@ -304,13 +304,13 @@ def analyze_calendar_cyclicality(df_hist):
     current_month, current_day = datetime.now(TZ).month, datetime.now(TZ).day
     if current_month in [3, 6, 9, 12]:
         macro_season = "🚨 季底法人清算結帳期 (極高風險)" if current_day >= 18 else "🔥 季底法人績效作帳衝刺期"
-        macro_bias = "⚠️ 注意：當前正值季底最後結帳清算。若個股拉回，極可能是法人踩踏棄養，月循環的低吸信號在此處特許失效，嚴禁高倉位接飛刀！" if current_day >= 18 else \"💡 提示：正值季底法人作帳衝刺。資金會極端往 RS 強勢股報團，弱勢股會被當作提款機，強弱極度分化。\"
+        macro_bias = "⚠️ 注意：當前正值季底最後結帳清算。若個股拉回，極可能是法人踩踏棄養，月循環的低吸信號在此處特許失效，嚴禁高倉位接飛刀！" if current_day >= 18 else "💡 提示：正值季底法人作帳衝刺。資金會極端往 RS 強勢股報團，弱勢股會被當作提款機，強弱極度分化。"
     elif current_month in [1, 4, 7, 10]:
-        macro_season, macro_bias = \"🌱 新季度資金重新配置期 (作夢行情起跑)\", \"💡 提示：新季度剛開始，法人資金大洗牌、重新尋找新題材建倉。此時若配合『上旬營收利多公告』，很容易放量啟動波段新主升浪。\"
+        macro_season, macro_bias = "🌱 新季度資金重新配置期 (作夢行情起跑)", "💡 提示：新季度剛開始，法人資金大洗牌、重新尋找新題材建倉。此時若配合『上旬營收利利多公告』，很容易放量啟動波段新主升浪。"
     else:
-        macro_season, macro_bias = \"⚖️ 季度中繼常態換手期\", \"觀察提示：市場回歸常態產業基本面對位，沒有極端的作帳或清算壓力，日曆統計的慣性準確度最高。\"
-    base_verdict = \"🦅 **典型月循環**：【月初吸金拉抬 ➔ 月底賣壓壓低】。\" if e_ret > 0.05 and l_ret < -0.05 and e_win >= 53.0 and l_win <= 47.0 else \"⚡ **逆向月循環**：【月底提前卡位 ➔ 月初開高出貨】。\" if l_ret > 0.05 and e_ret < -0.05 and l_win >= 53.0 and e_win <= 47.0 else \"🔥 **全月多頭報團**：此股歷史上極易受大資金連續鎖碼，日曆天數雜訊低。\" if e_win >= 55.0 and m_win >= 55.0 and l_win >= 55.0 else \"⚖️ **隨機常態波動**：歷史日曆慣性不明顯，回歸常態量價防線。\"
-    return {\"verdict\": f\"【宏觀季節】：{macro_season}\\n\\n{macro_bias}\\n\\n---\n\n【微觀日曆慣性】：{base_verdict}\", \"early_ret\": e_ret, \"early_win\": e_win, \"mid_ret\": m_ret, \"mid_win\": m_win, \"late_ret\": l_ret, \"late_win\": l_win, \"macro_season\": macro_season}
+        macro_season, macro_bias = "⚖️ 季度中繼常態換手期", "觀察提示：市場回歸常態產業基本面對位，沒有極端的作帳或清算壓力，日曆統計的慣性準確度最高。"
+    base_verdict = "🦅 **典型月循環**：【月初吸金拉抬 ➔ 月底賣壓壓低】。" if e_ret > 0.05 and l_ret < -0.05 and e_win >= 53.0 and l_win <= 47.0 else "⚡ **逆向月循環**：【月底提前卡位 ➔ 月初開高出貨】。" if l_ret > 0.05 and e_ret < -0.05 and l_win >= 53.0 and e_win <= 47.0 else "🔥 **全月多頭報團**：此股歷史上極易受大資金連續鎖碼，日曆天數雜訊低。" if e_win >= 55.0 and m_win >= 55.0 and l_win >= 55.0 else "⚖️ **隨機常態波動**：歷史日曆慣性不明顯，回歸常態量價防線。"
+    return {"verdict": f"【宏觀季節】：{macro_season}\n\n{macro_bias}\n\n---\n\n【微觀日曆慣性】：{base_verdict}", "early_ret": e_ret, "early_win": e_win, "mid_ret": m_ret, "mid_win": m_win, "late_ret": l_ret, "late_win": l_win, "macro_season": macro_season}
 
 def prepare_indicator_df(df: pd.DataFrame):
     if df is None or df.empty: return None
@@ -436,7 +436,6 @@ def unified_institutional_brain(res_dict, df_hist, is_holding=False, entry_cost=
     else:
         is_momentum_decelerate = (k9 < d9) and k9 > 75
         
-        # 💡 ✅ 逆境孤勇者 Alpha 特許劇本：大盤瀑布但獨立 AI 妖股特許輕倉放行
         is_alpha_hero = (wtx <= -1.2 and res_dict.get("relative_strength", 0) >= 4.0 and p > ma5 and p > m20 and c_lock and not final == "❌ 爆量長上影")
         if is_alpha_hero:
             return {
@@ -598,7 +597,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
         rev_clean = rev_df.copy()
         rev_clean["revenue"] = pd.to_numeric(rev_clean["revenue"].astype(str).str.replace(",", ""), errors="coerce")
         rev_clean["revenue_year_growth_rate"] = rev_clean["revenue"].pct_change(12) * 100
-        if not rev_clean.dropna(subset=["revenue_year_growth_rate"]).empty: latest_yoy = float(rev_clean.dropna(subset=["revenue_year_growth_rate"]).sort_values("date").iloc[-1]["revenue_year_growth_rate"])
+        if not rev_clean.dropna(subset["revenue_year_growth_rate"]).empty: latest_yoy = float(rev_clean.dropna(subset["revenue_year_growth_rate"]).sort_values("date").iloc[-1]["revenue_year_growth_rate"])
 
     fin_df_raw = get_financial_statement_df(stock_id, years=2)
     fin_conclusion, pe_desc, pe_val, sum_eps_4q, gpm_now, opm_now = "📋 該標的暫無足夠季度財報數據。", "⚪ 數據不足無法計算估值", 0.0, 0.0, 0.0, 0.0
@@ -657,10 +656,9 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     elif is_us_panic:
         m_desc, m_color = "🚨 盤前美股暴跌警戒中", "#F59E0B"
     elif is_market_overextended:
-        # 💡 野村投信優化：若個股營收 YoY >= 30%（實質 AI 暴增股），自動將大盤過熱門檻寬限到 16% 正乖離，不砍半核心開火權！
         if latest_yoy >= 30.0:
             m_desc, m_color = f"🟢 大盤高位震盪 | 該股具備實質 AI 基本面護體 (YoY {latest_yoy:.1f}%) 特許放行", "green"
-            is_market_overextended = False # 內部降級風險，避免誤殺瘋狗浪主流
+            is_market_overextended = False 
         else:
             m_desc, m_color = "⚠️ 大盤極端正乖離過熱", "orange"
     else:
@@ -828,9 +826,9 @@ if diag_trigger or stock_input:
                 st.markdown(f"**⚡ RSI 相對強弱副圖解讀**：{res['volume_verdict']}")
 
             with st.expander("📅 ⏳ 個股歷史日曆效應（月週期循環）專家解碼面板", expanded=True):
-                st.markdown(f"### 📡 狼王大腦日曆綜合研判：\\n> {res['calendar_verdict'].replace('\\n', '<br>')}", unsafe_allow_html=True)
+                st.markdown(f"### 📡 狼王大腦日曆綜合研判：\n> {res['calendar_verdict'].replace('\n', '<br>')}", unsafe_allow_html=True)
                 st.markdown("---")
-                st.markdown("**📊 過去 600 天內【月初、月中、月底】實質統計矩陣：**")
+                st.markdown("**📊 過去 600 定內【月初、月中、月底】實質統計矩陣：**")
                 c_data = res["calendar_data"]
                 cy_col1, cy_col2, cy_col3 = st.columns(3)
                 with cy_col1: st.markdown(f"""<div style="background-color: #F8FAFC; border-left: 4px solid #2563EB; padding: 10px; border-radius: 4px;"><small style="color: #64748B; font-weight: 700;">🟢 上旬 (1號 ~ 10號)</small><p style="margin: 4px 0 0 0; font-size: 13px; font-weight: bold; color: #1E293B;">平均報酬: <span style="color: {'#10B981' if c_data['early_ret'] >= 0 else '#EF4444'}">{c_data['early_ret']:+.3f}%</span><br>歷史勝率: {c_data['early_win']:.1f}%</p></div>""", unsafe_allow_html=True)
