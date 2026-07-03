@@ -646,6 +646,10 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     target_pb = round_to_tick(volume_poc, t)
     stop_pb = round_to_tick(ma20_val - atr - (float(slip_ticks) * t), t) if round_to_tick(ma20_val - atr - (float(slip_ticks) * t), t) < current_price else round_to_tick(current_price - (1.5 * atr), t)
     
+    # 🔥 修正點一：將風報比(R:R)的計算移至 package 組裝前，避免報錯
+    rr1_brk = (target_brk - current_price) / (current_price - stop_brk) if (current_price - stop_brk) > 0 else 0
+    rr1_pb = (target_pb - current_price) / (current_price - stop_pb) if (current_price - stop_pb) > 0 else 0
+    
     open_gap_pct = ((safe_float(df["open"].iloc[-1]) - safe_float(df["close"].iloc[-2])) / safe_float(df["close"].iloc[-2] or 1) * 100) if len(df) > 1 else 0
     close_to_low_pct = ((current_price - rt_low) / (rt_high - rt_low)) if (rt_high - rt_low) > 0 else 1
     is_broker_dumping_risk = (open_gap_pct > 3.5) and (close_to_low_pct < 0.35) and ((current_vol * 1000.0) > (vol_ma20_val * 2.5))
@@ -676,6 +680,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     # 💡 ✅ 投信優化：將移動停利線的物理文字宣告往前調，徹底消除底層 package 引用時的未定義地雷
     stop_line_text = f"{round_to_tick(peak_price_20d - (2.5 * atr), t):.2f} 元"
 
+    # 🔥 修正點二：刪除重複的 spring_verdict 鍵值定義
     package = {
         "macro_bull": macro_bull,
         "current_price": current_price,
@@ -722,7 +727,6 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
         "fin_df": fin_df,
         "k9_now": k9_now,
         "d9_now": d9_now,
-        "spring_verdict": spring_verdict,
         "bb_stage": bb_stage,
         "kd_timing": kd_timing,
         "volume_verdict": volume_verdict,
@@ -740,8 +744,6 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     else: strategy_route = "🚀 強勢突破前高劇本" if "突破" in tactical_blueprint["strategy_name"] else "🛡️ 均線拉回低吸劇本"
 
     adjusted_risk = 0.0 if ("立即" in tactical_blueprint["action_now"] and "清倉" in tactical_blueprint["action_now"]) or "🛑" in tactical_blueprint["action_now"] or "暫緩追高" in tactical_blueprint["action_now"] else risk_per_trade * 0.3 if "Alpha 劇本" in tactical_blueprint["strategy_name"] else risk_per_trade * 1.5 if "🔮" in tactical_blueprint["action_now"] else risk_per_trade
-    rr1_brk = (target_brk - current_price) / (current_price - stop_brk) if (current_price - stop_brk) > 0 else 0
-    rr1_pb = (target_pb - current_price) / (current_price - stop_pb) if (current_price - stop_pb) > 0 else 0
     
     base_lots = min(int((total_capital * (adjusted_risk / 100) * 10000 / (current_price - expected_stop_price)) / 1000), int((total_capital * 10000) / (current_price * 1000))) if (current_price - expected_stop_price > 0 and adjusted_risk > 0) else 0
     suggested_lots = max(1, int(base_lots * 0.5)) if "加碼" in tactical_blueprint["action_now"] else base_lots
