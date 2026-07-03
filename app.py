@@ -578,21 +578,31 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
 
     volume_poc = current_price
  
- # 🌟 終極修正：90天季度籌碼定錨 + 飆股防貼身機制（100% 自給自足防爆版）
+# 🌟 終極殺手級修正：雙重防貼身「飆股重力彈弓機制」
     hist_recent = df.copy().sort_values("date", ascending=True).tail(90)
     
     counts, bins = np.histogram(hist_recent["close"], bins=15, weights=hist_recent["vol"])
     max_bin_idx = np.argmax(counts)
     calculated_poc = (bins[max_bin_idx] + bins[max_bin_idx + 1]) / 2
     
-    # 🎯 現場直接對齊即時市價，防止變數未定義
     live_price = float(df["close"].iloc[-1])
     
-    # 智慧判定：如果 POC 距離現價小於 4%，代表高檔籌碼鎖死，強行尋求實質 20MA 生命線支撐
+    # 🎯 現場直接解算 20MA 與 60MA (大戶季線生命線)，徹底獨立防爆
+    ma20_live = float(df["close"].rolling(20).mean().iloc[-1])
+    ma60_live = float(df["close"].rolling(60).mean().iloc[-1]) if len(df) >= 60 else ma20_live
+    
+    # 🚀 智慧重力彈弓分流：
     if abs(live_price - calculated_poc) / live_price < 0.04:
-        # 🎯 直接現場用歷史 K 線即時精算 20MA！徹底消滅 ma20_val 找不到的 NameError 魔魔王！
-        real_resistance = float(df["close"].rolling(20).mean().iloc[-1])
+        # 第一層警報：最大籌碼牆卡在現價！被迫檢查 20MA
+        if abs(live_price - ma20_live) / live_price < 0.04:
+            # 🚨 第二層警報：連 20MA 也貼死市價！代表是極端瘋狗浪飆股高檔橫盤
+            # 強行呼叫全場最後也是最安全的「60MA 季線大戶防禦底座」！幫你把安全距離徹底拉開！
+            real_resistance = ma60_live
+        else:
+            # 20MA 還有一段安全距離，用 20MA 防守
+            real_resistance = ma20_live
     else:
+        # 常態狀況下，維持使用季度最大籌碼牆
         real_resistance = calculated_poc
 
     hist_last = df.iloc[-1]
