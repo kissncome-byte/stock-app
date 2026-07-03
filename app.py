@@ -306,7 +306,7 @@ def analyze_calendar_cyclicality(df_hist):
         macro_season = "🚨 季底法人清算結帳期 (極高風險)" if current_day >= 18 else "🔥 季底法人績效作帳衝刺期"
         macro_bias = "⚠️ 注意：當前正值季底最後結帳清算。若個股拉回，極可能是法人踩踏棄養，月循環的低吸信號在此處特許失效，嚴禁高倉位接飛刀！" if current_day >= 18 else "💡 提示：正值季底法人作帳衝刺。資金會極端往 RS 強勢股報團，弱勢股會被當作提款機，強弱極度分化。"
     elif current_month in [1, 4, 7, 10]:
-        macro_season, macro_bias = "🌱 新季度資金重新配置期 (作夢行情起跑)", "💡 提示：新季度剛開始，法人資金大洗牌、重新尋找新題材建倉。此時若配合『上旬營收利利多公告』，很容易放量啟動波段新主升浪。"
+        macro_season, macro_bias = "🌱 新季度資金重新配置期 (作夢行情起跑)", "💡 提示：新季度剛開始，法人資金大洗牌、重新尋找新題材建倉。此時若配合『上旬營收利多公告』，很容易放量啟動波段新主升浪。"
     else:
         macro_season, macro_bias = "⚖️ 季度中繼常態換手期", "觀察提示：市場回歸常態產業基本面對位，沒有極端的作帳或清算壓力，日曆統計的慣性準確度最高。"
     base_verdict = "🦅 **典型月循環**：【月初吸金拉抬 ➔ 月底賣壓壓低】。" if e_ret > 0.05 and l_ret < -0.05 and e_win >= 53.0 and l_win <= 47.0 else "⚡ **逆向月循環**：【月底提前卡位 ➔ 月初開高出貨】。" if l_ret > 0.05 and e_ret < -0.05 and l_win >= 53.0 and e_win <= 47.0 else "🔥 **全月多頭報團**：此股歷史上極易受大資金連續鎖碼，日曆天數雜訊低。" if e_win >= 55.0 and m_win >= 55.0 and l_win >= 55.0 else "⚖️ **隨機常態波動**：歷史日曆慣性不明顯，回歸常態量價防線。"
@@ -597,7 +597,9 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
         rev_clean = rev_df.copy()
         rev_clean["revenue"] = pd.to_numeric(rev_clean["revenue"].astype(str).str.replace(",", ""), errors="coerce")
         rev_clean["revenue_year_growth_rate"] = rev_clean["revenue"].pct_change(12) * 100
-        if not rev_clean.dropna(subset["revenue_year_growth_rate"]).empty: latest_yoy = float(rev_clean.dropna(subset["revenue_year_growth_rate"]).sort_values("date").iloc[-1]["revenue_year_growth_rate"])
+        # 💡 ✅ 修正：精準補回之前漏掉的等號（subset=...）
+        if not rev_clean.dropna(subset=["revenue_year_growth_rate"]).empty: 
+            latest_yoy = float(rev_clean.dropna(subset=["revenue_year_growth_rate"]).sort_values("date").iloc[-1]["revenue_year_growth_rate"])
 
     fin_df_raw = get_financial_statement_df(stock_id, years=2)
     fin_conclusion, pe_desc, pe_val, sum_eps_4q, gpm_now, opm_now = "📋 該標的暫無足夠季度財報數據。", "⚪ 數據不足無法計算估值", 0.0, 0.0, 0.0, 0.0
@@ -645,7 +647,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     is_broker_dumping_risk = (open_gap_pct > 3.5) and (close_to_low_pct < 0.35) and ((current_vol * 1000.0) > (vol_ma20_val * 2.5))
     final_decision = "❌ 爆量長上影" if bool(df.iloc[-1].get("is_long_upper_shadow", False)) and vol_spike else "🚨 惡性金流陷阱" if is_broker_dumping_risk else "⚖️ 綜合評估"
 
-    # ==================== ✅ 修正後的元組拆包防禦線與 AI 自適應門檻 ====================
+    # ==================== 元組拆包防禦線與 AI 自適應門檻 ====================
     last_trade_date_str = str(df.iloc[-1]["date"])
     _, local_m_desc, local_m_color = get_market_status_label(rt_success, last_trade_date_str)
 
@@ -691,7 +693,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     is_pyramid_order = "加碼" in tactical_blueprint["action_now"]
     
     max_safe_liquidity_lots = max(1, int(vol_ma5_val * 0.015))
-    if suggested_lots > max_safe_liquidity_lots:
+    if @suggested_lots > max_safe_liquidity_lots:
         suggested_lots = max_safe_liquidity_lots
         liquidity_capped = True
     else: liquidity_capped = False
@@ -828,7 +830,7 @@ if diag_trigger or stock_input:
             with st.expander("📅 ⏳ 個股歷史日曆效應（月週期循環）專家解碼面板", expanded=True):
                 st.markdown(f"### 📡 狼王大腦日曆綜合研判：\n> {res['calendar_verdict'].replace('\n', '<br>')}", unsafe_allow_html=True)
                 st.markdown("---")
-                st.markdown("**📊 過去 600 定內【月初、月中、月底】實質統計矩陣：**")
+                st.markdown("**📊 過去 600 天內【月初、月中、月底】實質統計矩陣：**")
                 c_data = res["calendar_data"]
                 cy_col1, cy_col2, cy_col3 = st.columns(3)
                 with cy_col1: st.markdown(f"""<div style="background-color: #F8FAFC; border-left: 4px solid #2563EB; padding: 10px; border-radius: 4px;"><small style="color: #64748B; font-weight: 700;">🟢 上旬 (1號 ~ 10號)</small><p style="margin: 4px 0 0 0; font-size: 13px; font-weight: bold; color: #1E293B;">平均報酬: <span style="color: {'#10B981' if c_data['early_ret'] >= 0 else '#EF4444'}">{c_data['early_ret']:+.3f}%</span><br>歷史勝率: {c_data['early_win']:.1f}%</p></div>""", unsafe_allow_html=True)
