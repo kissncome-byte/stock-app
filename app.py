@@ -565,8 +565,19 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
         market_type = "TWO" if (stock_id.startswith("3") or stock_id.startswith("5") or stock_id.startswith("6") or stock_id.startswith("8")) and len(stock_id) == 4 else "TSE"
     else:
         m_col = "type" if "type" in match.columns else "market_type" if "market_type" in match.columns else "market" if "market" in match.columns else None
-        market_type = str(match[m_col].values[0]).strip().upper() if m_col else "TSE"
-        stock_name, industry = str(match["stock_name"].values[0]), str(match["industry_category"].values[0])
+        
+        # 使用 .iloc[0] 代替 .values[0]，不論底層是用什麼數據引擎都絕對穩如泰山
+        if m_col and len(match) > 0:
+            market_type = str(match[m_col].iloc[0]).strip().upper()
+        else:
+            market_type = "TSE"
+            
+        if len(match) > 0:
+            stock_name = str(match["stock_name"].iloc[0])
+            industry = str(match["industry_category"].iloc[0])
+        else:
+            stock_name = f"代號 {stock_id}"
+            industry = "自訂追蹤板塊"
     
     m_col = "type" if "type" in match.columns else "market_type" if "market_type" in match.columns else "market" if "market" in match.columns else None
     market_type = str(match[m_col].values[0]).strip().upper() if m_col else "TSE"
