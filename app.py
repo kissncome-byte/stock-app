@@ -579,7 +579,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
  # ==================== 🌟 統一狼王變數分流與雙重彈弓修正 ====================
     # 1. 智慧重力彈弓分流：精算 90 天季度最大量籌碼牆，直接指派給 volume_poc
     hist_recent = df.copy().sort_values("date", ascending=True).tail(90)
-    counts, bins = np.histogram(hist_recent["close"], bins=15, weights=hist_recent["vol"])
+    counts, bins = np.histogram(hist_recent["close"], bins=15, weights=hist_recent["amount"])
     max_bin_idx = np.argmax(counts)
     calculated_poc = (bins[max_bin_idx] + bins[max_bin_idx + 1]) / 2
     
