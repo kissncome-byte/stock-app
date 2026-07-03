@@ -1006,7 +1006,11 @@ if scan_trigger:
         st.dataframe(df_scan.style.apply(lambda r: [f'background-color: {r["color_code"]}15; font-weight: 600;'] * len(r), axis=1), column_order=["代碼", "股名", "盤中市價", "超額強度(RS)", "大腦路由分類", "當下即時動作", "短期動能", "波段底蘊", "量化綜合得分"], use_container_width=True, height=400)
     else:
         st.info("💡 當前選擇的名單在盤中金流平淡，暫無符合排行之標的。")
+# 🌟 修改後的正確代碼：點擊個股診斷時，也強行沖刷掉記憶體垃圾！
 if diag_trigger or (not scan_trigger and stock_input):
+    
+    st.cache_data.clear()
+    
     with st.spinner("五維度大腦深度因果解耦中..."):
         res = evaluate_stock(stock_input, capital, risk_pct, slip_input, is_holding=user_holding, entry_cost=user_cost, sector_panic=sector_panic_toggle)
         if res is None: st.error("該個股代碼數據獲取失敗，請確認編號是否正確（數據歷史長度需大於100日）。")
