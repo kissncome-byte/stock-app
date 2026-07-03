@@ -924,33 +924,30 @@ st.markdown("### 🎛️ 戰術總指揮中心 (Command Center)")
 top_col1, top_col2 = st.columns(2)
 
 with top_col1:
+    # 🌟 這裡前面都必須有 4 個空格！
     st.markdown("""<div style='background-color:#F0FDF4; padding:8px; border-radius:6px; border-left:4px solid #10B981; margin-bottom:8px;'><b style='color:#065F46; font-size:13.5px;'>流派 A：自訂戰術觀察清單 ➔ 全因子即時雷達掃描</b></div>""", unsafe_allow_html=True)
-    
-    # 🌟 徹底摧毀選單！改成自由貼上代號或關鍵字，把控制權完全還給你
     user_scan_input = st.text_input(
         "請直接輸入你想打包掃描的【個股代號清單】(用逗號隔開) 或 【產業關鍵字】:", 
         value="3037,3715,1717,2330,2317,2454"
     )
-    
-    # 後台智慧清洗與分流解析
     input_clean = str(user_scan_input).strip().replace(" ", "")
     if any(c.isdigit() for c in input_clean):
-        # 1. 如果輸入包含數字，代表使用者自己點名股票，直接精準掃描這幾檔
         industry_stocks = [s for s in input_clean.split(",") if s]
         scan_label = f"自訂 {len(industry_stocks)} 檔核心池"
         max_output_display = len(industry_stocks)
     else:
-        # 2. 如果輸入的是全文字（如：半導體、化學），自動去全台灣股票庫抓出有對應關鍵字的股票
         matched_df = full_info_df[
             full_info_df["industry_category"].str.contains(input_clean, na=False) | 
             full_info_df["stock_name"].str.contains(input_clean, na=False)
         ]
-        industry_stocks = matched_df["stock_id"].tolist()[:25] # 限制前 25 檔，防止流量塞車
+        industry_stocks = matched_df["stock_id"].tolist()[:25]
         scan_label = f"關鍵字【{input_clean}】匹配池"
         max_output_display = len(industry_stocks)
 
     scan_trigger = st.button(f"🔍 啟動 【{scan_label}】 當下全因子動態矩陣掃描排行榜", use_container_width=True)
- with top_col2:
+
+with top_col2:
+    # 🌟 就是這裡！前面必須精準縮進 4 個空格，徹底消滅 IndentationError！
     st.markdown("""<div style='background-color:#EFF6FF; padding:8px; border-radius:6px; border-left:4px solid #3B82F6; margin-bottom:8px;'><b style='color:#1E40AF; font-size:13.5px;'>流派 B：個股五維度縱向因果深度診斷與策略開火</b></div>""", unsafe_allow_html=True)
     stock_input = st.text_input("輸入或由左方排行榜選定之目標個股代碼：", value="3037")
     
@@ -965,6 +962,7 @@ with top_col1:
     diag_trigger = st.button(f"🔥 執行 【{stock_input}】 精密大腦雙速成本定錨診斷", use_container_width=True)
 
 st.markdown("---")
+
 
 if scan_trigger:
     # 🌟 萬能防爆修正：把原本不存在的 scan_mode，無縫改成我們剛才精算好的 scan_label！
