@@ -578,7 +578,22 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
 
     volume_poc = current_price
  
-    hist_recent =
+ # 🌟 終極修正：90天季度籌碼定錨 + 飆股防貼身機制（100% 自給自足防爆版）
+    hist_recent = df.copy().sort_values("date", ascending=True).tail(90)
+    
+    counts, bins = np.histogram(hist_recent["close"], bins=15, weights=hist_recent["vol"])
+    max_bin_idx = np.argmax(counts)
+    calculated_poc = (bins[max_bin_idx] + bins[max_bin_idx + 1]) / 2
+    
+    # 🎯 現場直接對齊即時市價，防止變數未定義
+    live_price = float(df["close"].iloc[-1])
+    
+    # 智慧判定：如果 POC 距離現價小於 4%，代表高檔籌碼鎖死，強行尋求實質 20MA 生命線支撐
+    if abs(live_price - calculated_poc) / live_price < 0.04:
+        # 🎯 直接現場用歷史 K 線即時精算 20MA！徹底消滅 ma20_val 找不到的 NameError 魔魔王！
+        real_resistance = float(df["close"].rolling(20).mean().iloc[-1])
+    else:
+        real_resistance = calculated_poc
 
     hist_last = df.iloc[-1]
     ma5_val, vol_ma5_val = float(hist_last["MA5"]), float(hist_last["MA5_Vol"])
