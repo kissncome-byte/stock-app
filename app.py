@@ -148,7 +148,13 @@ def get_stock_info_df():
         {"stock_id": "3037", "stock_name": "欣興", "type": "twse", "industry_category": "電子零組件業"},
         {"stock_id": "3715", "stock_name": "定穎投控", "type": "twse", "industry_category": "電子零組件業"},
         {"stock_id": "1717", "stock_name": "長興", "type": "twse", "industry_category": "化學工業"},
-        {"stock_id": "8069", "stock_name": "元太", "type": "two", "industry_category": "光電業"}
+        # 🌟 幫你強力灌水的「光電業」大戶備援軍團！
+        {"stock_id": "8069", "stock_name": "元太", "type": "two", "industry_category": "光電業"},
+        {"stock_id": "2409", "stock_name": "友達", "type": "twse", "industry_category": "光电业"},
+        {"stock_id": "3481", "stock_name": "群創", "type": "twse", "industry_category": "光电业"},
+        {"stock_id": "3008", "stock_name": "大立光", "type": "twse", "industry_category": "光电业"},
+        {"stock_id": "3406", "stock_name": "玉晶光", "type": "twse", "industry_category": "光电业"},
+        {"stock_id": "2393", "stock_name": "億光", "type": "twse", "industry_category": "光电业"}
     ]
     return pd.DataFrame(fallback)
 
