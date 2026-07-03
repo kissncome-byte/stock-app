@@ -950,7 +950,7 @@ with top_col1:
         max_output_display = len(industry_stocks)
 
     scan_trigger = st.button(f"🔍 啟動 【{scan_label}】 當下全因子動態矩陣掃描排行榜", use_container_width=True)
-    with top_col2:
+ with top_col2:
     st.markdown("""<div style='background-color:#EFF6FF; padding:8px; border-radius:6px; border-left:4px solid #3B82F6; margin-bottom:8px;'><b style='color:#1E40AF; font-size:13.5px;'>流派 B：個股五維度縱向因果深度診斷與策略開火</b></div>""", unsafe_allow_html=True)
     stock_input = st.text_input("輸入或由左方排行榜選定之目標個股代碼：", value="3037")
     
