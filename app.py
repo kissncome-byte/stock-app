@@ -262,6 +262,49 @@ def get_realtime_news_list(stock_id: str, stock_name: str):
     return []
 
 # ============ 7. Technical Engine ============
+def analyze_calendar_cyclicality(df_hist):
+    if df_hist is None or len(df_hist) < 90:
+        return {"verdict": "📊 歷史數據不足，無法進行週期因果解耦", "early_win": 50, "mid_win": 50, "late_win": 50, "early_ret": 0, "mid_ret": 0, "late_ret": 0}
+    
+    # 複製歷史資料進行日曆拆解
+    x = df_hist.copy().sort_values("date")
+    x["return"] = x["close"].pct_change()
+    x = x.dropna(subset=["return"])
+    x["day"] = pd.to_datetime(x["date"]).dt.day
+    
+    # 將一個月嚴格拆分為三段區間
+    early_period = x[x["day"] <= 10]
+    mid_period = x[(x["day"] > 10) & (x["day"] <= 20)]
+    late_period = x[x["day"] > 20]
+    
+    def get_period_stats(p_df):
+        if p_df.empty: return 0.0, 50.0
+        avg_ret = float(p_df["return"].mean() * 100) # 平均漲跌幅 %
+        win_rate = float((p_df["return"] > 0).mean() * 100) # 上漲勝率 %
+        return avg_ret, win_rate
+    
+    e_ret, e_win = get_period_stats(early_period)
+    m_ret, m_win = get_period_stats(mid_period)
+    l_ret, l_win = get_period_stats(late_period)
+    
+    # 🦅 統一狼王日曆慣性定性判定
+    if e_ret > 0.05 and l_ret < -0.05 and e_win >= 53.0 and l_win <= 47.0:
+        verdict = "🦅 **典型月循環**：【月初吸金拉抬 ➔ 月底賣壓壓低】。若目前正值月底（20號之後）且股價拉回，屬於極具統計優勢的『良性潛伏低吸點』，下道月週期起漲概率極高！"
+    elif l_ret > 0.05 and e_ret < -0.05 and l_win >= 53.0 and e_win <= 47.0:
+        verdict = "⚡ **逆向月循環**：【月底提前卡位 ➔ 月初開高出貨】。月底若有拉回切勿盲目接刀，適合在月中洗盤時進場，月底持股，月初沖高時堅決分批落袋！"
+    elif e_win >= 55.0 and m_win >= 55.0 and l_win >= 55.0:
+        verdict = "🔥 **強勢無效應**：【全月資金瘋狂報團】。此股正處於極端多頭主升段，日曆效應被強大資金流掩蓋，拉回跌破 5MA 或貼近月線即為進場開火點！"
+    elif e_win <= 45.0 and m_win <= 45.0 and l_win <= 45.0:
+        verdict = "📉 **弱勢無效應**：【全月持續失血常態】。無關日曆時間，主力籌碼正在持續清算，任何拉回都是陷阱，禁止伸手接飛刀！"
+    else:
+        verdict = "⚖️ **隨機常態波動**：歷史日曆慣性效應不明顯。請完全回歸微觀量價的 5MA 攻擊線與 ATR 移動防線作為拉回進出場的標準實質依據。"
+        
+    return {
+        "verdict": verdict,
+        "early_ret": e_ret, "early_win": e_win,
+        "mid_ret": m_ret, "mid_win": m_win,
+        "late_ret": l_ret, "late_win": l_win
+    }
 def prepare_indicator_df(df: pd.DataFrame):
     if df is None or df.empty: return None
     x = df.copy().sort_values("date").reset_index(drop=True)
@@ -734,6 +777,10 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
 
     stop_line_text = f"{round_to_tick(peak_price_20d - (2.5 * atr), t):.2f} 元"
 
+# === 🎯 請從這裡開始往下覆蓋，直到 return res_dict ===
+    # 🌟 執行日曆效應模組計算
+    cycle_res = analyze_calendar_cyclicality(df.copy())
+
     res_dict = {}
     res_dict["stock_id"] = stock_id
     res_dict["stock_name"] = stock_name
@@ -787,12 +834,14 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     res_dict["expected_target_price"] = target_brk if "突破" in tactical_blueprint["strategy_name"] or "加碼" in tactical_blueprint["action_now"] or "暫緩追高" in tactical_blueprint["action_now"] else target_pb
     res_dict["trailing_stop_line"] = stop_line_text
     
-    # 🌟 完美補齊
+    # 🌟 注入日曆大腦結果
     res_dict["atr"] = atr
     res_dict["stock_daily_pct"] = stock_daily_pct
     res_dict["relative_strength"] = relative_strength
     res_dict["is_rs_gold"] = is_rs_gold
     res_dict["is_volume_gap_spike"] = is_volume_gap_spike
+    res_dict["calendar_verdict"] = cycle_res["verdict"]
+    res_dict["calendar_data"] = cycle_res
     
     res_dict["rt_source"] = rt_source
     res_dict["m_desc"] = m_desc
@@ -1040,10 +1089,59 @@ if diag_trigger or (not scan_trigger and stock_input):
 
             st.markdown("---")
             st.markdown("### 🔍 跨因子微觀底層驗證數據")
+            # === 🎯 請從這裡開始覆蓋，把舊的解碼面板與新的日曆面板一併貼上 ===
             with st.expander("🧱 ⚙️ 核心指標副圖完整專家解碼面板", expanded=True):
                 st.markdown(f"**📈 KD 隨機指標副圖解讀**：{res['kd_timing']}")
                 st.markdown(f"**📊 MACD 趨勢力道副圖解讀**：{res['bb_stage']}")
                 st.markdown(f"**⚡ RSI 相對強弱副圖解讀**：{res['volume_verdict']}")
+
+            # 🌟 狼王新晶片：新增【個股歷史日曆慣性解耦面板】
+            with st.expander("📅 ⏳ 個股歷史日曆效應（月週期循環）專家解碼面板", expanded=True):
+                st.markdown(f"### 📡 狼王大腦日曆綜合研判：")
+                st.markdown(f"> {res['calendar_verdict']}")
+                st.markdown("---")
+                st.markdown("**📊 過去 450 天內【月初、月中、月底】實質統計矩陣：**")
+                
+                c_data = res["calendar_data"]
+                
+                # 用精美的豆腐塊 HUD 顯示三段週期的勝率與報酬
+                cy_col1, cy_col2, cy_col3 = st.columns(3)
+                with cy_col1:
+                    st.markdown(f"""
+                    <div style="background-color: #F8FAFC; border-left: 4px solid #2563EB; padding: 10px; border-radius: 4px;">
+                        <small style="color: #64748B; font-weight: 700;">🟢 上旬 (1號 ~ 10號)</small>
+                        <p style="margin: 4px 0 0 0; font-size: 13px; font-weight: bold; color: #1E293B;">
+                            平均報酬: <span style="color: {'#10B981' if c_data['early_ret'] >= 0 else '#EF4444'}">{c_data['early_ret']:+.3f}%</span><br>
+                            歷史勝率: {c_data['early_win']:.1f}%
+                        </p>
+                    </div>
+                    """, unsafe_allow_html=True)
+                    
+                with cy_col2:
+                    st.markdown(f"""
+                    <div style="background-color: #F8FAFC; border-left: 4px solid #64748B; padding: 10px; border-radius: 4px;">
+                        <small style="color: #64748B; font-weight: 700;">🟡 中旬 (11號 ~ 20號)</small>
+                        <p style="margin: 4px 0 0 0; font-size: 13px; font-weight: bold; color: #1E293B;">
+                            平均報酬: <span style="color: {'#10B981' if c_data['mid_ret'] >= 0 else '#EF4444'}">{c_data['mid_ret']:+.3f}%</span><br>
+                            歷史勝率: {c_data['mid_win']:.1f}%
+                        </p>
+                    </div>
+                    """, unsafe_allow_html=True)
+                    
+                with cy_col3:
+                    st.markdown(f"""
+                    <div style="background-color: #F8FAFC; border-left: 4px solid #7C3AED; padding: 10px; border-radius: 4px;">
+                        <small style="color: #64748B; font-weight: 700;">🟣 下旬 (21號 ~ 月底)</small>
+                        <p style="margin: 4px 0 0 0; font-size: 13px; font-weight: bold; color: #1E293B;">
+                            平均報酬: <span style="color: {'#10B981' if c_data['late_ret'] >= 0 else '#EF4444'}">{c_data['late_ret']:+.3f}%</span><br>
+                            歷史勝率: {c_data['late_win']:.1f}%
+                        </p>
+                    </div>
+                    """, unsafe_allow_html=True)
+                
+                # 獲取當前日期方便對照
+                current_day_now = datetime.now(TZ).day
+                st.markdown(f"""<br><small style='color:#64748B;'><b>💡 統一自營部實戰導引：</b> 今天是當月 <b>{current_day_now} 號</b>。如果畫面的綜合研判確診為『典型月循環』且今天是 22 號（月底拉回），量化期望值對你極度有利，此時的拉回低吸屬於主力洗盤的尾聲，可以大膽啟動低吸建倉計畫！</small>""", unsafe_allow_html=True)
 
             with st.expander("📊 財務基本面完整財務矩陣大表"):
                 if not res["fin_df"].empty:
