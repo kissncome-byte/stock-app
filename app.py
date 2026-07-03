@@ -295,9 +295,12 @@ def analyze_calendar_cyclicality(df_hist):
     x["month"] = pd.to_datetime(x["date"]).dt.month
     x["day"] = pd.to_datetime(x["date"]).dt.day
     early_period, mid_period, late_period = x[x["day"] <= 10], x[(x["day"] > 10) & (x["day"] <= 20)], x[x["day"] > 20]
+    
+    # 💡 ✅ 修正元組括號：將 float 轉換精確包裹住整個數值計算
     def get_period_stats(p_df):
         if p_df.empty: return 0.0, 50.0
-        return float(p_df["return"].mean() * 100), float(p_df["return"] > 0).mean() * 100
+        return float(p_df["return"].mean() * 100), float((p_df["return"] > 0).mean() * 100)
+        
     e_ret, e_win = get_period_stats(early_period)
     m_ret, m_win = get_period_stats(mid_period)
     l_ret, l_win = get_period_stats(late_period)
@@ -308,7 +311,7 @@ def analyze_calendar_cyclicality(df_hist):
     elif current_month in [1, 4, 7, 10]:
         macro_season, macro_bias = "🌱 新季度資金重新配置期 (作夢行情起跑)", "💡 提示：新季度剛開始，法人資金大洗牌、重新尋找新題材建倉。此時若配合『上旬營收利多公告』，很容易放量啟動波段新主升浪。"
     else:
-        macro_season, macro_bias = "⚖️ 季度中繼常態換手期", "觀察提示：市場回歸常態產業基本面對位，沒有極端的作帳或清算壓力，日曆統計的慣性準確度最高。"
+        macro_season, macro_bias = "⚖️ 季度中繼常態換手期", "觀察提示：市場回歸常態產業基本面對位，沒有極端的作帳 or 清算壓力，日曆統計的慣性準確度最高。"
     base_verdict = "🦅 **典型月循環**：【月初吸金拉抬 ➔ 月底賣壓壓低】。" if e_ret > 0.05 and l_ret < -0.05 and e_win >= 53.0 and l_win <= 47.0 else "⚡ **逆向月循環**：【月底提前卡位 ➔ 月初開高出貨】。" if l_ret > 0.05 and e_ret < -0.05 and l_win >= 53.0 and e_win <= 47.0 else "🔥 **全月多頭報團**：此股歷史上極易受大資金連續鎖碼，日曆天數雜訊低。" if e_win >= 55.0 and m_win >= 55.0 and l_win >= 55.0 else "⚖️ **隨機常態波動**：歷史日曆慣性不明顯，回歸常態量價防線。"
     return {"verdict": f"【宏觀季節】：{macro_season}\n\n{macro_bias}\n\n---\n\n【微觀日曆慣性】：{base_verdict}", "early_ret": e_ret, "early_win": e_win, "mid_ret": m_ret, "mid_win": m_win, "late_ret": l_ret, "late_win": l_win, "macro_season": macro_season}
 
@@ -380,7 +383,6 @@ def unified_institutional_brain(res_dict, df_hist, is_holding=False, entry_cost=
     is_rs_gold = res_dict["is_rs_gold"]                     
     is_volume_gap_spike = res_dict["is_volume_gap_spike"]  
     
-    # 💡 ✅ 修正：把不小心多打的 wins 給徹底拿掉，恢復標準條件判斷
     pnl_pct = ((p - entry_cost) / entry_cost * 100) if (is_holding and entry_cost > 0) else 0.0
 
     if is_holding and entry_cost > 0:
@@ -672,36 +674,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
         "macro_bull": macro_bull, "current_price": current_price, "current_vol": current_vol, "vol_ma20_val": vol_ma20_val, "real_resistance": real_resistance, "ma20_val": ma20_val, "ma100_val": ma100_val, "ma5_val": ma5_val,
         "sitc_3d_sum": sitc_3d_sum, "margin_diff": margin_diff, "macro_desc": macro_desc, "is_market_panic": is_market_panic, "is_market_overextended": is_market_overextended,
         "is_us_panic": is_us_panic, "us_panic_desc": us_panic_desc, "wtx_change": wtx_change, "spring_verdict": spring_verdict, "final_decision": final_decision, "trend_phase": trend_phase,
-        "vol_spike": vol_spike, "pe_desc": pe_desc, "margin_trend": margin_trend, "target_brk": target_brk, "stop_brk": stop_brk, "target_pb": target_pb, "stop_pb": stop_pb,
-        "atr": atr, "fin_conclusion": fin_conclusion, "latest_yoy": latest_yoy, "sitc_trend": sitc_trend, "short_term_trend": short_term_trend, "volume_poc": volume_poc,
-        "is_rs_gold": is_rs_gold, "is_volume_gap_spike": is_volume_gap_spike, "relative_strength": relative_strength, "macro_season": cycle_res["macro_season"]
-    }
-    
-    tactical_blueprint = unified_institutional_brain(package, df.copy(), is_holding=is_holding, entry_cost=entry_cost, sector_panic=sector_panic)
-    expected_stop_price = package["stop_brk"] if "突破" in tactical_blueprint["strategy_name"] else package["stop_pb"]
-    if "破底翻" in tactical_blueprint["strategy_name"] and ("買點一成立" in spring_verdict or "買點二成立" in spring_verdict):
-        expected_stop_price = round_to_tick(spring_lowest_low - t, t) if round_to_tick(spring_lowest_low - t, t) < current_price else round_to_tick(current_price - (1.0 * atr), t)
-        strategy_route = "🔮 破底翻底吸佈局/加倉劇本"
-    else: strategy_route = "🚀 強勢突破前高劇本" if "突破" in tactical_blueprint["strategy_name"] else "🛡️ 均線拉回低吸劇本"
-
-    adjusted_risk = 0.0 if ("立即" in tactical_blueprint["action_now"] and "清倉" in tactical_blueprint["action_now"]) or "🛑" in tactical_blueprint["action_now"] or "暫緩追高" in tactical_blueprint["action_now"] else risk_per_trade * 0.3 if "Alpha 劇本" in tactical_blueprint["strategy_name"] else risk_per_trade * 1.5 if "🔮" in tactical_blueprint["action_now"] else risk_per_trade
-    rr1_brk = (target_brk - current_price) / (current_price - stop_brk) if (current_price - stop_brk) > 0 else 0
-    rr1_pb = (target_pb - current_price) / (current_price - stop_pb) if (current_price - stop_pb) > 0 else 0
-    
-    base_lots = min(int((total_capital * (adjusted_risk / 100) * 10000 / (current_price - expected_stop_price)) / 1000), int((total_capital * 10000) / (current_price * 1000))) if (current_price - expected_stop_price > 0 and adjusted_risk > 0) else 0
-    suggested_lots = max(1, int(base_lots * 0.5)) if "加碼" in tactical_blueprint["action_now"] else base_lots
-    is_pyramid_order = "加碼" in tactical_blueprint["action_now"]
-    
-    max_safe_liquidity_lots = max(1, int(vol_ma5_val * 0.015))
-    if suggested_lots > max_safe_liquidity_lots:
-        suggested_lots = max_safe_liquidity_lots
-        liquidity_capped = True
-    else: liquidity_capped = False
-
-    stop_line_text = f"{round_to_tick(peak_price_20d - (2.5 * atr), t):.2f} 元"
-
-    res_dict = {
-        "stock_id": stock_id, "stock_name": stock_name, "industry": industry, "current_price": current_price, "current_vol": current_vol, "ma5_val": ma5_val, "vol_ma5_val": vol_ma5_val, "ma20_val": ma20_val, "ma60_val": ma60_val, "ma100_val": ma100_val, "vol_ma20_val": vol_ma20_val, "real_resistance": real_resistance, "bb_upper": bb_upper, "bb_lower": bb_lower, "bb_bandwidth": current_bandwidth, "rsi_now": rsi_now, "adx_now": adx_now, "macd_hist": macd_hist, "macro_desc": macro_desc, "sitc_trend": sitc_trend, "margin_trend": margin_trend, "sitc_3d_sum": sitc_3d_sum, "margin_diff": margin_diff, "latest_yoy": latest_yoy, "pe_val": pe_val, "pe_desc": pe_desc, "eps_4q": sum_eps_4q, "fin_conclusion": fin_conclusion, "gpm_now": gpm_now, "opm_now": opm_now, "is_compressed": is_compressed, "vol_spike": vol_spike, "news_analysis_report": news_analysis_report, "raw_news_list": raw_news_list, "trend_phase": trend_phase, "short_term_trend": short_term_trend, "long_term_trend": long_term_trend, "target_brk": target_brk, "stop_brk": stop_brk, "rr1_brk": rr1_brk, "target_pb": target_pb, "stop_pb": stop_pb, "rr1_pb": rr1_pb, "suggested_lots": suggested_lots, "is_pyramid_order": is_pyramid_order, "liquidity_capped": liquidity_capped, "max_safe_liquidity_lots": max_safe_liquidity_lots, "expected_stop_price": expected_stop_price, "strategy_route": strategy_route, "expected_target_price": target_brk if "突破" in tactical_blueprint["strategy_name"] or "加碼" in tactical_blueprint["action_now"] or "暫緩追高" in tactical_blueprint["action_now"] else target_pb, "trailing_stop_line": stop_line_text, "atr": atr, "stock_daily_pct": stock_daily_pct, "relative_strength": relative_strength, "is_rs_gold": is_rs_gold, "is_volume_gap_spike": is_volume_gap_spike, "calendar_verdict": cycle_res["verdict"], "calendar_data": cycle_res, "rt_source": rt_source, "m_desc": m_desc, "m_color": m_color, "volume_poc": volume_poc, "main_force_label": main_force_label, "recent_catalyst_summary": recent_catalyst_summary, "fin_df": fin_df, "k9_now": k9_now, "d9_now": d9_now, "spring_verdict": spring_verdict, "bb_stage": bb_stage, "kd_timing": kd_timing, "volume_verdict": volume_verdict, "tactical_blueprint": tactical_blueprint, "radar_results": radar_results
+        "vol_spike": vol_spike, "pe_desc": pe_desc, "margin_trend": margin_trend, "target_brk": target_brk, "stop_brk": stop_brk, "rr1_brk": rr1_brk, "target_pb": target_pb, "stop_pb": stop_pb, "rr1_pb": rr1_pb, "suggested_lots": suggested_lots, "is_pyramid_order": is_pyramid_order, "liquidity_capped": liquidity_capped, "max_safe_liquidity_lots": max_safe_liquidity_lots, "expected_stop_price": expected_stop_price, "strategy_route": strategy_route, "expected_target_price": target_brk if "突破" in tactical_blueprint["strategy_name"] or "加碼" in tactical_blueprint["action_now"] or "暫緩追高" in tactical_blueprint["action_now"] else target_pb, "trailing_stop_line": stop_line_text, "atr": atr, "stock_daily_pct": stock_daily_pct, "relative_strength": relative_strength, "is_rs_gold": is_rs_gold, "is_volume_gap_spike": is_volume_gap_spike, "calendar_verdict": cycle_res["verdict"], "calendar_data": cycle_res, "rt_source": rt_source, "m_desc": m_desc, "m_color": m_color, "volume_poc": volume_poc, "main_force_label": main_force_label, "recent_catalyst_summary": recent_catalyst_summary, "fin_df": fin_df, "k9_now": k9_now, "d9_now": d9_now, "spring_verdict": spring_verdict, "bb_stage": bb_stage, "kd_timing": kd_timing, "volume_verdict": volume_verdict, "tactical_blueprint": tactical_blueprint, "radar_results": radar_results
     }
     return res_dict
 
