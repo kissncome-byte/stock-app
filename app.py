@@ -895,30 +895,38 @@ with st.sidebar:
 
 macro_bull, macro_label, is_market_panic, is_market_overextended = get_market_macro_status()
 full_info_df = get_stock_info_df()
-all_industries = sorted([str(i) for i in full_info_df["industry_category"].unique() if i != "nan" and i != ""])
 
 st.markdown("## 📡 雙速策略大腦動態綜合看盤台 (v48 狼王特選版)")
 st.markdown("### 🎛️ 戰術總指揮中心 (Command Center)")
 top_col1, top_col2 = st.columns(2)
 
 with top_col1:
-    st.markdown("""<div style='background-color:#F0FDF4; padding:8px; border-radius:6px; border-left:4px solid #10B981; margin-bottom:8px;'><b style='color:#065F46; font-size:13.5px;'>流派 A：多策略/全板塊當下即時策略掃描選股池</b></div>""", unsafe_allow_html=True)
-    scan_mode = st.selectbox("選擇當下你想全網掃描的【類股板塊】：", ["🔥 大盤市值前15大權值股（自動網羅）"] + all_industries)
-    if scan_mode == "🔥 大盤市值前15大權值股（自動網羅）":
-        try:
-            tech_categories = ["半導體業", "電腦及週邊設備業", "電子零組件業", "其他電子業", "光電業"]
-            tech_df = full_info_df[full_info_df["industry_category"].isin(tech_categories)]
-            industry_stocks = tech_df["stock_id"].astype(str).str.strip().tolist()[:15]
-            scan_label = "大盤動態科技權值"
-        except Exception:
-            industry_stocks = ["2330", "2454", "2317", "2382", "3017", "3711", "2308", "2383"]
-            scan_label = "权值防禦備援池"
-        scan_label = "大盤前15大特選"
+    st.markdown("""<div style='background-color:#F0FDF4; padding:8px; border-radius:6px; border-left:4px solid #10B981; margin-bottom:8px;'><b style='color:#065F46; font-size:13.5px;'>流派 A：自訂戰術觀察清單 ➔ 全因子即時雷達掃描</b></div>""", unsafe_allow_html=True)
+    
+    # 🌟 徹底摧毀選單！改成自由貼上代號或關鍵字，把控制權完全還給你
+    user_scan_input = st.text_input(
+        "請直接輸入你想打包掃描的【個股代號清單】(用逗號隔開) 或 【產業關鍵字】:", 
+        value="3037,3715,1717,2330,2317,2454"
+    )
+    
+    # 後台智慧清洗與分流解析
+    input_clean = str(user_scan_input).strip().replace(" ", "")
+    if any(c.isdigit() for c in input_clean):
+        # 1. 如果輸入包含數字，代表使用者自己點名股票，直接精準掃描這幾檔
+        industry_stocks = [s for s in input_clean.split(",") if s]
+        scan_label = f"自訂 {len(industry_stocks)} 檔核心池"
+        max_output_display = len(industry_stocks)
     else:
-        industry_stocks = full_info_df[full_info_df["industry_category"] == scan_mode]["stock_id"].tolist()[:10]
-        scan_label = scan_mode
-    scan_trigger = st.button(f"🔍 啟動 【{scan_label}】 當下全因子動態矩陣掃描排行榜", use_container_width=True)
+        # 2. 如果輸入的是全文字（如：半導體、化學），自動去全台灣股票庫抓出有對應關鍵字的股票
+        matched_df = full_info_df[
+            full_info_df["industry_category"].str.contains(input_clean, na=False) | 
+            full_info_df["stock_name"].str.contains(input_clean, na=False)
+        ]
+        industry_stocks = matched_df["stock_id"].tolist()[:25] # 限制前 25 檔，防止流量塞車
+        scan_label = f"關鍵字【{input_clean}】匹配池"
+        max_output_display = len(industry_stocks)
 
+    scan_trigger = st.button(f"🔍 啟動 【{scan_label}】 當下全因子動態矩陣掃描排行榜", use_container_width=True)
 with top_col2:
     st.markdown("""<div style='background-color:#EFF6FF; padding:8px; border-radius:6px; border-left:4px solid #3B82F6; margin-bottom:8px;'><b style='color:#1E40AF; font-size:13.5px;'>流派 B：個股五維度縱向因果深度診斷與策略開火</b></div>""", unsafe_allow_html=True)
     stock_input = st.text_input("輸入或由左方排行榜選定之目標個股代碼：", value="3037")
