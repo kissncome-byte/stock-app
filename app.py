@@ -950,7 +950,7 @@ with top_col1:
         max_output_display = len(industry_stocks)
 
     scan_trigger = st.button(f"🔍 啟動 【{scan_label}】 當下全因子動態矩陣掃描排行榜", use_container_width=True)
-with top_col2:
+    with top_col2:
     st.markdown("""<div style='background-color:#EFF6FF; padding:8px; border-radius:6px; border-left:4px solid #3B82F6; margin-bottom:8px;'><b style='color:#1E40AF; font-size:13.5px;'>流派 B：個股五維度縱向因果深度診斷與策略開火</b></div>""", unsafe_allow_html=True)
     stock_input = st.text_input("輸入或由左方排行榜選定之目標個股代碼：", value="3037")
     
@@ -967,37 +967,26 @@ with top_col2:
 st.markdown("---")
 
 if scan_trigger:
-    st.subheader(f"📊 【{scan_mode}】即時動態連線量化篩選排行榜")
+    # 🌟 萬能防爆修正：把原本不存在的 scan_mode，無縫改成我們剛才精算好的 scan_label！
+    st.subheader(f"📊 【{scan_label}】即時動態連線量化篩選排行榜")
     st.cache_data.clear()
     
-    TAIWAN_MACRO_UNIVERSE = [
-        "2330", "2317", "2454", "2382", "2308", "2881", "2882", "2412", "2891", "3711", 
-        "2886", "1216", "2884", "1303", "2892", "2603", "1301", "2880", "2885", "5880", 
-        "2357", "2301", "3008", "2324", "2883", "2408", "2609", "2615", "1101", "2890", 
-        "2379", "3045", "4904", "2002", "1326", "6505", "2395", "3037", "2303", "2409", 
-        "3481", "3231", "2356", "2887", "5876", "9904", "2912", "2345", "6415", "3017"
-    ]
-    
-    if scan_mode == "🔥 大盤市值前15大權值股（自動網羅）":
-        scan_pool = TAIWAN_MACRO_UNIVERSE
-        max_output_display = 15
-    else:
-        raw_stocks = full_info_df[full_info_df["industry_category"] == scan_mode]["stock_id"].astype(str).str.strip().tolist()
-        scan_pool = raw_stocks[:35] 
-        max_output_display = len(scan_pool)
+    # 直接使用我們在上面智慧分流解析好的自訂自由選股池 industry_stocks
+    scan_pool = industry_stocks
     
     progress_bar = st.progress(0)
     status_text = st.empty()
     
     scan_results = []
     for idx, sid in enumerate(scan_pool):
-        status_text.text(f"🐺 狼王大腦正在即時量化全大盤個股第 {idx+1}/{len(scan_pool)} 檔: {sid}...")
+        status_text.text(f"🐺 狼王大腦正在即時量化自訂個股第 {idx+1}/{len(scan_pool)} 檔: {sid}...")
         progress_bar.progress((idx + 1) / len(scan_pool))
         time.sleep(0.25)
         
         res = evaluate_stock(sid, capital, risk_pct, slip_input, is_holding=False, entry_cost=0.0, sector_panic=sector_panic_toggle)
         
-        if res and (scan_mode == "🔥 大盤市值前15大權值股（自動網羅）" or str(res["industry"]).strip() == str(scan_mode).strip()):
+        # 🌟 智慧放行：既然是你的私人專屬股票籃，只要抓得到數據(res)，通通特許進榜比拼！
+        if res:
             bp_data = res["tactical_blueprint"]
             score = float(res["relative_strength"])    
             if res["vol_spike"]: score += 15.0         
