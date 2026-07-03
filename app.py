@@ -118,9 +118,9 @@ def get_overnight_radar():
                 if r.status_code == 200 and r.json().get("chart", {}).get("result"):
                     res = r.json()["chart"]["result"][0]
                     closes = [safe_float(c) for c in res.get("indicators", {}).get("quote", [{}])[0].get("close", []) if c is not None]
-                    c_p, p_c = (closes[-1], closes[-2]) if len(closes) >= 2 else (safe_float(res["meta"].get("regularMarketPrice")), safe_float(res["meta"].get("previousClose")))
-                    if p_c > 0:
-                        pct = ((c_p - p_c) / p_c) * 100
+                    current_p, previous_c = (closes[-1], closes[-2]) if len(closes) >= 2 else (safe_float(res["meta"].get("regularMarketPrice")), safe_float(res["meta"].get("previousClose")))
+                    if previous_c > 0:
+                        pct = ((current_p - previous_c) / previous_c) * 100
                         radar_res[label] = pct
                         if symbol == "^TWII": wtx_change = pct
                         if symbol != "^TWII" and pct <= -2.0: is_us_panic, panic_desc = True, f"昨晚美股重挫，{label} 慘跌 {pct:.1f}%"
@@ -216,7 +216,8 @@ def get_market_macro_status():
             df = df.sort_values("date").reset_index(drop=True)
             df['close'] = pd.to_numeric(df['close'], errors='coerce')
             df['MA20'], df['MA60'] = df['close'].rolling(20).mean(), df['close'].rolling(60).mean()
-            last, prev = df.iloc[-1], (df.iloc[-5] if len(df) >= 5 else df.iloc[0])
+            last = df.iloc[-1]
+            prev = df.iloc[-5] if len(df) >= 5 else df.iloc[0]
             ret = ((last['close'] - prev['close']) / prev['close']) * 100
             panic = (last['close'] < last['MA20']) and (ret <= -3.5)
             bias = ((last['close'] - last['MA60']) / last['MA60']) * 100
@@ -262,7 +263,8 @@ def get_financial_statement_df(stock_id: str, years: int = 2):
         df = raw.copy()
         df["type"] = df["type"].replace({"OperatingRevenue": "Revenue"})
         return df[df["type"].isin(["EPS", "Revenue", "GrossProfit", "OperatingIncome"])].pivot_table(index="date", columns="type", values="value", aggfunc="last").reset_index()
-    except Exception: return pd.DataFrame()
+    except Exception: pass
+    return pd.DataFrame()
 
 @st.cache_data(ttl=300)
 def get_realtime_news_list(stock_id: str, stock_name: str):
@@ -286,57 +288,29 @@ def get_realtime_news_list(stock_id: str, stock_name: str):
 
 # ============ 7. Technical Engine ============
 def analyze_calendar_cyclicality(df_hist):
-    if df_hist is None or len(df_hist) < 90:
-        return {"verdict": "📊 歷史數據不足，無法進行週期因果解耦", "early_win": 50, "mid_win": 50, "late_win": 50, "early_ret": 0, "mid_ret": 0, "late_ret": 0, "macro_season": "未知"}
-    
+    if df_hist is None or len(df_hist) < 90: return {"verdict": "📊 歷史數據不足，無法進行週期因果解耦", "early_win": 50, "mid_win": 50, "late_win": 50, "early_ret": 0, "mid_ret": 0, "late_ret": 0, "macro_season": "未知"}
     x = df_hist.copy().sort_values("date")
     x["return"] = x["close"].pct_change()
     x = x.dropna(subset=["return"])
     x["month"] = pd.to_datetime(x["date"]).dt.month
     x["day"] = pd.to_datetime(x["date"]).dt.day
-    
-    early_period = x[x["day"] <= 10]
-    mid_period = x[(x["day"] > 10) & (x["day"] <= 20)]
-    late_period = x[x["day"] > 20]
-    
+    early_period, mid_period, late_period = x[x["day"] <= 10], x[(x["day"] > 10) & (x["day"] <= 20)], x[x["day"] > 20]
     def get_period_stats(p_df):
         if p_df.empty: return 0.0, 50.0
-        avg_ret = float(p_df["return"].mean() * 100)
-        win_rate = float((p_df["return"] > 0).mean() * 100)
-        return avg_ret, win_rate
-    
+        return float(p_df["return"].mean() * 100), float(p_df["return"] > 0).mean() * 100
     e_ret, e_win = get_period_stats(early_period)
     m_ret, m_win = get_period_stats(mid_period)
     l_ret, l_win = get_period_stats(late_period)
-    
-    current_month = datetime.now(TZ).month
-    current_day = datetime.now(TZ).day
-    
+    current_month, current_day = datetime.now(TZ).month, datetime.now(TZ).day
     if current_month in [3, 6, 9, 12]:
-        if current_day >= 18:
-            macro_season = "🚨 季底法人清算結帳期 (極高風險)"
-            macro_bias = "⚠️ 注意：當前正值季底最後結帳清算。若個股拉回，極可能是法人踩踏棄養，月循環的低吸信號在此處特許失效，嚴禁高倉位接飛刀！"
-        else:
-            macro_season = "🔥 季底法人績效作帳衝刺期"
-            macro_bias = "💡 提示：正值季底法人作帳衝刺。資金會極端往 RS 強勢股報團，弱勢股會被當作提款機，強弱極度分化。"
+        macro_season = "🚨 季底法人清算結帳期 (極高風險)" if current_day >= 18 else "🔥 季底法人績效作帳衝刺期"
+        macro_bias = "⚠️ 注意：當前正值季底最後結帳清算。若個股拉回，極可能是法人踩踏棄養，月循環的低吸信號在此處特許失效，嚴禁高倉位接飛刀！" if current_day >= 18 else \"💡 提示：正值季底法人作帳衝刺。資金會極端往 RS 強勢股報團，弱勢股會被當作提款機，強弱極度分化。\"
     elif current_month in [1, 4, 7, 10]:
-        macro_season = "🌱 新季度資金重新配置期 (作夢行情起跑)"
-        macro_bias = "💡 提示：新季度剛開始，法人資金大洗牌、重新尋找新題材建倉。此時若配合『上旬營收利多公告』，很容易放量啟動波段新主升浪。"
+        macro_season, macro_bias = \"🌱 新季度資金重新配置期 (作夢行情起跑)\", \"💡 提示：新季度剛開始，法人資金大洗牌、重新尋找新題材建倉。此時若配合『上旬營收利多公告』，很容易放量啟動波段新主升浪。\"
     else:
-        macro_season = "⚖️ 季度中繼常態換手期"
-        macro_bias = "觀察提示：市場回歸常態產業基本面對位，沒有極端的作帳或清算壓力，日曆統計的慣性準確度最高。"
-
-    if e_ret > 0.05 and l_ret < -0.05 and e_win >= 53.0 and l_win <= 47.0:
-        base_verdict = "🦅 **典型月循環**：【月初吸金拉抬 ➔ 月底賣壓壓低】。"
-    elif l_ret > 0.05 and e_ret < -0.05 and l_win >= 53.0 and e_win <= 47.0:
-        base_verdict = "⚡ **逆向月循環**：【月底提前卡位 ➔ 月初開高出貨】。"
-    elif e_win >= 55.0 and m_win >= 55.0 and l_win >= 55.0:
-        base_verdict = "🔥 **全月多頭報團**：此股歷史上極易受大資金連續鎖碼，日曆天數雜訊低。"
-    else:
-        base_verdict = "⚖️ **隨機常態波動**：歷史日曆慣性不明顯，回歸常態量價防線。"
-        
-    final_verdict = f"【宏觀季節】：{macro_season}\n\n{macro_bias}\n\n---\n\n【微觀日曆慣性】：{base_verdict}"
-    return {"verdict": final_verdict, "early_ret": e_ret, "early_win": e_win, "mid_ret": m_ret, "mid_win": m_win, "late_ret": l_ret, "late_win": l_win, "macro_season": macro_season}
+        macro_season, macro_bias = \"⚖️ 季度中繼常態換手期\", \"觀察提示：市場回歸常態產業基本面對位，沒有極端的作帳或清算壓力，日曆統計的慣性準確度最高。\"
+    base_verdict = \"🦅 **典型月循環**：【月初吸金拉抬 ➔ 月底賣壓壓低】。\" if e_ret > 0.05 and l_ret < -0.05 and e_win >= 53.0 and l_win <= 47.0 else \"⚡ **逆向月循環**：【月底提前卡位 ➔ 月初開高出貨】。\" if l_ret > 0.05 and e_ret < -0.05 and l_win >= 53.0 and e_win <= 47.0 else \"🔥 **全月多頭報團**：此股歷史上極易受大資金連續鎖碼，日曆天數雜訊低。\" if e_win >= 55.0 and m_win >= 55.0 and l_win >= 55.0 else \"⚖️ **隨機常態波動**：歷史日曆慣性不明顯，回歸常態量價防線。\"
+    return {\"verdict\": f\"【宏觀季節】：{macro_season}\\n\\n{macro_bias}\\n\\n---\n\n【微觀日曆慣性】：{base_verdict}\", \"early_ret\": e_ret, \"early_win\": e_win, \"mid_ret\": m_ret, \"mid_win\": m_win, \"late_ret\": l_ret, \"late_win\": l_win, \"macro_season\": macro_season}
 
 def prepare_indicator_df(df: pd.DataFrame):
     if df is None or df.empty: return None
@@ -349,14 +323,12 @@ def prepare_indicator_df(df: pd.DataFrame):
     x["Res_20D"], x["std20"] = x["high"].rolling(20).max(), x["close"].rolling(20).std()
     x["BB_upper"], x["BB_lower"] = x["MA20"] + (x["std20"] * 2), x["MA20"] - (x["std20"] * 2)
     x["BB_bandwidth"] = (x["BB_upper"] - x["BB_lower"]) / x["MA20"]
-    
     delta = x["close"].diff()
     gain = delta.clip(lower=0).ewm(com=13, adjust=False).mean()
     loss = -delta.clip(upper=0).ewm(com=13, adjust=False).mean().replace(0, 0.00001)
     x["RSI14"] = 100 - (100 / (1 + (gain / loss)))
     x["RSI5"] = 100 - (100 / (1 + (delta.clip(lower=0).ewm(com=4, adjust=False).mean() / -delta.clip(upper=0).ewm(com=4, adjust=False).mean().replace(0, 0.00001))))
     x["RSI10"] = 100 - (100 / (1 + (delta.clip(lower=0).ewm(com=9, adjust=False).mean() / -delta.clip(upper=0).ewm(com=9, adjust=False).mean().replace(0, 0.00001))))
-    
     x["up"], x["down"] = x["high"].diff(), x["low"].shift(1) - x["low"]
     x["p_dm"] = np.where((x["up"] > x["down"]) & (x["up"] > 0), x["up"], 0)
     x["m_dm"] = np.where((x["down"] > x["up"]) & (x["down"] > 0), x["down"], 0)
@@ -364,12 +336,10 @@ def prepare_indicator_df(df: pd.DataFrame):
     x["P_DI"] = (x["p_dm"].ewm(com=13, adjust=False).mean() / tr_s) * 100
     x["M_DI"] = (x["m_dm"].ewm(com=13, adjust=False).mean() / tr_s) * 100
     x["ADX14"] = ((x["P_DI"] - x["M_DI"]).abs() / (x["P_DI"] + x["M_DI"]).replace(0, 0.00001) * 100).ewm(com=13, adjust=False).mean()
-    
     x["EMA12"], x["EMA26"] = x["close"].ewm(span=12, adjust=False).mean(), x["close"].ewm(span=26, adjust=False).mean()
     x["MACD_DIF"] = x["EMA12"] - x["EMA26"]
     x["MACD_SIGNAL"] = x["MACD_DIF"].ewm(span=9, adjust=False).mean()
     x["MACD_HIST"] = x["MACD_DIF"] - x["MACD_SIGNAL"]
-    
     l_min, h_max = x["low"].rolling(9).min(), x["high"].rolling(9).max()
     x["RSV"] = 100 * ((x["close"] - l_min) / (h_max - l_min).replace(0, 0.00001))
     k_l, d_l, ck, cd = [], [], 50.0, 50.0
@@ -377,7 +347,6 @@ def prepare_indicator_df(df: pd.DataFrame):
         if pd.isna(rsv): k_l.append(np.nan); d_l.append(np.nan)
         else: ck = (2/3)*ck + (1/3)*rsv; cd = (2/3)*cd + (1/3)*ck; k_l.append(ck); d_l.append(cd)
     x["K9"], x["D9"] = k_l, d_l
-    
     if "open" in x.columns:
         x["u_shadow"] = x["high"] - np.maximum(x["open"], x["close"])
         x["is_long_upper_shadow"] = (x["u_shadow"] > (x["open"] - x["close"]).abs()) & (x["u_shadow"] / (x["high"] - x["low"]).replace(0, 0.00001) > 0.4)
@@ -413,9 +382,6 @@ def unified_institutional_brain(res_dict, df_hist, is_holding=False, entry_cost=
     
     pnl_pct = ((p - entry_cost) / entry_cost * 100) if (is_holding and entry_cost > 0) else 0.0
 
-    # =============================================================
-    # 🎭 劇本 A：【已持有部位管理劇本】
-    # =============================================================
     if is_holding and entry_cost > 0:
         if pnl_pct <= -7.0:
             return {
@@ -426,18 +392,18 @@ def unified_institutional_brain(res_dict, df_hist, is_holding=False, entry_cost=
         if pnl_pct >= 15.0 and st_type == "RIGHT_BREAKOUT" and res_dict["vol_spike"] and not sector_panic:
             return {
                 "strategy_name": "🔮 獲利擴張：金字塔加碼劇本發動", "color": "#7D3CFF", "action_now": "🔮 🔮 【利潤奔跑：啟動金字塔多頭加碼開火】", "signal": "主升段中繼暴量突圍共振",
-                "desc": f"**【老股東利潤擴張】**：您的初始持股成本為 {entry_cost:.2f} 元，目前帳面大賺 {pnl_pct:+.1f}%。個股當下再度爆發量能突圍前高牆 {r:.2f} 元！立即執行金字塔式加碼買進！加碼部位守 5MA，讓利潤翻倍！",
+                "desc": f"**【老股東利潤擴張】**：初始持股成本為 {entry_cost:.2f} 元，帳面大賺 {pnl_pct:+.1f}%。個股爆量突圍前高牆 {r:.2f} 元！立即執行金字塔式加碼，加碼部位守 5MA！",
                 "blueprint": {"停損防守": f"加碼部位守 5MA ({ma5:.2f} 元)", "移動停利": f"母部位續守 ATR ({trailing_stop:.2f} 元)", "預期目標": f"目標看擴張位 {res_dict['target_brk']:.2f} 元"}
             }
         if sector_panic and not is_rs_gold:
             return {
                 "strategy_name": "🚨 族群共振危機防禦", "color": "#EF4444", "action_now": "🚨 🔴 【同族群崩盤：立即執行全面減碼 50%】", "signal": "板塊流動性集體踩踏",
-                "desc": f"您持股成本為 {entry_cost:.2f} 元。同族群龍頭股集體下殺破 5%。該股票雖抗跌但尚未發射 RS 黃金箭頭，請先落袋 50% 鎖定短線價差防身！",
+                "desc": f"持股成本為 {entry_cost:.2f} 元。同族群龍頭股集體下殺破 5%。個股雖抗跌但尚未發射 RS 黃金箭頭，請先落袋 50% 鎖定短線價差防身！",
                 "blueprint": {"停損防守": f"剩餘部位守 {trailing_stop:.2f} 元", "移動停利": "已提前防守減碼", "預期目標": "保全核心資產"}
             }
         if p < trailing_stop:
             action_msg = "🛑 🔴 【波段獲利終結：剩餘母部位全數清倉】" if pnl_pct > 0 else "🛑 🔴 【中線結構破防：全額認賠清倉】"
-            desc_msg = f"即時價已實質跌破防禦線 ({trailing_stop:.2f} 元)。慣性徹底轉惡，請全額清倉認賠，嚴防虧損失控！"
+            desc_msg = f"即時價已實質跌破防禦線 ({trailing_stop:.2f} 元)。結構轉惡，請全額清倉，嚴防虧損失控！"
             return {"strategy_name": "⏳ 中線波段趨勢終結", "color": "#EF4444", "action_now": action_msg, "signal": "跌破動態 ATR 波動防線", "desc": desc_msg, "blueprint": {"停損防守": "全額清倉離場", "移動停利": "已觸發", "預期目標": "資金全額退場"}}
         if pnl_pct > 0 and p < ma5:
             return {
@@ -448,19 +414,19 @@ def unified_institutional_brain(res_dict, df_hist, is_holding=False, entry_cost=
         if "長上影" in final or "金流陷阱" in final:
             return {
                 "strategy_name": "🚨 爆量高檔出貨預警", "color": "#EF4444", "action_now": "🚨 🔴 【主力高檔出貨：主動執行減碼 50%】", "signal": "惡性 K 線結構與主力清算共振",
-                "desc": f"目前部位損益 {pnl_pct:+.1f}%。個股盤中爆量且留長上影線，符合出貨特徵。強烈建議主動落袋一半部位，不允許利潤吐回！",
+                "desc": f"個股盤中爆量且留長上影線，符合主力高檔倒貨特徵。為防範踩踏，強烈建議主動落袋一半部位！",
                 "blueprint": {"停損防守": f"技術底線 {trailing_stop:.2f} 元", "移動停利": "啟動防守落袋", "預期目標": "防禦性鎖利"}
             }
         if pnl_pct >= 0:
             return {
                 "strategy_name": "🔥 強勢主升浪完美續抱", "color": "#7D3CFF", "action_now": "🔮 🔮 【強勢狂飆：全額持股續抱】", "signal": "短長雙速動能多頭共振",
-                "desc": f"個股完美運行於 5MA 之上。量價結構健康，盤中波動皆為洗盤雜訊，全額咬死不賣，放飛波段暴利！",
+                "desc": f"個股完美運行於 5MA 之上。量價結構健康，盤中波動皆為洗盤雜訊，放飛波段暴利！",
                 "blueprint": {"停損防守": f"本金死穴 {entry_cost * 0.93:.2f} 元", "移動停利": f"破 5MA 減碼 50% ｜ 破 ATR 全出", "預期目標": f"獲利對位目標 {res_dict['target_brk']:.2f} 元"}
             }
         else:
             return {
                 "strategy_name": "🛡️ 虧損被動防守緩衝區", "color": "#1C86EE", "action_now": "⚖️ 🔵 【微幅套牢：屬於正常波動容忍，持股續抱】", "signal": "未破結構技術底線",
-                "desc": f"浮虧處於量化模型的良性波動容忍帶內。只要結構線沒破，請忽略日內雜訊保持續抱，靜待翻轉！",
+                "desc": f"浮虧處於量化模型的良性波動容忍帶內。只要技術防禦底線沒破，請忽略日內雜訊保持續抱！",
                 "blueprint": {"停損防守": f"硬性停損線 {entry_cost * 0.93:.2f} 元 ｜ 技術防線 {trailing_stop:.2f} 元", "移動停利": "暫無利潤可鎖", "預期目標": f"先看解套拉回成本價"}
             }
 
@@ -470,48 +436,49 @@ def unified_institutional_brain(res_dict, df_hist, is_holding=False, entry_cost=
     else:
         is_momentum_decelerate = (k9 < d9) and k9 > 75
         
+        # 💡 ✅ 逆境孤勇者 Alpha 特許劇本：大盤瀑布但獨立 AI 妖股特許輕倉放行
         is_alpha_hero = (wtx <= -1.2 and res_dict.get("relative_strength", 0) >= 4.0 and p > ma5 and p > m20 and c_lock and not final == "❌ 爆量長上影")
         if is_alpha_hero:
             return {
                 "strategy_name": "🔮 統一特許：逆境孤勇者 Alpha 劇本發動", "color": "#7D3CFF", "action_now": "🔮 🔮 【逆勢強金流：特許強制輕倉進場狙擊】", "signal": "大盤崩防 + 獨立強勢股共振",
-                "desc": f"大盤嚴重下殺（{wtx:.2f}%）。但該個股具備強烈的獨立防空洞資金進駐特徵（RS 超額達 {res_dict['relative_strength']:.1f}%），特許 30% 風控配額開火權！",
-                "blueprint": {"停損防守": "嚴格守今日開盤價或當日低點（收盤破則強制退場）", "移動停利": f"短線一破 5MA ({ma5:.2f} 元) 立刻落袋", "預期目標": f"獲利對位前高牆 {res_dict['target_brk']:.2f} 元"}
+                "desc": f"大盤遭遇嚴重下殺（{wtx:.2f}%）。但該個股具備強烈的獨立防空洞資金進駐特徵（RS 超額達 {res_dict['relative_strength']:.1f}%），且手握實質基本面支撐。大腦給予 30% 風控配額開火權！",
+                "blueprint": {"停損防守": "嚴格守今日開盤價或當日低點（收盤破則強制認賠）", "移動停利": f"短線一破 5MA ({ma5:.2f} 元) 立刻全額獲利離場", "預期目標": f"獲利對位前高牆 {res_dict['target_brk']:.2f} 元"}
             }
             
         if "🚨 季底法人清算結帳期" in res_dict.get("macro_season", ""):
             return {
                 "strategy_name": "🚨 季底流動性暴風雨防禦", "color": "#FF4B4B", "action_now": "🛑 🔴 【環境極端風險：全新開倉嚴禁開火】", "signal": "投信結帳踩踏期震盪",
-                "desc": "當前正值季底法人集體清算期。量化大腦一票否決任何全新買進交易，手握現金，拒絕接盤！",
+                "desc": "當前正值季底最後結帳清算期。量化大腦一票否決任何全新買進交易，手握現金，拒絕接盤！",
                 "blueprint": {"停損防守": "嚴禁進場", "移動停利": "無", "預期目標": "保全現金等待新季度開跑"}
             }
         if is_rs_gold and p >= m20 and not sector_panic:
             return {
                 "strategy_name": "🚀 統一特許：逆境黃金飆股劇本發動", "color": "#7D3CFF", "action_now": "🔮 🔮 【強者恆強：無視大盤恐慌立即開火】", "signal": "個股超額相對強度（RS）爆表",
-                "desc": f"大盤變動: {wtx:.2f}%。但該個股今日表現出高達 {res_dict['relative_strength']:.1f}% 的超額相對強度，給予特許放行全額開火權！",
+                "desc": f"大盤變動: {wtx:.2f}%。該個股表現出高達 {res_dict['relative_strength']:.1f}% 的超額相對強度，大腦一票否決總體警報，全額放行開火！",
                 "blueprint": {"停損防守": f"收盤跌破昨日收盤價或當日低點", "移動停利": f"波動防線 {trailing_stop:.2f} 元", "預期目標": f"獲利對位目標 {res_dict['target_brk']:.2f} 元"}
             }
         if is_volume_gap_spike and p >= m20 and not sector_panic:
             return {
                 "strategy_name": "⚡ 突擊劇本：09:15 早盤量能斷層發動", "color": "#10B981", "action_now": "🔮 🟢 【量能斷層確立：全新開火進場熱錢追擊】", "signal": "開盤特大法人單極速掃貨",
-                "desc": "開盤前 15~30 分鐘內成交量灌爆超越 5MA 均量的 25%！大腦自動無視指標死叉，啟動狼王突擊買進！",
+                "desc": "開盤前 15~30 分鐘內成交量灌爆超越 5MA 均量的 25%！大腦自動無視任何指標死叉，啟動狼王突擊追擊指令！",
                 "blueprint": {"停損防守": f"開盤第一盤最低價 ｜ 收盤破月線", "移動停利": f"波動防線 {trailing_stop:.2f} 元", "預期目標": f"短線價差衝刺目標 {res_dict['target_brk']:.2f} 元"}
             }
         if st_type == "RIGHT_BREAKOUT":
             if is_momentum_decelerate:
-                return {"strategy_name": st_name, "color": "#F59E0B", "action_now": "⚠️ 🟡 【全新開倉指標過熱：暫緩追高觀望】", "signal": "短線指標高位修正雜訊", "desc": "個股型態強勢但 KD 出現高位死叉。請暫緩追高，等待拉回 5MA 再行開火。", "blueprint": {"停損防守": "嚴禁盲目進場", "移動停利": "無", "預期目標": f"靜待突破壓制牆 {r:.2f} 元"}}
+                return {"strategy_name": st_name, "color": "#F59E0B", "action_now": "⚠️ 🟡 【全新開倉指標過熱：暫緩追高觀望】", "signal": "短線指標高位修正雜訊", "desc": "個股型態強勢但隨機指標 (KD) 出現高位洗盤死叉。請暫緩追高，等待拉回 5MA 再行開火。", "blueprint": {"停損防守": "嚴禁盲目進場", "移動停利": "無", "預期目標": f"靜待突破壓制牆 {r:.2f} 元"}}
             if not m_safe:
                 if is_ai_momentum and f_good and not sector_panic:
-                    return {"strategy_name": st_name + " (⚡ AI 特許逆勢單)", "color": "#10B981", "action_now": "🔮 🟢 【大盤逆境・特許全新開火】", "signal": "板塊獨立高能動能噴發", "desc": "大盤環境雖不安全，但個股投信強力鎖碼且營收爆發。解鎖 40% 的輕倉開火權試單！", "blueprint": {"停損防守": f"收盤跌破前高牆 {r:.2f} 元", "移動停利": f"波動防線 {trailing_stop:.2f} 元", "預期目標": f"獲利對位 {res_dict['target_brk']:.2f} 元"}}
+                    return {"strategy_name": st_name + " (⚡ AI 特許逆勢單)", "color": "#10B981", "action_now": "🔮 🟢 【大盤逆境・特許全新開火】", "signal": "板塊獨立高能動能噴發", "desc": "大盤環境雖不安全，但個股獲投信強力鎖碼且營收爆發。大腦解鎖 40% 的輕倉開火權，切入核心飆股！", "blueprint": {"停損防守": f"收盤跌破前高牆 {r:.2f} 元", "移動停利": f"波動防線 {trailing_stop:.2f} 元", "預期目標": f"獲利對位 {res_dict['target_brk']:.2f} 元"}}
                 else:
-                    return {"strategy_name": st_name, "color": "#FF4B4B", "action_now": "🚨 🔴 【環境高風險：全新開倉嚴禁開火】", "signal": "總體大盤空頭暴風雨警戒", "desc": "大盤失守生命線，且個股不具備特許強度。全新開倉極易淪為市場提款機，一票否決！", "blueprint": {"停損防守": "嚴禁進場", "移動停利": "無", "預期目標": "手握現金等待安全期"}}
+                    return {"strategy_name": st_name, "color": "#FF4B4B", "action_now": "🚨 🔴 【環境高風險：全新開倉嚴禁開火】", "signal": "總體大盤空頭暴風雨警戒", "desc": "大盤失守生命線，且個股不具備特許強度。此時全新開倉極易被市場提款，一票否決！", "blueprint": {"停損防守": "嚴禁進場", "移動停利": "無", "預期目標": "手握現金等待安全期"}}
             if p >= r * 0.98 and res_dict["vol_spike"] and c_lock and f_good and not sector_panic:
                 if overextended:
-                    return {"strategy_name": st_name, "color": "#F59E0B", "action_now": "⚠️ 🟡 【大盤過熱：全新開倉防守型控量開火】", "signal": "⚡ 瘋狗浪末段逆勢突破", "desc": "個股達成完美共振！但大盤與季線正乖離過熱。風控模組強制削減 50% 資金配置，嚴防高位重倉套牢！", "blueprint": {"停損防守": f"收盤跌破 {r:.2f} 元", "移動停利": f"即時價破 {trailing_stop:.2f} 元", "預期目標": f"獲利對位目標 {res_dict['target_brk']:.2f} 元"}}
-                return {"strategy_name": st_name, "color": "#7D3CFF", "action_now": "🔮 🔮 【頂級信號：全新多頭建倉開火】", "signal": "🔮 頂級多頭共振：黃金主升飆股型態發動", "desc": "基本面擴張、法人強力鎖碼、帶量突破前高牆，適合執行全新多頭開火建倉！", "blueprint": {"停損防守": f"收盤跌破前高壓力牆 {r:.2f} 元", "移動停利": f"波動防線 {trailing_stop:.2f} 元", "預期目標": f"獲利擴張目標對位 {res_dict['target_brk']:.2f} 元"}}
+                    return {"strategy_name": st_name, "color": "#F59E0B", "action_now": "⚠️ 🟡 【大盤過熱：全新開倉防守型控量開火】", "signal": "⚡ 瘋狗浪末段逆勢突破", "desc": "個股達成完美共振！但大盤與季線正乖離率過熱。風控模組強制削減 50% 資金配置，嚴防高位重倉套牢！", "blueprint": {"停損防守": f"收盤跌破 {r:.2f} 元", "移動停利": f"即時價破 {trailing_stop:.2f} 元", "預期目標": f"獲利對位目標 {res_dict['target_brk']:.2f} 元"}}
+                return {"strategy_name": st_name, "color": "#7D3CFF", "action_now": "🔮 🔮 【頂級信號：全新多頭建倉開火】", "signal": "🔮 頂級多頭共振：黃金主升飆股型態發動", "desc": "基本面擴張、法人強力鎖碼、帶量突破前高牆，上方無怨魂，適合執行全新多頭開火建倉！", "blueprint": {"停損防守": f"收盤跌破前高壓力牆 {r:.2f} 元", "移動停利": f"波動防線 {trailing_stop:.2f} 元", "預期目標": f"獲利擴張目標對位 {res_dict['target_brk']:.2f} 元"}}
         elif st_type == "LEFT_SPRING" and not sector_panic:
             if "買點一成立" in res_dict["spring_verdict"]:
                 return {"strategy_name": st_name, "color": "#10B981", "action_now": "🟢 🟢 【破底翻確立：允許精密低吸進場】", "signal": "結構洗盤完成、安全邊際高", "desc": f"{res_dict['spring_verdict']} 浮額遭主力洗淨。此進場享有極致風險報酬比，可建立初始防守型頭寸。", "blueprint": {"停損防守": f"硬性死穴防線 {r_low_10d:.2f} 元", "移動停利": "無", "預期目標": f"反彈停利目標看 {res_dict['target_pb']:.2f} 元"}}
-        return {"strategy_name": "💤 空倉常態觀望", "color": "#64748B", "action_now": "⚖️ 🔵 【常態調整區：保持空倉耐心等待】", "signal": "進入量化緩衝帶", "desc": "個股處於無方向性的箱型整理區，此時盲目進場極易被來回洗盤，請保持空倉觀望。", "blueprint": {"停損防守": "嚴禁進場", "移動停利": "無", "預期目標": "等待金流重啟點火"}}
+        return {"strategy_name": "💤 空倉常態觀望", "color": "#64748B", "action_now": "⚖️ 🔵 【常態調整區：保持空倉耐心等待】", "signal": "進入量化緩衝帶", "desc": "個股處於無方向性的箱型整理區，既無主力暴量突圍，也無良性破底翻。請保持空倉觀望。", "blueprint": {"停損防守": "嚴禁進場", "移動停利": "無", "預期目標": "等待金流重啟點火"}}
 
 # ============ 9. Main Core Executor ============
 def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, slip_ticks: int, is_holding=False, entry_cost=0.0, sector_panic=False):
@@ -679,7 +646,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     is_broker_dumping_risk = (open_gap_pct > 3.5) and (close_to_low_pct < 0.35) and ((current_vol * 1000.0) > (vol_ma20_val * 2.5))
     final_decision = "❌ 爆量長上影" if bool(df.iloc[-1].get("is_long_upper_shadow", False)) and vol_spike else "🚨 惡性金流陷阱" if is_broker_dumping_risk else "⚖️ 綜合評估"
 
-    # ==================== ✅ 修正後的元組拆包防禦線 ====================
+    # ==================== ✅ 修正後的元組拆包防禦線與 AI 自適應門檻 ====================
     last_trade_date_str = str(df.iloc[-1]["date"])
     _, local_m_desc, local_m_color = get_market_status_label(rt_success, last_trade_date_str)
 
@@ -690,10 +657,15 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     elif is_us_panic:
         m_desc, m_color = "🚨 盤前美股暴跌警戒中", "#F59E0B"
     elif is_market_overextended:
-        m_desc, m_color = "⚠️ 大盤極端正乖離過熱", "orange"
+        # 💡 野村投信優化：若個股營收 YoY >= 30%（實質 AI 暴增股），自動將大盤過熱門檻寬限到 16% 正乖離，不砍半核心開火權！
+        if latest_yoy >= 30.0:
+            m_desc, m_color = f"🟢 大盤高位震盪 | 該股具備實質 AI 基本面護體 (YoY {latest_yoy:.1f}%) 特許放行", "green"
+            is_market_overextended = False # 內部降級風險，避免誤殺瘋狗浪主流
+        else:
+            m_desc, m_color = "⚠️ 大盤極端正乖離過熱", "orange"
     else:
         m_desc, m_color = local_m_desc, local_m_color
-    # ==================================================================
+    # ==================================================================================
 
     cycle_res = analyze_calendar_cyclicality(df.copy())
     package = {
@@ -772,7 +744,7 @@ if diag_trigger or stock_input:
     with st.spinner("五維度大腦深度因果解耦中..."):
         res = evaluate_stock(stock_input, capital, risk_pct, slip_input, is_holding=user_holding, entry_cost=user_cost, sector_panic=sector_panic_toggle)
         if res is None: 
-            st.error("該個股代碼數據獲取失敗，請確認編號是否正確（數據歷史長度需大於100日）。")
+            st.error("該個股代碼數據獲取失敗，請確認編號是否正確（數據歷史長度需大於100日，且目前網路未受限）。")
         else:
             bp_data = res["tactical_blueprint"]
             bp = bp_data["blueprint"]
@@ -856,7 +828,7 @@ if diag_trigger or stock_input:
                 st.markdown(f"**⚡ RSI 相對強弱副圖解讀**：{res['volume_verdict']}")
 
             with st.expander("📅 ⏳ 個股歷史日曆效應（月週期循環）專家解碼面板", expanded=True):
-                st.markdown(f"### 📡 狼王大腦日曆綜合研判：\n> {res['calendar_verdict'].replace('\n', '<br>')}", unsafe_allow_html=True)
+                st.markdown(f"### 📡 狼王大腦日曆綜合研判：\\n> {res['calendar_verdict'].replace('\\n', '<br>')}", unsafe_allow_html=True)
                 st.markdown("---")
                 st.markdown("**📊 過去 600 天內【月初、月中、月底】實質統計矩陣：**")
                 c_data = res["calendar_data"]
