@@ -576,35 +576,37 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     now_time = datetime.now(TZ).time()
     estimated_full_day_vol_lots = current_vol * (270.0 / max(1.0, (datetime.combine(datetime.today(), now_time) - datetime.combine(datetime.today(), datetime.strptime("09:00", "%H:%M").time())).total_seconds() / 60.0)) if datetime.strptime("09:00", "%H:%M").time() <= now_time <= datetime.strptime("13:30", "%H:%M").time() else current_vol
 
-    volume_poc = current_price
- 
-# 🌟 終極殺手級修正：雙重防貼身「飆股重力彈弓機制」
+ # ==================== 🌟 統一狼王變數分流與雙重彈弓修正 ====================
+    # 1. 智慧重力彈弓分流：精算 90 天季度最大量籌碼牆，直接指派給 volume_poc
     hist_recent = df.copy().sort_values("date", ascending=True).tail(90)
-    
     counts, bins = np.histogram(hist_recent["close"], bins=15, weights=hist_recent["vol"])
     max_bin_idx = np.argmax(counts)
     calculated_poc = (bins[max_bin_idx] + bins[max_bin_idx + 1]) / 2
     
     live_price = float(df["close"].iloc[-1])
-    
-    # 🎯 現場直接解算 20MA 與 60MA (大戶季線生命線)，徹底獨立防爆
     ma20_live = float(df["close"].rolling(20).mean().iloc[-1])
     ma60_live = float(df["close"].rolling(60).mean().iloc[-1]) if len(df) >= 60 else ma20_live
     
-    # 🚀 智慧重力彈弓分流：
     if abs(live_price - calculated_poc) / live_price < 0.04:
         # 第一層警報：最大籌碼牆卡在現價！被迫檢查 20MA
         if abs(live_price - ma20_live) / live_price < 0.04:
-            # 🚨 第二層警報：連 20MA 也貼死市價！代表是極端瘋狗浪飆股高檔橫盤
-            # 強行呼叫全場最後也是最安全的「60MA 季線大戶防禦底座」！幫你把安全距離徹底拉開！
-            real_resistance = ma60_live
+            # 第二層警報：連 20MA 也貼死市價！強行呼叫「60MA 季線大戶防禦底座」幫你拉開安全距離！
+            volume_poc = ma60_live
         else:
             # 20MA 還有一段安全距離，用 20MA 防守
-            real_resistance = ma20_live
+            volume_poc = ma20_live
     else:
         # 常態狀況下，維持使用季度最大籌碼牆
-        real_resistance = calculated_poc
+        volume_poc = calculated_poc
 
+    # 2. 歷史指標解包 (徹底與上面的 volume_poc 分流，互不踩踏)
+    hist_last = df.iloc[-1]
+    ma5_val, vol_ma5_val = float(hist_last["MA5"]), float(hist_last["MA5_Vol"])
+    ma20_val, ma60_val, ma100_val = float(hist_last["MA20"]), float(hist_last["MA60"]), float(hist_last["MA100"])
+    
+    # 🎯 這裡讓 real_resistance 正確繼承前高壓力值，不與 volume_poc 混淆
+    vol_ma20_val, real_resistance, current_bandwidth = float(hist_last["MA20_Vol"]), float(hist_last["Res_20D"]), float(hist_last["BB_bandwidth"])
+    # =======================================================================
     hist_last = df.iloc[-1]
     ma5_val, vol_ma5_val = float(hist_last["MA5"]), float(hist_last["MA5_Vol"])
     ma20_val, ma60_val, ma100_val = float(hist_last["MA20"]), float(hist_last["MA60"]), float(hist_last["MA100"])
