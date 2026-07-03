@@ -455,14 +455,13 @@ def unified_institutional_brain(res_dict, df_hist, is_holding=False, entry_cost=
             return {
                 "strategy_name": "🔥 強勢主升浪完美續抱", "color": "#7D3CFF", "action_now": "🔮 🔮 【強勢狂飆：全額持股續抱】", "signal": "短長雙速動能多頭共振",
                 "desc": f"**【部位對位定錨】**：持股成本 {entry_cost:.2f} 元（帳面獲利：{pnl_pct:+.1f}%）。個股完美運行於 5MA ({ma5:.2f} 元) 之上。量價結構健康，盤中波動皆為洗盤雜訊，全額咬死不賣，放飛波段暴利！",
-                "blueprint": {"停損防守": f"短線利潤線 {ma5:.2f} 元 ｜ 中線波段線 {trailing_stop:.2f} 元", "移動停利": "多頭超買鈍化常態中", "預期目標": f"獲利對位目標 {res_dict['target_brk']:.2f} 元"}
-            }
-        else:
-            return {
-                "strategy_name": "🛡️ 虧損被動防守緩衝區", "color": "#1C86EE",
-                "action_now": "⚖️ 🔵 【微幅套牢：屬於正常波動容忍，持股續抱】", "signal": "未破結構技術底線",
-                "desc": f"**【部位對位定錨】**：持股成本 {entry_cost:.2f} 元（帳面微幅套牢：{pnl_pct:.1f}%）。當前浮虧完全處於量化模型的良性波動容忍帶內。它既沒有跌破 7% 的本金死穴，也沒有實質擊穿中線結構防禦線 ({trailing_stop:.2f} 元)。只要結構線沒破，請忽略日內雜訊保持續抱，靜待主力洗盤結束後的翻轉拉回！",
-                "blueprint": {"停損防守": f"硬性停損線 {entry_cost * 0.93:.2f} 元 ｜ 技術防線 {trailing_stop:.2f} 元", "移動停利": "暫無利潤可鎖", "預期目標": f"先看解套拉回成本價，再看目標 {res_dict['target_brk']:.2f} 元"}
+                
+                # 🎯 修改這裡：對齊前端 1, 2, 3 方塊的硬性需求
+                "blueprint": {
+                    "停損防守": f"本金死穴 {entry_cost * 0.93:.2f} 元", # 7% 資本死穴 (73.47 元)
+                    "移動停利": f"破 5MA ({ma5:.2f} 元) 減碼 50% ｜ 破 ATR ({trailing_stop:.2f} 元) 全出", 
+                    "預期目標": f"獲利對位目標 {res_dict['target_brk']:.2f} 元"
+                }
             }
 
     # =============================================================
