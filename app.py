@@ -80,7 +80,6 @@ def get_api():
 
 # ============ 5. Standardized Live Data Streaming Engine ============
 def compute_live_data(stock_id: str, market_type: str, hist_last_close: float, hist_last_vol: float):
-    # 💡 歷史 K 線成交量均為「股數」，即時串流多為「張數」，此處 hist_lots 換算為張數備援
     hist_lots = hist_last_vol / 1000.0 if hist_last_vol > 0 else 0.0
     session = get_requests_session()
     is_otc = any(x in str(market_type).upper() for x in ["OTC", "TWO", "櫃", "上櫃"])
@@ -142,7 +141,6 @@ def get_stock_info_df():
             return df
     except Exception: pass
     
-    # 🚀 證交所公開資料備援管道（零 Token 限制，確保全市場不鎖死）
     try:
         session = get_requests_session()
         r_tse = session.get("https://isin.twse.com.tw/isin/C_public.jsp?strMode=2", timeout=5)
@@ -177,7 +175,6 @@ def get_daily_df(stock_id: str, market_type: str = "TSE", days: int = 600):
     suffix = ".TWO" if any(x in str(market_type).upper() for x in ["OTC", "TWO", "櫃", "上櫃"]) else ".TW"
     p1, p2 = int((datetime.now(TZ)-timedelta(days=days)).timestamp()), int(datetime.now(TZ).timestamp())
     
-    # 🛡️ 管道一：Yahoo Finance 安全陣列長度對齊版
     for prefix in ["query2", "query1"]:
         try:
             url = f"https://{prefix}.finance.yahoo.com/v8/finance/chart/{stock_id}{suffix}?period1={p1}&period2={p2}&interval=1d"
@@ -199,7 +196,6 @@ def get_daily_df(stock_id: str, market_type: str = "TSE", days: int = 600):
                         raw["amount"] = raw["close"] * raw["vol"]
                         return raw[["date", "open", "high", "low", "close", "vol", "amount"]].copy()
         except Exception: pass
-    # 🛡️ 管道二：FinMind
     try:
         df_raw = get_api().taiwan_stock_daily(stock_id=stock_id, start_date=(datetime.now()-timedelta(days=days)).strftime("%Y-%m-%d"))
         if df_raw is not None and not df_raw.empty:
@@ -474,7 +470,6 @@ def unified_institutional_brain(res_dict, df_hist, is_holding=False, entry_cost=
     else:
         is_momentum_decelerate = (k9 < d9) and k9 > 75
         
-        # 💡 ✅ 逆境孤勇者 Alpha 特許劇本：大盤瀑布但獨立妖股特許放行
         is_alpha_hero = (wtx <= -1.2 and res_dict.get("relative_strength", 0) >= 4.0 and p > ma5 and p > m20 and c_lock and not final == "❌ 爆量長上影")
         if is_alpha_hero:
             return {
@@ -486,7 +481,7 @@ def unified_institutional_brain(res_dict, df_hist, is_holding=False, entry_cost=
         if "🚨 季底法人清算結帳期" in res_dict.get("macro_season", ""):
             return {
                 "strategy_name": "🚨 季底流動性暴風雨防禦", "color": "#FF4B4B", "action_now": "🛑 🔴 【環境極端風險：全新開倉嚴禁開火】", "signal": "投信結帳踩踏期震盪",
-                "desc": "當前正處於季底法人集體清算期。量化大腦一票否決任何全新買進交易，手握現金，拒絕接盤！",
+                "desc": "當前正值季底法人集體清算期。量化大腦一票否決任何全新買進交易，手握現金，拒絕接盤！",
                 "blueprint": {"停損防守": "嚴禁進場", "移動停利": "無", "預期目標": "保全現金等待新季度開跑"}
             }
         if is_rs_gold and p >= m20 and not sector_panic:
@@ -524,7 +519,6 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     info_df_local = get_stock_info_df()
     match = info_df_local[info_df_local["stock_id"] == stock_id]
     
-    # 💡 安全身份提取機制
     if match.empty:
         stock_name = f"代號 {stock_id}"
         industry = "自訂追蹤板塊"
@@ -685,9 +679,21 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     is_broker_dumping_risk = (open_gap_pct > 3.5) and (close_to_low_pct < 0.35) and ((current_vol * 1000.0) > (vol_ma20_val * 2.5))
     final_decision = "❌ 爆量長上影" if bool(df.iloc[-1].get("is_long_upper_shadow", False)) and vol_spike else "🚨 惡性金流陷阱" if is_broker_dumping_risk else "⚖️ 綜合評估"
 
+    # ==================== ✅ 修正後的元組拆包防禦線 ====================
     last_trade_date_str = str(df.iloc[-1]["date"])
     _, local_m_desc, local_m_color = get_market_status_label(rt_success, last_trade_date_str)
-    m_desc, m_color = "🚨 大盤瀑布式清算恐慌潮" if is_market_panic else f"🚨 大盤趨勢破防下殺 ({wtx_change:.2f}%)" if wtx_change <= -1.0 else "🚨 盤前美股暴跌警戒中" if is_us_panic else "⚠️ 大盤極端正乖離過熱" if is_market_overextended else (local_m_desc, local_m_color)
+
+    if is_market_panic:
+        m_desc, m_color = "🚨 大盤瀑布式清算恐慌潮", "red"
+    elif wtx_change <= -1.0:
+        m_desc, m_color = f"🚨 大盤趨勢破防下殺 ({wtx_change:.2f}%)", "red"
+    elif is_us_panic:
+        m_desc, m_color = "🚨 盤前美股暴跌警戒中", "#F59E0B"
+    elif is_market_overextended:
+        m_desc, m_color = "⚠️ 大盤極端正乖離過熱", "orange"
+    else:
+        m_desc, m_color = local_m_desc, local_m_color
+    # ==================================================================
 
     cycle_res = analyze_calendar_cyclicality(df.copy())
     package = {
