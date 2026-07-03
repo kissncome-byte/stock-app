@@ -380,7 +380,8 @@ def unified_institutional_brain(res_dict, df_hist, is_holding=False, entry_cost=
     is_rs_gold = res_dict["is_rs_gold"]                     
     is_volume_gap_spike = res_dict["is_volume_gap_spike"]  
     
-    pnl_pct = ((p - entry_cost) / entry_cost * 100) if (is_holding wins and entry_cost > 0) else 0.0
+    # 💡 ✅ 修正：把不小心多打的 wins 給徹底拿掉，恢復標準條件判斷
+    pnl_pct = ((p - entry_cost) / entry_cost * 100) if (is_holding and entry_cost > 0) else 0.0
 
     if is_holding and entry_cost > 0:
         if pnl_pct <= -7.0:
@@ -691,7 +692,6 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     suggested_lots = max(1, int(base_lots * 0.5)) if "加碼" in tactical_blueprint["action_now"] else base_lots
     is_pyramid_order = "加碼" in tactical_blueprint["action_now"]
     
-    # 💡 ✅ 修正：把隨手附帶的錯誤 @ 符號徹底拔除，恢復為乾淨的變數名稱
     max_safe_liquidity_lots = max(1, int(vol_ma5_val * 0.015))
     if suggested_lots > max_safe_liquidity_lots:
         suggested_lots = max_safe_liquidity_lots
