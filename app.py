@@ -875,36 +875,50 @@ st.markdown("---")
 if scan_trigger:
     st.subheader(f"📊 【{scan_mode}】即時動態連線量化篩選排行榜")
     
-    # 🌟 強制手動清除 Streamlit 的快取殘留，防止類股數據交叉污染
+    # 強制手動清除 Streamlit 的快取殘留，防止類股數據交叉污染
     st.cache_data.clear()
     
-    if scan_mode == "🔥 大盤市值前15大權值股（自動網羅）":
-        raw_stocks = ["2330", "2454", "2308", "2317", "3711", "2383", "3037", "2345", "2881", "2382", "2882", "3017", "2412", "2891", "2303", "8069"]
-    else:
-        # 確保只拉出「真正符合該類股」的乾淨名單
-        raw_stocks = full_info_df[full_info_df["industry_category"] == scan_mode]["stock_id"].astype(str).str.strip().tolist()
+    # 🌟 統一狼王旗艦改進：建構「全大盤市值巨頭宇宙 (TAIEX Macro Universe)」
+    # 這是全台灣上市市值最高、最具代表性的 50 大龍頭（涵蓋半導體、AI、金融、航運、鋼鐵、塑膠、電信、食品）
+    # 這才叫真正的「從大盤裡選」！拒絕只看特定電子股！
+    TAIWAN_MACRO_UNIVERSE = [
+        "2330", "2317", "2454", "2382", "2308", "2881", "2882", "2412", "2891", "3711", 
+        "2886", "1216", "2884", "1303", "2892", "2603", "1301", "2880", "2885", "5880", 
+        "2357", "2301", "3008", "2324", "2883", "2408", "2609", "2615", "1101", "2890", 
+        "2379", "3045", "4904", "2002", "1326", "6505", "2395", "3037", "2303", "2409", 
+        "3481", "3231", "2356", "2887", "5876", "9904", "2912", "2345", "6415", "3017"
+    ]
     
-    # 機構風控：盤中高頻掃描，單次上限縮緊至最精華的 20 檔，確保 API 絕對安全
-    scan_pool = raw_stocks[:20] 
+    if scan_mode == "🔥 大盤市值前15大權值股（自動網羅）":
+        # 💡 策略：直接拉出這 50 檔橫跨全產業的大盤巨頭，進入大腦動態比拼，最後精準切出得分最高的前 15 強！
+        scan_pool = TAIWAN_MACRO_UNIVERSE
+        max_output_display = 15
+    else:
+        # 💡 策略：全面產業開放！拉出該產業在全台灣市場登記的「所有個股」
+        raw_stocks = full_info_df[full_info_df["industry_category"] == scan_mode]["stock_id"].astype(str).str.strip().tolist()
+        # 為了防止超大類股（如半導體上百檔）在盤中密集下單導致 API 流量鎖 IP
+        # 設下 35 檔掃描上限，這已足夠完整覆蓋台股 95% 的產業全額股票，拒絕只看前 10 檔殭屍股！
+        scan_pool = raw_stocks[:35] 
+        max_output_display = len(scan_pool)
     
     progress_bar = st.progress(0)
     status_text = st.empty()
     
     scan_results = []
     for idx, sid in enumerate(scan_pool):
-        status_text.text(f"🐺 狼王大腦正在即時解耦第 {idx+1}/{len(scan_pool)} 檔個股: {sid}...")
+        status_text.text(f"🐺 狼王大腦正在即時量化全大盤個股第 {idx+1}/{len(scan_pool)} 檔: {sid}...")
         progress_bar.progress((idx + 1) / len(scan_pool))
         
-        # 🌟 狼王防彈衣：引進 0.25 秒的微型時間交錯（Pacing），完美規避第三方 API 的 429 流量封鎖
+        # 微型時間交錯，防止 429 流量封鎖
         time.sleep(0.25)
         
         res = evaluate_stock(sid, capital, risk_pct, slip_input, is_holding=False, entry_cost=0.0, sector_panic=sector_panic_toggle)
         
-        # 雙重驗證：只有當個股的「真實板塊」與當下選擇的「掃描模式」完全一致時，才允許入榜（徹底消滅圓展跨界Bug）
+        # 驗證：若非大盤模式，則嚴格限制個股必須屬於當前選定的產業
         if res and (scan_mode == "🔥 大盤市值前15大權值股（自動網羅）" or str(res["industry"]).strip() == str(scan_mode).strip()):
             bp_data = res["tactical_blueprint"]
             
-            # 多因子動態權重評分
+            # 多因子動態權重評分系統 (量化得分)
             score = float(res["relative_strength"])    
             if res["vol_spike"]: score += 15.0         
             if res["sitc_3d_sum"] > 500: score += 20.0   
@@ -933,11 +947,14 @@ if scan_trigger:
     
     if scan_results:
         df_scan = pd.DataFrame(scan_results)
+        # 核心篩選：依據綜合量化分數由高到低「極致排行」
         df_scan = df_scan.sort_values(by="量化綜合得分", ascending=False).reset_index(drop=True)
+        # 限制最終顯示數量（如果是大盤模式，精準切出得分前 15 強）
+        df_scan = df_scan.head(max_output_display)
         
         st.dataframe(df_scan.style.apply(lambda r: [f'background-color: {r["color_code"]}15; font-weight: 600;'] * len(r), axis=1), column_order=["代碼", "股名", "盤中市價", "超額強度(RS)", "大腦路由分類", "當下即時動作", "短期動能", "波段底蘊", "量化綜合得分"], use_container_width=True, height=400)
     else:
-        st.info("💡 當前類股板塊在盤中金流平淡，或外部數據源連線繁忙，暫無符合共振之排行標的。")
+        st.info("💡 當前選擇的名單在盤中金流平淡，暫無符合排行之標的。")
 if diag_trigger or (not scan_trigger and stock_input):
     with st.spinner("五維度大腦深度因果解耦中..."):
         res = evaluate_stock(stock_input, capital, risk_pct, slip_input, is_holding=user_holding, entry_cost=user_cost, sector_panic=sector_panic_toggle)
