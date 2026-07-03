@@ -130,17 +130,52 @@ def get_overnight_radar():
     return radar_res, is_us_panic, panic_desc, wtx_change
 
 @st.cache_data(ttl=3600)
+@st.cache_data(ttl=86400) # 股票名單一天更新一次即可，節省網路資源
 def get_stock_info_df():
+    # 嘗試流派一：從 FinMind 獲取全市場清單
     try:
         api = get_api()
         df = api.taiwan_stock_info()
         if df is not None and not df.empty:
             df = df.copy()
             df.columns = [str(c).strip() for c in df.columns]
-            for col in ["stock_id", "stock_name", "industry_category"]:
-                if col in df.columns: df[col] = df[col].astype(str).str.strip()
             return df
-    except Exception: pass
+    except Exception:
+        pass
+        
+    # 🚀 特許升級流派二：若 FinMind 失敗，直接連線證交所與櫃買中心 Open Data（零 Token 限制，確保全大盤不鎖死）
+    try:
+        session = get_requests_session()
+        # 抓取上市股票
+        r_tse = session.get("https://isin.twse.com.tw/isin/C_public.jsp?strMode=2", timeout=5)
+        # 抓取上櫃股票
+        r_otc = session.get("https://isin.twse.com.tw/isin/C_public.jsp?strMode=4", timeout=5)
+        
+        all_stocks = []
+        for r, m_type in [(r_tse, "twse"), (r_otc, "two")]:
+            if r.status_code == 200:
+                dfs = pd.read_html(r.text)
+                if dfs:
+                    raw_df = dfs[0]
+                    for idx, row in raw_df.iterrows():
+                        text = str(row[0]).strip()
+                        # 台灣股票代碼標準格式：四位數字 + 空格 + 股票名稱 (例如: "2330 台積電")
+                        if " " in text and text.split(" ")[0].isdigit() and len(text.split(" ")[0]) == 4:
+                            sid = text.split(" ")[0]
+                            sname = text.split(" ")[1]
+                            ind_cat = str(row[4]).strip() # 產業別在第五欄
+                            all_stocks.append({
+                                "stock_id": sid,
+                                "stock_name": sname,
+                                "industry_category": ind_cat,
+                                "type": m_type
+                            })
+        if all_stocks:
+            return pd.DataFrame(all_stocks)
+    except Exception:
+        pass
+
+    # 🚨 最終防線：若上述網路全部中斷，才使用這 12 檔核心池作為離線測試使用
     fallback = [
         {"stock_id": "2330", "stock_name": "台積電", "type": "twse", "industry_category": "半導體業"},
         {"stock_id": "2454", "stock_name": "聯發科", "type": "twse", "industry_category": "半導體業"},
@@ -153,7 +188,6 @@ def get_stock_info_df():
         {"stock_id": "2409", "stock_name": "友達", "type": "twse", "industry_category": "光電業"},
         {"stock_id": "3481", "stock_name": "群創", "type": "twse", "industry_category": "光電業"},
         {"stock_id": "3008", "stock_name": "大立光", "type": "twse", "industry_category": "光電業"},
-        {"stock_id": "3406", "stock_name": "玉晶光", "type": "twse", "industry_category": "光電業"},
         {"stock_id": "2393", "stock_name": "億光", "type": "twse", "industry_category": "光電業"}
     ]
     return pd.DataFrame(fallback)
