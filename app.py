@@ -296,7 +296,6 @@ def analyze_calendar_cyclicality(df_hist):
     x["day"] = pd.to_datetime(x["date"]).dt.day
     early_period, mid_period, late_period = x[x["day"] <= 10], x[(x["day"] > 10) & (x["day"] <= 20)], x[x["day"] > 20]
     
-    # 💡 ✅ 徹底排空微觀勝率解包 Bug：將內部邏輯改寫成完全拆解的獨立運算
     def get_period_stats(p_df):
         if p_df.empty: return 0.0, 50.0
         avg_ret = float(p_df["return"].mean() * 100)
@@ -423,7 +422,7 @@ def unified_institutional_brain(res_dict, df_hist, is_holding=False, entry_cost=
                 "blueprint": {"停損防守": f"技術底線 {trailing_stop:.2f} 元", "移動停利": "啟動防守落袋", "預期目標": "防禦性鎖利"}
             }
         
-        # 💡 ✅ 修正防護線：持股狀態下的終極安全兜底回傳
+        # 💡 持股狀態下的終極安全觀望兜底
         return {
             "strategy_name": "🔥 多頭持股常態守望", "color": "#7D3CFF", "action_now": "🔮 🔮 【強勢狂飆：全額持股續抱】", "signal": "趨勢良性洗盤常態",
             "desc": "個股完美運行於趨勢防線帶內，未跌破 ATR 防守死穴。日內震盪均屬大戶洗盤雜訊，放飛核心波段利潤！",
@@ -473,13 +472,12 @@ def unified_institutional_brain(res_dict, df_hist, is_holding=False, entry_cost=
             if p >= r * 0.98 and res_dict["vol_spike"] and c_lock and f_good and not sector_panic:
                 if overextended:
                     return {"strategy_name": st_name, "color": "#F59E0B", "action_now": "⚠️ 🟡 【大盤過熱：全新開倉防守型控量開火】", "signal": "⚡ 瘋狗浪末段逆勢突破", "desc": "個股達成完美共振！但大盤與季線正乖離率過熱。風控模組強制削減 50% 資金配置，嚴防高位重倉套牢！", "blueprint": {"停損防守": f"收盤跌破 {r:.2f} 元", "移動停利": f"即時價破 {trailing_stop:.2f} 元", "預期目標": f"獲利對位目標 {res_dict['target_brk']:.2f} 元"}}
-                return {"strategy_name": st_name, "color": "#7D3CFF", "action_now": "🔮 🔮 【頂級信號：全新多頭建倉開火】", "signal": "🔮 頂級多頭共振：黃金主升飆股型態發動", "desc": "基本面擴張、法人強力鎖碼、帶量突破前高牆，上方無怨魂，適合執行全新多頭開火建倉！", "blueprint": {"停損防守": f"收盤跌破前高壓力牆 {r:.2f} 元", "移動停利": f"波動防線 {trailing_stop:.2f} 元", "預期目標": f"獲利擴張目標對位 {res_dict['target_brk']:.2f} 元"}
-                }
+                return {"strategy_name": st_name, "color": "#7D3CFF", "action_now": "🔮 🔮 【頂級信號：全新多頭建倉開火】", "signal": "🔮 頂級多頭共振：黃金主升飆股型態發動", "desc": "基本面擴張、法人強力鎖碼、帶量突破前高牆，上方無怨魂，適合執行全新多頭開火建倉！", "blueprint": {"停損防守": f"收盤跌破前高壓力牆 {r:.2f} 元", "移動停利": f"波動防線 {trailing_stop:.2f} 元", "預期目標": f"獲利擴張目標對位 {res_dict['target_brk']:.2f} 元"}}
         elif st_type == "LEFT_SPRING" and not sector_panic:
             if "買點一成立" in res_dict["spring_verdict"]:
                 return {"strategy_name": st_name, "color": "#10B981", "action_now": "🟢 🟢 【破底翻確立：允許精密低吸進場】", "signal": "結構洗盤完成、安全邊際高", "desc": f"{res_dict['spring_verdict']} 浮額遭主力洗淨。此進場享有極致風險報酬比，可建立初始防守型頭寸。", "blueprint": {"停損防守": f"硬性死穴防線 {r_low_10d:.2f} 元", "移動停利": "無", "預期目標": f"反彈停利目標看 {res_dict['target_pb']:.2f} 元"}}
         
-        # 💡 ✅ 修正大腦未持有常態兜底：完美杜絕 NoneType 字典解包崩潰
+        # 💡 未持有狀態下的量化緩衝帶觀望兜底
         return {
             "strategy_name": "💤 空倉常態觀望", "color": "#64748B", "action_now": "⚖️ 🔵 【常態調整區：保持空倉耐心等待】", "signal": "進入量化緩衝帶", 
             "desc": "個股目前處於無實質金流點火、無方向性的箱型窄幅整理區。盲目進場極易被來回洗盤，大腦命令保持空倉，靜待實質信號突圍！", 
@@ -674,13 +672,66 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     # ==================================================================================
 
     cycle_res = analyze_calendar_cyclicality(df.copy())
+    
+    # 💡 ✅ 投信優化：將移動停利線的物理文字宣告往前調，徹底消除底層 package 引用時的未定義地雷
+    stop_line_text = f"{round_to_tick(peak_price_20d - (2.5 * atr), t):.2f} 元"
+
     package = {
-        "macro_bull": macro_bull, "current_price": current_price, "current_vol": current_vol, "vol_ma20_val": vol_ma20_val, "real_resistance": real_resistance, "ma20_val": ma20_val, "ma100_val": ma100_val, "ma5_val": ma5_val,
-        "sitc_3d_sum": sitc_3d_sum, "margin_diff": margin_diff, "macro_desc": macro_desc, "is_market_panic": is_market_panic, "is_market_overextended": is_market_overextended,
-        "is_us_panic": is_us_panic, "us_panic_desc": us_panic_desc, "wtx_change": wtx_change, "spring_verdict": spring_verdict, "final_decision": final_decision, "trend_phase": trend_phase,
-        "vol_spike": vol_spike, "pe_desc": pe_desc, "margin_trend": margin_trend, "target_brk": target_brk, "stop_brk": stop_brk, "rr1_brk": rr1_brk, "target_pb": target_pb, "stop_pb": stop_pb, "rr1_pb": rr1_pb, "suggested_lots": 0, "is_pyramid_order": False, "liquidity_capped": False, "max_safe_liquidity_lots": 0, "expected_stop_price": 0.0, "strategy_route": "", "expected_target_price": 0.0, "trailing_stop_line": stop_line_text, "atr": atr, "stock_daily_pct": stock_daily_pct, "relative_strength": relative_strength, "is_rs_gold": is_rs_gold, "is_volume_gap_spike": is_volume_gap_spike, "calendar_verdict": cycle_res["verdict"], "calendar_data": cycle_res, "rt_source": rt_source, "m_desc": m_desc, "m_color": m_color, "volume_poc": volume_poc, "main_force_label": main_force_label, "recent_catalyst_summary": recent_catalyst_summary, "fin_df": fin_df, "k9_now": k9_now, "d9_now": d9_now, "spring_verdict": spring_verdict, "bb_stage": bb_stage, "kd_timing": kd_timing, "volume_verdict": volume_verdict, "tactical_blueprint": {}, "radar_results": radar_results
+        "macro_bull": macro_bull,
+        "current_price": current_price,
+        "current_vol": current_vol,
+        "vol_ma20_val": vol_ma20_val,
+        "real_resistance": real_resistance,
+        "ma20_val": ma20_val,
+        "ma100_val": ma100_val,
+        "ma5_val": ma5_val,
+        "sitc_3d_sum": sitc_3d_sum,
+        "margin_diff": margin_diff,
+        "macro_desc": macro_desc,
+        "is_market_panic": is_market_panic,
+        "is_market_overextended": is_market_overextended,
+        "is_us_panic": is_us_panic,
+        "us_panic_desc": us_panic_desc,
+        "wtx_change": wtx_change,
+        "spring_verdict": spring_verdict,
+        "final_decision": final_decision,
+        "trend_phase": trend_phase,
+        "vol_spike": vol_spike,
+        "pe_desc": pe_desc,
+        "margin_trend": margin_trend,
+        "target_brk": target_brk,
+        "stop_brk": stop_brk,
+        "target_pb": target_pb,
+        "stop_pb": stop_pb,
+        "rr1_brk": rr1_brk,
+        "rr1_pb": rr1_pb,
+        "trailing_stop_line": stop_line_text,
+        "atr": atr,
+        "stock_daily_pct": stock_daily_pct,
+        "relative_strength": relative_strength,
+        "is_rs_gold": is_rs_gold,
+        "is_volume_gap_spike": is_volume_gap_spike,
+        "calendar_verdict": cycle_res["verdict"],
+        "calendar_data": cycle_res,
+        "rt_source": rt_source,
+        "m_desc": m_desc,
+        "m_color": m_color,
+        "volume_poc": volume_poc,
+        "main_force_label": main_force_label,
+        "recent_catalyst_summary": recent_catalyst_summary,
+        "fin_df": fin_df,
+        "k9_now": k9_now,
+        "d9_now": d9_now,
+        "spring_verdict": spring_verdict,
+        "bb_stage": bb_stage,
+        "kd_timing": kd_timing,
+        "volume_verdict": volume_verdict,
+        "fin_conclusion": fin_conclusion,
+        "latest_yoy": latest_yoy,
+        "sitc_trend": sitc_trend
     }
     
+    # 💡 ✅ 投信優化：完整接回前幾輪漏掉的機構大腦與配套技術倉位精算流程，拒絕半殘資料流
     tactical_blueprint = unified_institutional_brain(package, df.copy(), is_holding=is_holding, entry_cost=entry_cost, sector_panic=sector_panic)
     expected_stop_price = package["stop_brk"] if "突破" in tactical_blueprint["strategy_name"] else package["stop_pb"]
     if "破底翻" in tactical_blueprint["strategy_name"] and ("買點一成立" in spring_verdict or "買點二成立" in spring_verdict):
@@ -702,9 +753,6 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
         liquidity_capped = True
     else: liquidity_capped = False
 
-    stop_line_text = f"{round_to_tick(peak_price_20d - (2.5 * atr), t):.2f} 元"
-
-    # 💡 ✅ 投信大腦完全體重構：將一長行的巨型欄位拆解為乾淨安全的垂直多行架構，全面杜絕 None 讀取崩潰
     res_dict = {}
     res_dict["stock_id"] = stock_id
     res_dict["stock_name"] = stock_name
