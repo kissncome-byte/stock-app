@@ -160,12 +160,14 @@ def get_daily_df(stock_id: str, market_type: str = "TSE", days: int = 450):
                 res = r.json()["chart"]["result"][0]
                 raw = pd.DataFrame({
                     "date": [datetime.fromtimestamp(ts, TZ).strftime("%Y-%m-%d") for ts in res.get("timestamp", [])],
-                    "open": res["indicators"]["quote"][0].get("open", []), "high": res["indicators"]["quote"][0].get("high", []),
-                    "low": res["indicators"]["quote"][0].get("low", []), "close": res["indicators"]["quote"][0].get("close", []),
-                    "vol": res["indicators"]["quote"][0].get("volume", []), "adjclose": res["indicators"]["adjclose"][0].get("adjclose", [])
-                }).dropna(subset=["close", "adjclose"])
-                f = raw["adjclose"] / raw["close"].replace(0, 0.00001)
-                raw["open"], raw["high"], raw["low"], raw["close"] = raw["open"]*f, raw["high"]*f, raw["low"]*f, raw["adjclose"]
+                    "open": res["indicators"]["quote"][0].get("open", []), 
+                    "high": res["indicators"]["quote"][0].get("high", []),
+                    "low": res["indicators"]["quote"][0].get("low", []), 
+                    "close": res["indicators"]["quote"][0].get("close", []), # 🌟 修正：直接採用盤面名目價，拒絕 adjclose 壓縮
+                    "vol": res["indicators"]["quote"][0].get("volume", [])
+                }).dropna(subset=["close"])
+                
+                # 🌟 讓歷史價格尺度與盤中即時報價（770 元）完全對齊
                 raw["amount"] = raw["close"] * raw["vol"]
                 return raw[["date", "open", "high", "low", "close", "vol", "amount"]].copy()
         except Exception: pass
