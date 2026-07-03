@@ -578,19 +578,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
 
     volume_poc = current_price
  
-    # 🌟 終極修正：90天季度籌碼定錨 + 飆股防貼身機制
-    # 1. 抓取過去 90 天（一整個季度）的價格結構，確保抓得到起跑平台
-    hist_recent = df.copy().sort_values("date", ascending=True).tail(90)
-    
-    counts, bins = np.histogram(hist_recent["close"], bins=15, weights=hist_recent["vol"])
-    max_bin_idx = np.argmax(counts)
-    calculated_poc = (bins[max_bin_idx] + bins[max_bin_idx + 1]) / 2
-    
-    # 2. 智慧判定：如果 POC 距離現價小於 4%，代表流動性在高檔鎖死，強行將 POC 修正為「生命線 20MA」，尋求實質均線支撐
-    if abs(current_price - calculated_poc) / current_price < 0.04:
-        real_resistance = ma20_val  # 🎯 飆股貼身時，自動改用 20MA 作為籌碼護盤定錨線
-    else:
-        real_resistance = calculated_poc  # 常態狀況下，維持使用季度成交量最大牆
+    hist_recent =
 
     hist_last = df.iloc[-1]
     ma5_val, vol_ma5_val = float(hist_last["MA5"]), float(hist_last["MA5_Vol"])
