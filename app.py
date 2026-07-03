@@ -550,11 +550,23 @@ def unified_institutional_brain(res_dict, df_hist, is_holding=False, entry_cost=
         }
 
 # ============ 9. Main Core Executor ============
+# 🌟 新的代碼：自帶智慧辨識，找不到名字也絕對放行！
 def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, slip_ticks: int, is_holding=False, entry_cost=0.0, sector_panic=False):
     fin_df = pd.DataFrame()
+    
     info_df_local = get_stock_info_df()
     match = info_df_local[info_df_local["stock_id"] == stock_id]
-    if match.empty: return None
+    
+    if match.empty:
+        # 🎯 智慧通關：如果官方名單塞車沒抓到，我們自己現場編一個臨時臨時擋箭牌，照樣放行！
+        stock_name = f"代號 {stock_id}"
+        industry = "自訂追蹤板塊"
+        # 簡單分類法：台灣大體上3、5、6、8開頭多為櫃買(OTC)股票
+        market_type = "TWO" if (stock_id.startswith("3") or stock_id.startswith("5") or stock_id.startswith("6") or stock_id.startswith("8")) and len(stock_id) == 4 else "TSE"
+    else:
+        m_col = "type" if "type" in match.columns else "market_type" if "market_type" in match.columns else "market" if "market" in match.columns else None
+        market_type = str(match[m_col].values[0]).strip().upper() if m_col else "TSE"
+        stock_name, industry = str(match["stock_name"].values[0]), str(match["industry_category"].values[0])
     
     m_col = "type" if "type" in match.columns else "market_type" if "market_type" in match.columns else "market" if "market" in match.columns else None
     market_type = str(match[m_col].values[0]).strip().upper() if m_col else "TSE"
