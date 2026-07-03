@@ -577,10 +577,13 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     estimated_full_day_vol_lots = current_vol * (270.0 / max(1.0, (datetime.combine(datetime.today(), now_time) - datetime.combine(datetime.today(), datetime.strptime("09:00", "%H:%M").time())).total_seconds() / 60.0)) if datetime.strptime("09:00", "%H:%M").time() <= now_time <= datetime.strptime("13:30", "%H:%M").time() else current_vol
 
     volume_poc = current_price
-    hist_180 = df.tail(180)
-    if len(hist_180) >= 20:
-        counts, bins = np.histogram(hist_180["close"], bins=15, weights=hist_180["vol"])
-        volume_poc = float((bins[np.argmax(counts)] + bins[np.argmax(counts) + 1]) / 2)
+    # 🌟 修正後的短線精準定錨
+# 面對強勢主升段飆股，我們只抓最近 45 天（約 1.5 個月）的新換手區
+hist_recent = df.copy().sort_values("date", ascending=False).head(45)
+
+counts, bins = np.histogram(hist_recent["close"], bins=15, weights=hist_recent["vol"])
+max_bin_idx = np.argmax(counts)
+real_resistance = (bins[max_bin_idx] + bins[max_bin_idx + 1]) / 2 # 這就是近期的新大戶牆！
 
     hist_last = df.iloc[-1]
     ma5_val, vol_ma5_val = float(hist_last["MA5"]), float(hist_last["MA5_Vol"])
