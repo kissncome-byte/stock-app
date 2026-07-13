@@ -287,8 +287,8 @@ def analyze_calendar_cyclicality(df_hist):
     x = df_hist.copy().sort_values("date")
     x["return"] = x["close"].pct_change()
     x = x.dropna(subset=["return"])
-    x["month"] = pd.to_datetime(x["date"]).dt.month
-    x["day"] = pd.to_datetime(x["date"]).dt.day
+    x["month"] = pd.to_numeric(pd.to_datetime(x["date"]).dt.month, errors="coerce")
+    x["day"] = pd.to_numeric(pd.to_datetime(x["date"]).dt.day, errors="coerce")
     
     early_period = x[x["day"] <= 10]
     mid_period = x[(x["day"] > 10) & (x["day"] <= 20)]
@@ -419,7 +419,6 @@ def unified_institutional_brain(res_dict, df_hist, is_holding=False, entry_cost=
     is_rs_gold = res_dict["is_rs_gold"]                     
     is_volume_gap_spike = res_dict["is_volume_gap_spike"]  
     
-    # 🌟 語法補強：將原本錯誤的 JavaScript 語法 && 修正為 Python 標準 operators 'and'
     pnl_pct = ((p - entry_cost) / entry_cost * 100) if (is_holding and entry_cost > 0) else 0.0
 
     if is_holding and entry_cost > 0:
@@ -599,6 +598,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     res_dict = {}
     latest_yoy = 0.0
     is_broker_dumping_risk = False
+    
     m_desc, m_color = "🟢 連線正常", "green"
     
     info_df_local = get_stock_info_df()
@@ -737,63 +737,15 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     box_width_pct = ((max_30d - min_30d) / min_30d) * 100
     is_box_compressed = box_width_pct <= 8.5
 
-    rev_df = get_rev_df(stock_id, days=730)
-    if rev_df is not None and not rev_df.empty and "revenue" in rev_df.columns:
-        rev_clean = rev_df.copy()
-        rev_clean["revenue"] = pd.to_numeric(rev_clean["revenue"].astype(str).str.replace(",", ""), errors="coerce")
-        rev_clean["revenue_year_growth_rate"] = rev_clean["revenue"].pct_change(12) * 100
-        if not rev_clean.dropna(subset=["revenue_year_growth_rate"]).empty: latest_yoy = float(rev_clean.dropna(subset=["revenue_year_growth_rate"]).sort_values("date").iloc[-1]["revenue_year_growth_rate"])
+    open_gap_pct = ((safe_float(df["open"].iloc[-1]) - safe_float(df["close"].iloc[-2])) / safe_float(df["close"].iloc[-2]) * 100) if len(df) > 1 else 0
+    close_to_low_pct = ((current_price - rt_low) / (rt_high - rt_low)) if (rt_high - rt_low) > 0 else 1
+    is_broker_dumping_risk = (open_gap_pct > 3.5) and (close_to_low_pct < 0.35) and ((current_vol * 1000.0) > (vol_ma20_val * 2.5))
 
-    fin_df_raw = get_financial_statement_df(stock_id, years=2)
-    fin_conclusion, pe_desc, pe_val, sum_eps_4q, gpm_now, opm_now = "📋 該標的暫無足夠季度財報數據。", "⚪ 數據不足無法計算估值", 0.0, 0.0, 0.0, 0.0
-    if not fin_df_raw.empty and "Revenue" in fin_df_raw.columns and "EPS" in fin_df_raw.columns:
-        fin_df_work = fin_df_raw.copy()
-        for col_name in ["Revenue", "EPS", "GrossProfit", "OperatingIncome"]:
-            if col_name not in fin_df_work.columns: fin_df_work[col_name] = 0.0
-        fin_df_work = fin_df_work.sort_values("date").reset_index(drop=True)
-        for idx in range(len(fin_df_work)):
-            rev_amt = safe_float(fin_df_work.loc[idx, "Revenue"])
-            fin_df_work.loc[idx, "gpm"] = (safe_float(fin_df_work.loc[idx, "GrossProfit"]) / rev_amt * 100) if rev_amt > 0 else 0.0
-            fin_df_work.loc[idx, "opm"] = (safe_float(fin_df_work.loc[idx, "OperatingIncome"]) / rev_amt * 100) if rev_amt > 0 else 0.0
-        
-        last_fin = fin_df_work.iloc[-1]
-        gpm_now, opm_now, sum_eps_4q = safe_float(last_fin.get("gpm", 0.0)), safe_float(last_fin.get("opm", 0.0)), pd.to_numeric(fin_df_work.tail(4)['EPS'], errors='coerce').sum()
-        if sum_eps_4q > 0:
-            pe_val = current_price / sum_eps_4q
-            
-            try: latest_yoy_val = float(latest_yoy)
-            except Exception: latest_yoy_val = 0.0
+    final_decision = "⚖️ 綜合評估"
+    k_shadow_trap = bool(df.iloc[-1].get("is_long_upper_shadow", False)) and vol_spike
+    if k_shadow_trap: final_decision = "❌ 爆量長上影"
+    elif is_broker_dumping_risk: final_decision = "🚨 惡性金流陷阱"
 
-            if latest_yoy_val >= 30.0: db_t, dc_t = 55.0, 22.0
-            elif latest_yoy_val >= 15.0: db_t, dc_t = 45.0, 18.0
-            else: db_t, dc_t = 35.0, 13.0
-                
-            pe_desc = "🚨 估值瘋狂（高檔吹泡泡）" if pe_val > db_t else "🟢 價值鐵板（安全邊際高）" if pe_val < dc_t else "⚖️ 估值合理區間"
-        if len(fin_df_work) >= 5:
-            prev_fin = fin_df_work.iloc[-5] 
-            fin_conclusion = "📈 【財報年增擴張】 最新季度獲利指標全數超越去年同期！" if gpm_now > safe_float(prev_fin.get("gpm", 0.0)) and opm_now > safe_float(prev_fin.get("opm", 0.0)) else "📉 【本業結構退步】 獲利結構遜於去年同期，需提高警覺。"
-        fin_df = fin_df_work[["date", "EPS", "Revenue", "GrossProfit", "OperatingIncome", "gpm", "opm"]].copy()
-
-    news_analysis_report, positive_catalysts_list, raw_news_list = "⚪ 暫無最新重要輿情。", [], get_realtime_news_list(stock_id, stock_name)
-    if raw_news_list:
-        raw_news_list = raw_news_list[:8]
-        for n in raw_news_list:
-            lbl, col = analyze_news_sentiment(n["title"])
-            n["sentiment"], n["color"] = lbl, col
-            if "利多" in lbl: positive_catalysts_list.append(n["title"])
-        pos_cnt, neg_cnt = sum(1 for n in raw_news_list if "利多" in n["sentiment"]), sum(1 for n in raw_news_list if "利空" in n["sentiment"])
-        news_analysis_report = f"🔥 【輿情偏多】 利多消息主導市場（多 {pos_cnt} / 空 {neg_cnt}）。" if pos_cnt > neg_cnt else f"🚨 【輿情偏空】 利空雜音浮現（空 {neg_cnt} / 多 {pos_cnt}）。" if neg_cnt > pos_cnt else "⚖️ 【輿情中性】 多空消息勢均力敵。"
-    recent_catalyst_summary = "<b>🎯 關鍵消息面利多題材：</b><br>" + "<br>".join([f"• {t}" for t in positive_catalysts_list[:2]]) if positive_catalysts_list else "⚪ 近 24H 內市場暫無顯著的突發消息面利多推升。"
-
-    t = tick_size(current_price)
-    target_brk = round_to_tick(current_price + ((4.0 if df["amount"].tail(20).mean() > 2000000000 else 5.5) * atr), t)
-    stop_brk = round_to_tick(real_resistance - (1.5 * atr) - (float(slip_ticks) * t), t) if round_to_tick(real_resistance - (1.5 * atr) - (float(slip_ticks) * t), t) < current_price else round_to_tick(current_price - (1.0 * atr), t)
-    target_pb = round_to_tick(volume_poc, t)
-    stop_pb = round_to_tick(ma20_val - atr - (float(slip_ticks) * t), t) if round_to_tick(ma20_val - atr - (float(slip_ticks) * t), t) < current_price else round_to_tick(current_price - (1.5 * atr), t)
-    
-    # 🌟 數據解耦計算
-    rr1_brk = (target_brk - current_price) / (current_price - stop_brk) if (current_price - stop_brk) > 0 else 0.0
-    rr1_pb = (target_pb - current_price) / (current_price - stop_pb) if (current_price - stop_pb) > 0 else 0.0
     stop_line_text = f"{round_to_tick(peak_price_20d - (2.5 * atr), t):.2f} 元"
 
     last_trade_date_str = str(df.iloc[-1]["date"])
@@ -807,9 +759,27 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     # =======================================================================
     # 🌟 數據全量前置灌漿裝箱（核心修正：所有變數在大腦調用前，完成 100% 裝箱程序！）
     # =======================================================================
-    res_dict["stock_id"] = stock_id
-    res_dict["stock_name"] = stock_name
-    res_dict["industry"] = industry
+    res_dict["macro_bull"] = macro_bull
+    res_dict["is_market_panic"] = is_market_panic
+    res_dict["is_market_overextended"] = is_market_overextended
+    res_dict["is_us_panic"] = is_us_panic
+    res_dict["us_panic_desc"] = us_panic_desc
+    res_dict["wtx_change"] = wtx_change
+    res_dict["final_decision"] = final_decision
+    res_dict["market_vol_healthy"] = market_vol_healthy
+    res_dict["market_vol_desc"] = market_vol_desc
+    res_dict["wolf_rank_label"] = wolf_rank_label
+    res_dict["wolf_rank_color"] = wolf_rank_color
+    res_dict["is_box_compressed"] = is_box_compressed
+    res_dict["box_width_pct"] = box_width_pct
+    
+    res_dict["target_brk"] = target_brk
+    res_dict["stop_brk"] = stop_brk
+    res_dict["rr1_brk"] = rr1_brk
+    res_dict["target_pb"] = target_pb
+    res_dict["stop_pb"] = stop_pb
+    res_dict["rr1_pb"] = rr1_pb
+    res_dict["trailing_stop_line"] = stop_line_text
     res_dict["current_price"] = current_price
     res_dict["current_vol"] = current_vol
     res_dict["ma5_val"] = ma5_val
@@ -825,32 +795,6 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     res_dict["rsi_now"] = rsi_now
     res_dict["adx_now"] = adx_now
     res_dict["macd_hist"] = macd_hist
-    res_dict["macro_desc"] = macro_desc
-    res_dict["sitc_trend"] = sitc_trend
-    res_dict["margin_trend"] = margin_trend
-    res_dict["sitc_3d_sum"] = sitc_3d_sum
-    res_dict["margin_diff"] = margin_diff
-    res_dict["latest_yoy"] = latest_yoy
-    res_dict["pe_val"] = pe_val
-    res_dict["pe_desc"] = pe_desc
-    res_dict["eps_4q"] = sum_eps_4q
-    res_dict["fin_conclusion"] = fin_conclusion
-    res_dict["gpm_now"] = gpm_now
-    res_dict["opm_now"] = opm_now
-    res_dict["is_compressed"] = is_compressed
-    res_dict["vol_spike"] = vol_spike
-    res_dict["news_analysis_report"] = news_analysis_report
-    res_dict["raw_news_list"] = raw_news_list
-    res_dict["trend_phase"] = trend_phase
-    res_dict["short_term_trend"] = short_term_trend
-    res_dict["long_term_trend"] = long_term_trend
-    res_dict["target_brk"] = target_brk
-    res_dict["stop_brk"] = stop_brk
-    res_dict["rr1_brk"] = rr1_brk
-    res_dict["target_pb"] = target_pb
-    res_dict["stop_pb"] = stop_pb
-    res_dict["rr1_pb"] = rr1_pb
-    res_dict["trailing_stop_line"] = stop_line_text
     res_dict["atr"] = atr
     res_dict["stock_daily_pct"] = stock_daily_pct
     res_dict["relative_strength"] = relative_strength
@@ -872,27 +816,13 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     res_dict["stable_short_trend"] = stable_short_trend
     res_dict["stable_short_color"] = stable_short_color
     res_dict["stable_short_desc"] = stable_short_desc
-    
-    res_dict["macro_bull"] = macro_bull
-    res_dict["is_market_panic"] = is_market_panic
-    res_dict["is_market_overextended"] = is_market_overextended
-    res_dict["is_us_panic"] = is_us_panic
-    res_dict["us_panic_desc"] = us_panic_desc
-    res_dict["wtx_change"] = wtx_change
-    res_dict["final_decision"] = final_decision
-    res_dict["market_vol_healthy"] = market_vol_healthy
-    res_dict["market_vol_desc"] = market_vol_desc
-    res_dict["wolf_rank_label"] = wolf_rank_label
-    res_dict["wolf_rank_color"] = wolf_rank_color
-    res_dict["is_box_compressed"] = is_box_compressed
-    res_dict["box_width_pct"] = box_width_pct
-    
+
     cycle_res = analyze_calendar_cyclicality(df.copy())
     res_dict["calendar_verdict"] = cycle_res["verdict"]
     res_dict["calendar_data"] = cycle_res
     res_dict["macro_season"] = cycle_res["macro_season"]
 
-    # 數據 100% 灌入安全後，正式啟動決策大腦
+    # 數據全量前置裝箱完成，安心啟動大腦決策
     tactical_blueprint = unified_institutional_brain(res_dict, df.copy(), is_holding=is_holding, entry_cost=entry_cost, sector_panic=sector_panic)
     res_dict["tactical_blueprint"] = tactical_blueprint
     
@@ -1020,7 +950,8 @@ if diag_trigger or stock_input:
             with c1: st.markdown(custom_hud_box("💡 當前即市價 (K線精密流)", f"<span style='font-size:20px; color:#0F172A;'>{res['current_price']:.2f} 元</span><br><small style='color:#64748B; font-weight:500;'>今日成交: {res['current_vol']:.0f} 張</small>"), unsafe_allow_html=True)
             with c2: st.markdown(custom_hud_box("⏱️ 五日短線攻擊速線 (MA5)", f"<span style='font-size:16px; color:#1E293B;'>{res['ma5_val']:.2f} 元</span><br><small style='color:#64748B;'>今日漲跌幅: {res['stock_daily_pct']:+.2f}%</small>"), unsafe_allow_html=True)
             with c3: st.markdown(custom_hud_box("⏳ 母部位大波段防禦線 (ATR)", f"<span style='font-size:16px; color:#7C3AED;'>{res['trailing_stop_line']}</span><br><small style='color:#64748B;'>當前 ATR14: {res['atr']:.2f}</small>"), unsafe_allow_html=True)
-            with c4: st.markdown(f"📊 相對強度 (RS Matrix)", f"<span style='font-size:16px; color:#10B981;'>超額 {res['relative_strength']:+.2f}%</span><br><small style='color:#64748B;'>RS黃金箭頭: {'🔥 成立(免疫大盤)' if res['is_rs_gold'] else '⚪ 整理中'}</small>"), unsafe_allow_html=True)
+            # 🌟 語法核心修補：將被洗掉的外層 custom_hud_box 完美焊接回來，消滅第 1023 行語法地雷！
+            with c4: st.markdown(custom_hud_box("📊 相對強度 (RS Matrix)", f"<span style='font-size:16px; color:#10B981;'>超額 {res['relative_strength']:+.2f}%</span><br><small style='color:#64748B;'>RS黃金箭頭: {'🔥 成立(免疫大盤)' if res['is_rs_gold'] else '⚪ 整理中'}</small>"), unsafe_allow_html=True)
 
             st.markdown("### 🧬 機構級多因子結構縱深大數據曝光面板")
             ib_col1, ib_col2, ib_col3 = st.columns(3)
