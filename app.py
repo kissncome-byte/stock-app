@@ -153,7 +153,8 @@ def get_stock_info_df():
         {"stock_id": "3481", "stock_name": "群創", "type": "twse", "industry_category": "光電業"},
         {"stock_id": "3008", "stock_name": "大立光", "type": "twse", "industry_category": "光電業"},
         {"stock_id": "3406", "stock_name": "玉晶光", "type": "twse", "industry_category": "光電業"},
-        {"stock_id": "2393", "stock_name": "億光", "type": "twse", "industry_category": "光電業"}
+        {"stock_id": "2393", "stock_name": "億光", "type": "twse", "industry_category": "光電業"},
+        {"stock_id": "2382", "stock_name": "廣達", "type": "twse", "industry_category": "電腦及週邊設備業"}
     ]
     return pd.DataFrame(fallback)
 
@@ -414,7 +415,7 @@ def unified_institutional_brain(res_dict, df_hist, is_holding=False, entry_cost=
                 "blueprint": {"停損防守": f"本金死穴 {entry_cost * 0.93:.2f} 元", "移動停利": "無", "預期目標": "保全資金殘餘"}
             }
 
-        # 🌟 智慧大腦：新開倉動能蜜月期保護機制 (1.5% 貼身區拒絕盲目甩洗)
+        # 🌟 蜜月期保護盾：正負 1.5% 內且動能未退，拒絕盲目減碼被洗下車
         is_fresh_trade = (abs(pnl_pct) <= 1.5) and (is_volume_gap_spike or is_rs_gold or (p >= r * 0.95))
         if is_fresh_trade:
             return {
@@ -455,7 +456,7 @@ def unified_institutional_brain(res_dict, df_hist, is_holding=False, entry_cost=
                 "blueprint": {"停損防守": "全額清倉離場", "移動停利": "已觸發", "預期目標": "資金全額退場"}
             }
 
-        # 🌟 5MA 鎖利減碼門檻升級：唯有實質大賺 5.0% 以上，此減碼動作才具備期望值，防止新開倉部位慘遭雙向鞭笞
+        # 🌟 5MA 鎖利門檻：唯有實質大賺 5% 以上才允許動用，防止交易成本慢性洗乾淨本金
         if pnl_pct >= 5.0 and p < ma5:
             return {
                 "strategy_name": "🚀 短線達標・子部位獲利落袋", "color": "#F59E0B", "action_now": "⚠️ 🟡 【短線轉弱：減碼 50% 鎖定價差，剩餘放飛】", "signal": "股價跌破 5MA 短線攻擊線",
@@ -466,7 +467,7 @@ def unified_institutional_brain(res_dict, df_hist, is_holding=False, entry_cost=
         if "長上影" in final or "金流陷阱" in final:
             return {
                 "strategy_name": "🚨 爆量高檔出貨預警", "color": "#EF4444", "action_now": "🚨 🔴 【主力高檔出貨：主動執行減碼 50%】", "signal": "惡性 K 線結構與主力清算共振",
-                "desc": f"目部位損益 {pnl_pct:+.1f}%。個股盤中爆量且留長上影線，符合惡性主力倒貨特徵。為防範踩踏，強烈建議主動落袋一半部位，不允許利潤吐回！",
+                "desc": f"目前部位損益 {pnl_pct:+.1f}%。個股盤中爆量且留長上影線，符合惡性主力倒貨特徵。為防範踩踏，強烈建議主動落袋一半部位，不允許利潤吐回！",
                 "blueprint": {"停損防守": f"技術底線 {trailing_stop:.2f} 元", "移動停利": "啟動防守落袋", "預期目標": "防禦性鎖利"}
             }
 
@@ -504,8 +505,8 @@ def unified_institutional_brain(res_dict, df_hist, is_holding=False, entry_cost=
         if is_rs_gold and p >= m20 and not sector_panic:
             return {
                 "strategy_name": "🚀 統一特許：逆境黃金飆股劇本發動", "color": "#7D3CFF", "action_now": "🔮 🔮 【強者恆強：無視大盤恐慌立即開火】", "signal": "個股超額相對強度（RS）爆表",
-                "desc": f"**【大盤逆境真金】**：大盤目前處於大跌或破位空頭區（大盤變動: {wtx:.2f}%）。但該個股今日表現出高達 {res_dict['relative_strength']:.1f}% 的超額相對強度(RS)！大腦一票否決總體市場恐慌警報，給予特許全額開火權！",
-                "blueprint": {"停損防守": f"收盤跌破昨日收盤價或當日低點", "移動停利": f"波動防線 {trailing_stop:.2f} 元", "預期目標": f"獲利對位目標 {res_dict['target_brk']:.2f} 元"}
+                "desc": f"**【大盤逆境真金】**：大盤目前處於大跌 or 破位空頭區（大盤變動: {wtx:.2f}%）。但該個股今日表現出高達 {res_dict['relative_strength']:.1f}% 的超額相對強度(RS)！大腦一票否決總體市場恐慌警報，給予特許全額開火權！",
+                "blueprint": {"停損防守": f"收盤跌破昨日收盤價 or 當日低點", "移動停利": f"波動防線 {trailing_stop:.2f} 元", "預期目標": f"獲利對位目標 {res_dict['target_brk']:.2f} 元"}
             }
 
         if is_volume_gap_spike and p >= m20 and not sector_panic:
@@ -560,13 +561,13 @@ def unified_institutional_brain(res_dict, df_hist, is_holding=False, entry_cost=
 
         return {
             "strategy_name": "💤 空倉常態觀望", "color": "#64748B", "action_now": "⚖️ 🔵 【常態調整區：保持空倉耐心等待】", "signal": "進入量化緩衝帶",
-            "desc": "個股處於無方向性的箱型整理区，既無主力暴量突圍，也無良性破底翻。此時盲目進場極易被來回雙向巴掌洗盤，請保持空倉觀望。",
+            "desc": "個股處於無方向性的箱型整理區，既無主力暴量突圍，也無良性破底翻。此時盲目進場極易被來回雙向巴掌洗盤，請保持空倉觀望。",
             "blueprint": {"停損防守": "嚴禁進場", "移動停利": "無", "預期目標": "等待金流重啟點火"}
         }
 
 # ============ 9. Main Core Executor ============
 def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, slip_ticks: int, is_holding=False, entry_cost=0.0, sector_panic=False):
-    fin_df = pd.DataFrame()  # 🌟 補強點：保險絲初始化，絕不觸發 UnboundLocalError
+    fin_df = pd.DataFrame()
     info_df_local = get_stock_info_df()
     match = info_df_local[info_df_local["stock_id"] == stock_id]
     
@@ -576,8 +577,6 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
         market_type = "TWO" if (stock_id.startswith("3") or stock_id.startswith("5") or stock_id.startswith("6") or stock_id.startswith("8")) and len(stock_id) == 4 else "TSE"
     else:
         m_col = "type" if "type" in match.columns else "market_type" if "market_type" in match.columns else "market" if "market" in match.columns else None
-        
-        # 🌟 補強點：全面改用 .iloc[0] 取代 .values[0]，完美超度 PyArrow 底層大數據衝突
         if m_col and len(match) > 0:
             market_type = str(match[m_col].iloc[0]).strip().upper()
         else:
@@ -621,7 +620,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     now_time = datetime.now(TZ).time()
     estimated_full_day_vol_lots = current_vol * (270.0 / max(1.0, (datetime.combine(datetime.today(), now_time) - datetime.combine(datetime.today(), datetime.strptime("09:00", "%H:%M").time())).total_seconds() / 60.0)) if datetime.strptime("09:00", "%H:%M").time() <= now_time <= datetime.strptime("13:30", "%H:%M").time() else current_vol
 
-    # ==================== 金流金額權重核心計算 ====================
+    # ==================== 5日線動態斜率防震核心 ====================
     hist_recent = df.copy().sort_values("date", ascending=True).tail(90)
     counts, bins = np.histogram(hist_recent["close"], bins=15, weights=hist_recent["amount"])
     max_bin_idx = np.argmax(counts)
@@ -644,9 +643,6 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     ma20_val, ma60_val, ma100_val = float(hist_last["MA20"]), float(hist_last["MA60"]), float(hist_last["MA100"])
     vol_ma20_val, real_resistance, current_bandwidth = float(hist_last["MA20_Vol"]), float(hist_last["Res_20D"]), float(hist_last["BB_bandwidth"])
 
-    # =======================================================================
-    # 🌟 補強點：短期趨勢定錨核心。改看「MA5均線 3日累計變動斜率」，徹底過濾單日震盪雜訊
-    # =======================================================================
     ma5_today = float(df["MA5"].iloc[-1])
     ma5_3days_ago = float(df["MA5"].iloc[-3]) if len(df) >= 3 else ma5_today
     ma5_slope = ((ma5_today - ma5_3days_ago) / ma5_3days_ago * 100) if ma5_3days_ago > 0 else 0.0
@@ -654,15 +650,15 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     if ma5_slope > 0.15:
         stable_short_trend = "🟢 短期多頭波段（結構穩固，忽略一日拉回）"
         stable_short_color = "#10B981"
-        stable_short_desc = "指標解碼：5日主力成本線集體向上。此時不管今天股價是跌是漲、有沒有破線，集體大部隊都在往上走。請保持定力，忽略單日波動雜訊！"
+        stable_short_desc = "5日主力成本線集體向上。不管單日如何震盪、有無破線，大部隊集體趨勢並未改變。請保持定力！"
     elif ma5_slope < -0.15:
         stable_short_trend = "🔴 短期空頭修正（上方有壓，防禦觀望）"
         stable_short_color = "#EF4444"
-        stable_short_desc = "指標解碼：5日主力成本線集體下彎。代表短期多頭動能已實質退潮，上方套牢壓力沉重。此時即使今天出現單日大反彈，也絕不盲目追高！"
+        stable_short_desc = "5日主力成本線集體下彎。短期多頭動能退潮，上方套牢怨魂沉重。即便盤中反彈，也切勿追高！"
     else:
         stable_short_trend = "🟡 短期箱型潛伏（橫盤整理，多看少動）"
         stable_short_color = "#F59E0B"
-        stable_short_desc = "指標解碼：5日線處於水平躺平狀態。股價在原地上下亂晃是正常常態。這時候大腦叫你『把手綁起來』，不要在這裡被來回打巴掌。"
+        stable_short_desc = "5日線處於水平躺平狀態。股價原地亂晃屬於常態。大腦叫你『把手綁起來』，別在此處被來回打巴掌。"
 
     bb_upper, bb_lower = float(hist_last["BB_upper"]), float(hist_last["BB_lower"])
     rsi_now, adx_now, macd_hist, atr, k9_now, d9_now = safe_float(hist_last.get("RSI14", 50.0)), safe_float(hist_last.get("ADX14", 20.0)), safe_float(hist_last.get("MACD_HIST", 0.0)), safe_float(hist_last.get("ATR14", 1.0)), safe_float(hist_last.get("K9", 50.0)), safe_float(hist_last.get("D9", 50.0))
@@ -950,107 +946,30 @@ full_info_df = get_stock_info_df()
 
 st.markdown("## 📡 雙速策略大腦動態綜合看盤台 (v48 狼王特選版)")
 st.markdown("### 🎛️ 戰術總指揮中心 (Command Center)")
-top_col1, top_col2 = st.columns(2)
 
-with top_col1:
-    st.markdown("""<div style='background-color:#F0FDF4; padding:8px; border-radius:6px; border-left:4px solid #10B981; margin-bottom:8px;'><b style='color:#065F46; font-size:13.5px;'>流派 A：自訂戰術觀察清單 ➔ 全因子即時雷達掃描</b></div>""", unsafe_allow_html=True)
-    
-    user_scan_input = st.text_input(
-        "請直接輸入你想打包掃描的【個股代號清單】(用逗號隔開) 或 【產業關鍵字】:", 
-        value="3037,3715,1717,2330,2317,2454"
-    )
-    
-    input_clean = str(user_scan_input).strip().replace(" ", "")
-    if any(c.isdigit() for c in input_clean):
-        industry_stocks = [s for s in input_clean.split(",") if s]
-        scan_label = f"自訂 {len(industry_stocks)} 檔核心池"
-        max_output_display = len(industry_stocks)
-    else:
-        matched_df = full_info_df[
-            full_info_df["industry_category"].str.contains(input_clean, na=False) | 
-            full_info_df["stock_name"].str.contains(input_clean, na=False)
-        ]
-        industry_stocks = matched_df["stock_id"].tolist()[:25]
-        scan_label = f"關鍵字【{input_clean}】匹配池"
-        max_output_display = len(industry_stocks)
+# 🌟 徹底閹割流派 A！不再切割左右欄位，直接改成單一中央控制台
+st.markdown("""<div style='background-color:#EFF6FF; padding:10px; border-radius:6px; border-left:4px solid #3B82F6; margin-bottom:12px;'><b style='color:#1E40AF; font-size:14px;'>🎯 個股五維度縱向因果深度診斷與策略開火</b></div>""", unsafe_allow_html=True)
 
-    scan_trigger = st.button(f"🔍 啟動 【{scan_label}】 當下全因子動態矩陣掃描排行榜", use_container_width=True)
+stock_input = st.text_input("請輸入你想診斷的核心目標個股代碼（例如廣達 2382、欣興 3037）：", value="3037")
 
-with top_col2:
-    st.markdown("""<div style='background-color:#EFF6FF; padding:8px; border-radius:6px; border-left:4px solid #3B82F6; margin-bottom:8px;'><b style='color:#1E40AF; font-size:13.5px;'>流派 B：個股五維度縱向因果深度診斷與策略開火</b></div>""", unsafe_allow_html=True)
-    stock_input = st.text_input("輸入或由左方排行榜選定之目標個股代碼：", value="3037")
-    
-    st.markdown("""<div style='background-color:#FFFBEB; padding:10px; border-radius:6px; border: 1px solid #FCD34D; margin-top:5px;'>""", unsafe_allow_html=True)
-    u_col1, u_col2 = st.columns(2)
-    with u_col1:
-        user_holding = st.checkbox("📊 我目前手中「已持有」此個股", value=False)
-    with u_col2:
-        user_cost = st.number_input("每股真實持股成本 (元)", value=0.0, step=1.0, min_value=0.0, disabled=not user_holding)
-    st.markdown("""</div>""", unsafe_allow_html=True)
-    
-    diag_trigger = st.button(f"🔥 執行 【{stock_input}】 精密大腦雙速成本定錨診斷", use_container_width=True)
+st.markdown("""<div style='background-color:#FFFBEB; padding:12px; border-radius:6px; border: 1px solid #FCD34D; margin-bottom:12px;'>""", unsafe_allow_html=True)
+u_col1, u_col2 = st.columns(2)
+with u_col1:
+    user_holding = st.checkbox("📊 我目前手中「已持有」此個股", value=False)
+with u_col2:
+    user_cost = st.number_input("每股真實持股成本 (元)", value=0.0, step=1.0, min_value=0.0, disabled=not user_holding)
+st.markdown("""</div>""", unsafe_allow_html=True)
 
+diag_trigger = st.button("🔥 立即執行精密大腦雙速成本定錨診斷", use_container_width=True)
 st.markdown("---")
 
-if scan_trigger:
-    st.subheader(f"📊 【{scan_label}】即時動態連線量化篩選排行榜")
-    st.cache_data.clear()
-    scan_pool = industry_stocks
-    
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-    
-    scan_results = []
-    for idx, sid in enumerate(scan_pool):
-        status_text.text(f"🐺 狼王大腦正在即時量化自訂個股第 {idx+1}/{len(scan_pool)} 檔: {sid}...")
-        progress_bar.progress((idx + 1) / len(scan_pool))
-        time.sleep(0.25)
-        
-        res = evaluate_stock(sid, capital, risk_pct, slip_input, is_holding=False, entry_cost=0.0, sector_panic=sector_panic_toggle)
-        
-        if res:
-            bp_data = res["tactical_blueprint"]
-            score = float(res["relative_strength"])    
-            if res["vol_spike"]: score += 15.0         
-            if res["sitc_3d_sum"] > 500: score += 20.0   
-            if res["latest_yoy"] >= 20: score += 10.0    
-            
-            if "立即" in bp_data["action_now"] and "🔴" not in bp_data["action_now"]: 
-                score += 25.0  
-            if "🔴" in bp_data["action_now"] or "🛑" in bp_data["action_now"]: 
-                score -= 50.0  
-            
-            scan_results.append({
-                "代碼": res["stock_id"], 
-                "股名": res["stock_name"], 
-                "盤中市價": f"{res['current_price']:.2f} 元", 
-                "超額強度(RS)": f"{res['relative_strength']:+.2f}%",
-                "大腦路由分類": bp_data["strategy_name"].split("：")[-1], 
-                "當下即時動作": bp_data["action_now"], 
-                "短期動能": res["short_term_trend"], 
-                "波段底蘊": res["long_term_trend"], 
-                "量化綜合得分": round(score, 1),
-                "color_code": bp_data["color"]
-            })
-            
-    status_text.empty()
-    progress_bar.empty()
-    
-    if scan_results:
-        df_scan = pd.DataFrame(scan_results)
-        df_scan = df_scan.sort_values(by="量化綜合得分", ascending=False).reset_index(drop=True)
-        df_scan = df_scan.head(max_output_display)
-        
-        st.dataframe(df_scan.style.apply(lambda r: [f'background-color: {r["color_code"]}15; font-weight: 600;'] * len(r), axis=1), column_order=["代碼", "股名", "盤中市價", "超額強度(RS)", "大腦路由分類", "當下即時動作", "短期動能", "波段底蘊", "量化綜合得分"], use_container_width=True, height=400)
-    else:
-        st.info("💡 當前選擇的名單在盤中金流平淡，暫無符合排行之標的。")
-
-if diag_trigger or (not scan_trigger and stock_input):
+if diag_trigger or stock_input:
     st.cache_data.clear()
     
     with st.spinner("五維度大腦深度因果解耦中..."):
         res = evaluate_stock(stock_input, capital, risk_pct, slip_input, is_holding=user_holding, entry_cost=user_cost, sector_panic=sector_panic_toggle)
-        if res is None: st.error("該個股代碼數據獲取失敗，請確認編號是否正確（數據歷史長度需大於100日）。")
+        if res is None: 
+            st.error("該個股代碼數據獲取失敗，請確認編號是否正確（數據歷史長度需大於100日）。")
         else:
             bp_data = res["tactical_blueprint"]
             bp = bp_data["blueprint"]
@@ -1099,7 +1018,6 @@ if diag_trigger or (not scan_trigger and stock_input):
             with c3: st.markdown(custom_hud_box("⏳ 母部位大波段防禦線 (ATR)", f"<span style='font-size:16px; color:#7C3AED;'>{res['trailing_stop_line']}</span><br><small style='color:#64748B;'>當前 ATR14: {res['atr']:.2f}</small>"), unsafe_allow_html=True)
             with c4: st.markdown(custom_hud_box("📊 相對強度 (RS Matrix)", f"<span style='font-size:16px; color:#10B981;'>超額 {res['relative_strength']:+.2f}%</span><br><small style='color:#64748B;'>RS黃金箭頭: {'🔥 成立(免疫大盤)' if res['is_rs_gold'] else '⚪ 整理中'}</small>"), unsafe_allow_html=True)
 
-            # 🌟 補強點：獨立【短期波段趨勢定錨區】，防震緩衝過濾，3-5天絕不輕易變色
             st.markdown(f"""
             <div style="background-color: #F8FAFC; border: 1px solid #E2E8F0; border-left: 6px solid {res['stable_short_color']}; padding: 16px; border-radius: 6px; margin-top: 15px; margin-bottom: 15px;">
                 <div style="display: flex; justify-content: space-between; align-items: center;">
