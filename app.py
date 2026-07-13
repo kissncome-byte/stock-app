@@ -516,27 +516,39 @@ def unified_institutional_brain(res_dict, df_hist, is_holding=False, entry_cost=
                 "blueprint": {"停損防守": f"開盤第一盤最低價 ｜ 收盤破月線", "移動停利": f"波動防線 {trailing_stop:.2f} 元", "預期目標": f"短線價差衝刺目標 {res_dict['target_brk']:.2f} 元"}
             }
 
+        # =======================================================================
+        # 🌟 修正後的【右側突破全新開倉劇本】：全面綁定趨勢線，拒絕時間斷崖變臉！
+        # =======================================================================
         if st_type == "RIGHT_BREAKOUT":
             if is_momentum_decelerate:
                 return {
                     "strategy_name": st_name, "color": "#F59E0B", "action_now": "⚠️ 🟡 【全新開倉指標過熱：暫緩追高觀望】", "signal": "短線指標高位修正雜訊",
-                    "desc": "您目前空倉。個股型態強勢但隨機指標 (KD) 出現高位洗盤死叉。為防範早盤衝進去撞上短線洗盤，請暫緩追高，等待拉回 5MA 再行開火。",
+                    "desc": "您目前空倉。個股型態強勢但隨機指標 (KD) 出現高位洗盤死叉。請暫緩追高，等待拉回 5MA 再行開火。",
                     "blueprint": {"停損防守": "嚴禁盲目進場", "移動停利": "無", "預期目標": f"靜待突破壓制牆 {r:.2f} 元"}
                 }
             
+            # 🎯 核心修正：大盤雖然處於空頭環境（not m_safe），但我們不再一票否決！
             if not m_safe:
-                if is_ai_momentum and f_good and not sector_panic:
+                # 🛡️ 雙重保險：如果這檔股票的短期主趨勢定錨線『實質多頭（ma5_slope > 0.15）』
+                # 代表它具備中期趨勢線的延續性，即使開盤30分鐘過了，它依然是合法的抗震飆股！
+                if "短期多頭波段" in res_dict.get("stable_short_trend", "") or (is_ai_momentum and f_good and not sector_panic):
                     return {
-                        "strategy_name": st_name + " (⚡ AI 特許逆勢單)", "color": "#10B981", "action_now": "🔮 🟢 【大盤逆境・特許全新開火】", "signal": "板塊獨立高能動能噴發",
-                        "desc": "大盤環境雖不安全，打法策略上個股投信強力鎖碼且營收爆發，上方無怨魂。大腦解鎖 40% 的輕倉開火權，嘗試切入這檔核心逆風飆股！",
-                        "blueprint": {"停損防守": f"收盤跌破前高牆 {r:.2f} 元", "移動停利": f"波動防線 {trailing_stop:.2f} 元", "預期目標": f"獲利對位 {res_dict['target_brk']:.2f} 元"}
+                        "strategy_name": st_name + " (🛡️ 趨勢線多頭放行單)", "color": "#10B981", 
+                        "action_now": "🔮 🟢 【短期趨勢多頭向上：允許全新開火建倉】", "signal": "主趨勢線斜率向上共振",
+                        "desc": f"**【趨勢延續放行】**：大盤環境雖不安全，但量化雷達解碼顯示，該股的 **5日短期主趨勢線正集體強勢向上翹起**（空間趨勢延續）。這不是 5 分鐘內的日內雜訊，而是實打實的波段多頭排列！大腦解除警報，特許釋放全新開倉權！",
+                        "blueprint": {"停損防守": f"收盤跌破關鍵支撐牆 {m20:.2f} 元", "移動停利": f"波動防線 {trailing_stop:.2f} 元", "預期目標": f"獲利對位 {res_dict['target_brk']:.2f} 元"}
                     }
                 else:
+                    # 只有當大盤不好，且這檔股票自己也跌破趨勢線、主趨勢蓋頭下彎時，才亮紅燈！
                     return {
-                        "strategy_name": st_name, "color": "#FF4B4B", "action_now": "🚨 🔴 【環境高風險：全新開倉嚴禁開火】", "signal": "總體大盤空頭暴風雨警戒",
-                        "desc": "大盤失守 20MA 生命線，且個股不具備特許強度。此時全新開倉極易淪為市場提款機，一票否決新交易！",
+                        "strategy_name": st_name, "color": "#FF4B4B", "action_now": "🚨 🔴 【趨勢下彎且環境高風險：嚴禁開火】", "signal": "總體大盤與個股短期趨勢雙重破防",
+                        "desc": "大盤失守生命線，且該股短期主趨勢線已實質躺平或下彎，上方怨魂開始向下清算。此時全新開倉極易淪為提款機，一票否決新交易！",
                         "blueprint": {"停損防守": "嚴禁進場", "移動停利": "無", "預期目標": "手握現金等待安全期"}
                     }
+
+            # 以下原本大盤多頭常態（m_safe == True）的代碼保持完全不動
+            if p >= r * 0.98 and res_dict["vol_spike"] and c_lock and f_good and not sector_panic:
+                # ... (以下代碼不變)
 
             if p >= r * 0.98 and res_dict["vol_spike"] and c_lock and f_good and not sector_panic:
                 if overextended:
