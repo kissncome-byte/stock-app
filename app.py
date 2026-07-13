@@ -597,8 +597,10 @@ def unified_institutional_brain(res_dict, df_hist, is_holding=False, entry_cost=
 def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, slip_ticks: int, is_holding=False, entry_cost=0.0, sector_panic=False):
     res_dict = {}
     latest_yoy = 0.0
-    db_t, dc_t = 35.0, 13.0
     is_broker_dumping_risk = False
+    
+    # 🌟 核心防禦點：全量預先初始化大盤描述標籤，徹底杜絕任何 NameError 的生存空間
+    m_desc, m_color = "🟢 連線正常", "green"
     
     info_df_local = get_stock_info_df()
     match = info_df_local[info_df_local["stock_id"] == stock_id]
@@ -740,51 +742,6 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     box_width_pct = ((max_30d - min_30d) / min_30d) * 100
     is_box_compressed = box_width_pct <= 8.5
 
-    if k9_now < 20 and d9_now < 20: kd_timing = "📥 超賣打底區：指標跌至 20 以下。必須等同步突破 50 分水線才算多頭反轉。"
-    elif k9_now > 70 and d9_now > 70: kd_timing = "🦅 超買強勢區：主升段允許長時間高檔鈍化，未死叉無需恐慌賣出。"
-    elif (k9_now > d9_now) and (k9_now < 50): kd_timing = "⚠️ 短線修復雜訊：雖出現金叉，但未突破 50 分水線，多頭力道不扎實。"
-    else: kd_timing = f"⚖️ KD 指標定位：當前 K={k9_now:.1f} / D={d9_now:.1f} 處於多空常態調整箱型區間。"
-
-    if dif_now > 0 and signal_now > 0: bb_stage = "🟢 多頭波段：雙線站上 0 軸，多頭動能充足。0軸下方一律定義為弱勢盤。"
-    elif macd_hist < 0 and df["MACD_HIST"].iloc[-2] >= 0: bb_stage = "📉 高點下跌區：空頭釋放力道，綠柱連續堆建立。"
-    else: bb_stage = f"❌ 弱勢盤整走勢：DIF={dif_now:.2f} 在 0 軸下，綠柱縮短 but 未完好翻紅，不具備盲目追高條件。"
-
-    volume_verdict = f"⚖️ RSI相對強弱：5日 RSI={rsi5_now:.1f}, 10日 RSI={rsi10_now:.1f}。RSI50 為多空分水嶺。"
-
-    spring_verdict, spring_triggered, detected_prior_low, detected_neckline, spring_lowest_low = "⚪ 未觸發破底翻結構", False, 0.0, 0.0, 0.0
-    if len(df) >= 40:
-        prior_low_candidate, prior_low_idx = float(df.iloc[-40:-10]["low"].min()), df.iloc[-40:-10]["low"].idxmin()
-        spring_lowest_low = float(df.iloc[-10:]["low"].min())
-        for r_idx, row in df.iloc[-10:].iterrows():
-            if row["low"] < prior_low_candidate:
-                r_pos = df.iloc[-10:].index.get_loc(r_idx)
-                for offset in range(1, 4):
-                    if r_pos + offset < len(df.iloc[-10:]):
-                        chk_idx = df.iloc[-10:].index[r_pos + offset]
-                        if df.iloc[-10:].loc[chk_idx, "close"] > prior_low_candidate:
-                            spring_triggered, detected_prior_low = True, prior_low_candidate
-                            detected_neckline = float(df.loc[prior_low_idx:r_idx]["high"].max()) if not df.loc[prior_low_idx:r_idx].empty else prior_low_candidate
-                            break
-                if spring_triggered: break
-    if spring_triggered:
-        if current_price >= detected_prior_low and df["close"].iloc[-2] <= detected_prior_low and df["close"].iloc[-1] > df["open"].iloc[-1]: spring_verdict = f"🟢 【破底翻：買點一成立】主力砸盤誘空完成！重新站回前低 {detected_prior_low:.2f} 元。"
-        elif current_price >= detected_neckline and vol_spike: spring_verdict = f"🔮 【破底翻：買點二成立】強勢突破關鍵頸線 {detected_neckline:.2f} 元！"
-        else: spring_verdict = f"🔍 【破底翻結構醞釀中】觸發假破底洗盤（前低：{detected_prior_low:.2f}），正等待翻轉點火。"
-
-    if current_price >= ma5_val and ma5_val >= ma20_val: short_term_trend = f"🚀 五日線多頭噴發 (KD {kd_status})"
-    elif current_price >= ma5_val and current_price < ma20_val: short_term_trend = f"📈 週線跌深反彈 (KD {kd_status})"
-    elif current_price < ma5_val and current_price >= ma20_val: short_term_trend = f"⚠️ 短線跌破週線 (KD {kd_status})"
-    else: short_term_trend = f"📉 均線全面蓋頭 (KD {kd_status})"
-        
-    if current_price >= ma60_val and (df["MA60"].iloc[-1] > df["MA60"].iloc[-5]): long_term_trend = "🔥 季線全面向上（主升段架構）"
-    elif current_price < ma60_val and (df["MA60"].iloc[-1] < df["MA60"].iloc[-5]): long_term_trend = "📉 季線下彎蓋頭（空頭修正架構）"
-    else: long_term_trend = "💤 季線橫向延伸（箱型潛伏築底）"
-
-    if current_price >= ma20_val and ma20_val >= ma60_val and (df["MA20"].iloc[-1] > df["MA20"].iloc[-5]): trend_phase = "🔥 波段多頭主升段"
-    elif current_price < ma20_val and ma20_val >= ma60_val: trend_phase = "🛡️ 多頭架獲拉回洗盤期"
-    elif is_compressed: trend_phase = "💤 潛伏築底蓄勢期"
-    else: trend_phase = "📉 空頭波段修正期"
-
     rev_df = get_rev_df(stock_id, days=730)
     if rev_df is not None and not rev_df.empty and "revenue" in rev_df.columns:
         rev_clean = rev_df.copy()
@@ -853,72 +810,18 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
 
     stop_line_text = f"{round_to_tick(peak_price_20d - (2.5 * atr), t):.2f} 元"
 
+    # 🌟 補強復原點：將大頭針般的 get_market_status_label 特許大盤燈號鏈條全量焊接回來！
+    last_trade_date_str = str(df.iloc[-1]["date"])
+    _, local_m_desc, local_m_color = get_market_status_label(rt_success, last_trade_date_str)
+    m_desc, m_color = local_m_desc, local_m_color
+    if is_market_panic: m_desc, m_color = "🚨 大盤瀑布式清算恐慌潮", "red"
+    elif wtx_change <= -1.0: m_desc, m_color = f"🚨 大盤趨勢破防下殺 ({wtx_change:.2f}%)", "red"
+    elif is_us_panic: m_desc, m_color = "🚨 盤前美股暴跌警戒中", "#F59E0B"
+    elif is_market_overextended: m_desc, m_color = "⚠️ 大盤極端正乖離過熱", "orange"
+
     # =======================================================================
-    # 🌟 數據全量提早灌漿裝箱（核心修正：所有變數必須在大腦調用前，全數焊進字典裡！）
+    # 🌟 資料全量前置對齊（所有數據必須在大腦調用前，完成 100% 裝箱程序）
     # =======================================================================
-    res_dict["current_price"] = current_price
-    res_dict["current_vol"] = current_vol
-    res_dict["ma5_val"] = ma5_val
-    res_dict["vol_ma5_val"] = vol_ma5_val
-    res_dict["ma20_val"] = ma20_val
-    res_dict["ma60_val"] = ma60_val
-    res_dict["ma100_val"] = ma100_val
-    res_dict["vol_ma20_val"] = vol_ma20_val
-    res_dict["real_resistance"] = real_resistance
-    res_dict["bb_upper"] = bb_upper
-    res_dict["bb_lower"] = bb_lower
-    res_dict["bb_bandwidth"] = current_bandwidth
-    res_dict["rsi_now"] = rsi_now
-    res_dict["adx_now"] = adx_now
-    res_dict["macd_hist"] = macd_hist
-    res_dict["macro_desc"] = macro_desc
-    res_dict["sitc_trend"] = sitc_trend
-    res_dict["margin_trend"] = margin_trend
-    res_dict["sitc_3d_sum"] = sitc_3d_sum
-    res_dict["margin_diff"] = margin_diff
-    res_dict["latest_yoy"] = latest_yoy
-    res_dict["pe_val"] = pe_val
-    res_dict["pe_desc"] = pe_desc
-    res_dict["eps_4q"] = sum_eps_4q
-    res_dict["fin_conclusion"] = fin_conclusion
-    res_dict["gpm_now"] = gpm_now
-    res_dict["opm_now"] = opm_now
-    res_dict["is_compressed"] = is_compressed
-    res_dict["vol_spike"] = vol_spike
-    res_dict["news_analysis_report"] = news_analysis_report
-    res_dict["raw_news_list"] = raw_news_list
-    res_dict["trend_phase"] = trend_phase
-    res_dict["short_term_trend"] = short_term_trend
-    res_dict["long_term_trend"] = long_term_trend
-    res_dict["target_brk"] = target_brk
-    res_dict["stop_brk"] = stop_brk
-    res_dict["rr1_brk"] = rr1_brk
-    res_dict["target_pb"] = target_pb
-    res_dict["stop_pb"] = stop_pb
-    res_dict["rr1_pb"] = rr1_pb
-    res_dict["trailing_stop_line"] = stop_line_text
-    res_dict["atr"] = atr
-    res_dict["stock_daily_pct"] = stock_daily_pct
-    res_dict["relative_strength"] = relative_strength
-    res_dict["is_rs_gold"] = is_rs_gold
-    res_dict["is_volume_gap_spike"] = is_volume_gap_spike
-    res_dict["rt_source"] = rt_source
-    res_dict["m_desc"] = m_desc
-    res_dict["m_color"] = m_color
-    res_dict["volume_poc"] = volume_poc
-    res_dict["main_force_label"] = main_force_label
-    res_dict["recent_catalyst_summary"] = recent_catalyst_summary
-    res_dict["fin_df"] = fin_df
-    res_dict["k9_now"] = k9_now
-    res_dict["d9_now"] = d9_now
-    res_dict["spring_verdict"] = spring_verdict
-    res_dict["bb_stage"] = bb_stage
-    res_dict["kd_timing"] = kd_timing
-    res_dict["volume_verdict"] = volume_verdict
-    res_dict["stable_short_trend"] = stable_short_trend
-    res_dict["stable_short_color"] = stable_short_color
-    res_dict["stable_short_desc"] = stable_short_desc
-    
     res_dict["macro_bull"] = macro_bull
     res_dict["is_market_panic"] = is_market_panic
     res_dict["is_market_overextended"] = is_market_overextended
@@ -933,12 +836,15 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     res_dict["is_box_compressed"] = is_box_compressed
     res_dict["box_width_pct"] = box_width_pct
     
-    cycle_res = analyze_calendar_cyclicality(df.copy())
-    res_dict["calendar_verdict"] = cycle_res["verdict"]
-    res_dict["calendar_data"] = cycle_res
-    res_dict["macro_season"] = cycle_res["macro_season"]
+    res_dict["target_brk"] = target_brk
+    res_dict["stop_brk"] = stop_brk
+    res_dict["rr1_brk"] = rr1_brk
+    res_dict["target_pb"] = target_pb
+    res_dict["stop_pb"] = stop_pb
+    res_dict["rr1_pb"] = rr1_pb
+    res_dict["trailing_stop_line"] = stop_line_text
 
-    # 數據全部安全上線，正式開啟大腦計算分流
+    # 調用大腦決策
     tactical_blueprint = unified_institutional_brain(res_dict, df.copy(), is_holding=is_holding, entry_cost=entry_cost, sector_panic=sector_panic)
     res_dict["tactical_blueprint"] = tactical_blueprint
     
@@ -971,11 +877,49 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     else:
         res_dict["liquidity_capped"] = False
         
+    res_dict["current_price"] = current_price
+    res_dict["current_vol"] = current_vol
+    res_dict["ma5_val"] = ma5_val
+    res_dict["vol_ma5_val"] = vol_ma5_val
+    res_dict["ma20_val"] = ma20_val
+    res_dict["ma60_val"] = ma60_val
+    res_dict["ma100_val"] = ma100_val
+    res_dict["vol_ma20_val"] = vol_ma20_val
+    res_dict["real_resistance"] = real_resistance
+    res_dict["bb_upper"] = bb_upper
+    res_dict["bb_lower"] = bb_lower
+    res_dict["bb_bandwidth"] = current_bandwidth
+    res_dict["rsi_now"] = rsi_now
+    res_dict["adx_now"] = adx_now
+    res_dict["macd_hist"] = macd_hist
     res_dict["suggested_lots"] = suggested_lots
     res_dict["max_safe_liquidity_lots"] = max_safe_liquidity_lots
     res_dict["expected_stop_price"] = expected_stop_price
     res_dict["strategy_route"] = strategy_route
     res_dict["expected_target_price"] = target_brk if "突破" in tactical_blueprint["strategy_name"] or "加碼" in tactical_blueprint["action_now"] or "暫緩追高" in tactical_blueprint["action_now"] else target_pb
+    res_dict["atr"] = atr
+    res_dict["stock_daily_pct"] = stock_daily_pct
+    res_dict["rt_source"] = rt_source
+    res_dict["m_desc"] = m_desc
+    res_dict["m_color"] = m_color
+    res_dict["volume_poc"] = volume_poc
+    res_dict["main_force_label"] = main_force_label
+    res_dict["recent_catalyst_summary"] = recent_catalyst_summary
+    res_dict["fin_df"] = fin_df
+    res_dict["k9_now"] = k9_now
+    res_dict["d9_now"] = d9_now
+    res_dict["spring_verdict"] = spring_verdict
+    res_dict["bb_stage"] = bb_stage
+    res_dict["kd_timing"] = kd_timing
+    res_dict["volume_verdict"] = volume_verdict
+    res_dict["stable_short_trend"] = stable_short_trend
+    res_dict["stable_short_color"] = stable_short_color
+    res_dict["stable_short_desc"] = stable_short_desc
+    
+    cycle_res = analyze_calendar_cyclicality(df.copy())
+    res_dict["calendar_verdict"] = cycle_res["verdict"]
+    res_dict["calendar_data"] = cycle_res
+    res_dict["macro_season"] = cycle_res["macro_season"]
 
     return res_dict
 
@@ -1078,7 +1022,7 @@ if diag_trigger or stock_input:
                 box_status_text = f"🔥 波動極致壓縮成立（近30日高低落差僅 {res['box_width_pct']:.1f}%）" if res['is_box_compressed'] else f"⚪ 箱型常態發散中（近30日高低落差 {res['box_width_pct']:.1f}%）"
                 st.markdown(f"""<div style="background-color:#F8FAFC; border:1px solid #E2E8F0; padding:12px; border-radius:6px; min-height:100px; border-top:4px solid #7C3AED;"><span style="font-size:12px; color:#64748B; font-weight:700; display:block; margin-bottom:4px;">3. 箱型籌碼時間縱深（橫有多長）</span><h4 style="margin:2px 0; color:#7C3AED; font-size:15px; font-weight:800;">{box_status_text}</h4><p style="margin:4px 0 0 0; font-size:11.5px; color:#475569; font-weight:500;">精算結果：橫向窄幅整理超過一個月即定義為主力鋼鐵大底，一旦帶量斜率突破，爆發期望值極高。</p></div>""", unsafe_allow_html=True)
 
-            st.markdown(f"""<div style="background-color: #F8FAFC; border: 1px solid #E2E8F0; border-left: 6px solid {res['stable_short_color']}; padding: 16px; border-radius: 6px; margin-top: 15px; margin-bottom: 15px;"><div style="display: flex; justify-content: space-between; align-items: center;"><span style="font-size: 13px; color: #64748B; font-weight: 800; letter-spacing: 0.05em;">⏱️ 週級別・短期波段主趨勢定錨面板</span><span style="background-color: {res['stable_short_color']}20; color: {res['stable_short_color']}; padding: 2px 8px; border-radius: 4px; font-size: 12px; font-weight: 700;">防震過濾器開啟中</span></div><h4 style="margin: 8px 0; color: {res['stable_short_color']}; font-weight: 800; font-size: 18px;">當前定錨狀態：{res['stable_short_trend']}</h4><p style="margin: 0; color: #334155; font-size: 13.5px; line-height: 1.5;"><b>操盤手實戰導引：</b>{res['stable_short_desc']}</p></div>""", unsafe_allow_html=True)
+            st.markdown(f"""<div style="background-color: #F8FAFC; border: 1px solid #E2E8F0; border-left: 6px solid {res['stable_short_color']}; padding: 16px; border-radius: 6px; margin-top: 15px; margin-bottom: 15px;"><div style="display: flex; justify-content: space-between; align-items: center;"><span style="font-size: 13px; color: #64748B; font-weight: 800; letter-spacing: 0.05em;">⏱️ 週級別・短期波段主趨勢定錨面板</span><span style="background-color: {res['stable_short_color']}20; color: {res['stable_short_color']}; padding: 2px 8px; border-radius: 4px; font-size: 12px; font-weight: 700;">防震過濾器開啟中</span></div><h4 style="margin: 8px 0; color: {res['stable_short_color']}; font-weight: 800; font-size: 18px;">當前定錨狀態：{res['stable_short_trend']}</h4><p style="margin: 0; color: #334155; font-size: 13.5px; line-height: 1.5;"><b>觀察提示：</b>{res['stable_short_desc']}</p></div>""", unsafe_allow_html=True)
 
             st.markdown("### 🏛️ 四維度因子核心動態曝光面板（🚨 法人籌碼為昨日盤後數據）")
             f1, f2, f3, f4 = st.columns(4)
