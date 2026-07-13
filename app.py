@@ -231,14 +231,12 @@ def get_taiwan_enhanced_chips(stock_id: str, days: int = 30):
     except Exception: pass
     return s_trend, m_trend, s_3d, m_diff
 
-# 🌟 補強復原點：將上一版意外洗掉的營收（get_rev_df）抓取模組完美焊接回來！
 @st.cache_data(ttl=900)
 def get_rev_df(stock_id: str, days: int = 730):
     try:
         return get_api().taiwan_stock_month_revenue(stock_id=stock_id, start_date=(datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d"))
     except Exception: return None
 
-# 🌟 補強復原點：將被意外洗掉的季度綜合財報（get_financial_statement_df）模組全量焊接回來！
 @st.cache_data(ttl=86400)
 def get_financial_statement_df(stock_id: str, years: int = 2):
     try:
@@ -249,7 +247,6 @@ def get_financial_statement_df(stock_id: str, years: int = 2):
         return df[df["type"].isin(["EPS", "Revenue", "GrossProfit", "OperatingIncome"])].pivot_table(index="date", columns="type", values="value", aggfunc="last").reset_index()
     except Exception: return pd.DataFrame()
 
-# 🌟 補強復原點：將被意外洗掉的 24H 谷歌新聞即時雷達（get_realtime_news_list）完整焊接回來！
 @st.cache_data(ttl=300)
 def get_realtime_news_list(stock_id: str, stock_name: str):
     news = []
@@ -319,7 +316,7 @@ def analyze_calendar_cyclicality(df_hist):
     elif e_win >= 55.0 and m_win >= 55.0 and l_win >= 55.0:
         base_verdict = "🔥 **全月多頭報團**：此股歷史上極易受大資金連續鎖碼，日曆天數雜訊低。"
     else:
-        base_verdict = "⚖️ **隨機常態波動**：歷史日曆慣性不明顯，回歸常態量價防線。"
+        base_verdict = "⚖️ **隨機常態波動**：歷史日曆慣性不明顯，回歸常態量價防線指標。"
         
     final_verdict = f"【宏觀季節】：{macro_season}\n\n{macro_bias}\n\n---\n\n【微觀日曆慣性】：{base_verdict}"
         
@@ -478,7 +475,7 @@ def unified_institutional_brain(res_dict, df_hist, is_holding=False, entry_cost=
 
         if pnl_pct >= 0:
             return {
-                "strategy_name": "🔥 強勢主升浪完美續抱", "color": "#7D3CFF", "action_now": "🔮 🔮 【強勢狂飆：全額持股續抱】", "signal": "短長雙速動能多頭共振",
+                "strategy_name": "🔥 強勢主升浪完美續抱", "color": "#7D3CFF", "action_now": "🔮 🔮 【強勢狂飆 : 全額持股續抱】", "signal": "短長雙速動能多頭共振",
                 "desc": f"**【部位對位定錨】**：持股成本 {entry_cost:.2f} 元（帳面獲利：{pnl_pct:+.1f}%）。個股短期主趨勢線健康且完美運行於 5MA 之上。量價結構健康，盤中任何價格回落皆為洗盤雜訊，全額咬死不賣，放飛波段暴利！",
                 "blueprint": {
                     "停損防守": f"本金死穴 {entry_cost * 0.93:.2f} 元", 
@@ -575,7 +572,7 @@ def unified_institutional_brain(res_dict, df_hist, is_holding=False, entry_cost=
                 }
 
         return {
-            "strategy_name": "💤 空倉常態觀望", "color": "#64748B", "action_now": "⚖️ 🔵 【常態調整區：保持空倉耐心等待】", "signal": "進入量化緩衝帶",
+            "strategy_name": "💤 空倉常態觀望", "color": "#64748B", "action_now": "⚖️ 🔵 【常態調整區 : 保持空倉耐心等待】", "signal": "進入量化緩衝帶",
             "desc": "個股處於無方向性的箱型整理區，既無主力暴量突圍，也無良性破底翻。此時盲目進場極易被來回雙向巴掌洗盤，請保持空倉觀望。",
             "blueprint": {"停損防守": "嚴禁進場", "移動停利": "無", "預期目標": "等待金流重啟點火"}
         }
@@ -744,11 +741,10 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     else: long_term_trend = "💤 季線橫向延伸（箱型潛伏築底）"
 
     if current_price >= ma20_val and ma20_val >= ma60_val and (df["MA20"].iloc[-1] > df["MA20"].iloc[-5]): trend_phase = "🔥 波段多頭主升段"
-    elif current_price < ma20_val and ma20_val >= ma60_val: trend_phase = "🛡️ 多頭架獲拉回洗盤期"
+    elif current_price < ma20_val and ma20_val >= ma60_val: trend_phase = "🛡️ 多頭架構拉回洗盤期"
     elif is_compressed: trend_phase = "💤 潛伏築底蓄勢期"
     else: trend_phase = "📉 空頭波段修正期"
 
-    # 🌟 補強復原呼叫點：讓被漏掉的三大數據成功灌進大腦核心！
     latest_yoy = 0.0
     rev_df = get_rev_df(stock_id, days=730)
     if rev_df is not None and not rev_df.empty and "revenue" in rev_df.columns:
@@ -798,6 +794,10 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     target_pb = round_to_tick(volume_poc, t)
     stop_pb = round_to_tick(ma20_val - atr - (float(slip_ticks) * t), t) if round_to_tick(ma20_val - atr - (float(slip_ticks) * t), t) < current_price else round_to_tick(current_price - (1.5 * atr), t)
     
+    # 🌟 補強復原點：焊接回來這兩行被漏掉的風險報酬比核心精算公式！
+    rr1_brk = (target_brk - current_price) / (current_price - stop_brk) if (current_price - stop_brk) > 0 else 0.0
+    rr1_pb = (target_pb - current_price) / (current_price - stop_pb) if (current_price - stop_pb) > 0 else 0.0
+
     open_gap_pct = ((safe_float(df["open"].iloc[-1]) - safe_float(df["close"].iloc[-2])) / safe_float(df["close"].iloc[-2]) * 100) if len(df) > 1 else 0
     close_to_low_pct = ((current_price - rt_low) / (rt_high - rt_low)) if (rt_high - rt_low) > 0 else 1
     is_broker_dumping_risk = (open_gap_pct > 3.5) and (close_to_low_pct < 0.35) and ((current_vol * 1000.0) > (vol_ma20_val * 2.5))
@@ -814,6 +814,8 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     elif wtx_change <= -1.0: m_desc, m_color = f"🚨 大盤趨勢破防下殺 ({wtx_change:.2f}%)", "red"
     elif is_us_panic: m_desc, m_color = "🚨 盤前美股暴跌警戒中", "#F59E0B"
     elif is_market_overextended: m_desc, m_color = "⚠️ 大盤極端正乖離過熱", "orange"
+
+    stop_line_text = f"{round_to_tick(peak_price_20d - (2.5 * atr), t):.2f} 元"
 
     res_dict = {}
     res_dict["stock_id"] = stock_id
@@ -892,6 +894,11 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     res_dict["stable_short_color"] = stable_short_color
     res_dict["stable_short_desc"] = stable_short_desc
     
+    cycle_res = analyze_calendar_cyclicality(df.copy())
+    res_dict["calendar_verdict"] = cycle_res["verdict"]
+    res_dict["calendar_data"] = cycle_res
+    res_dict["macro_season"] = cycle_res["macro_season"]
+
     tactical_blueprint = unified_institutional_brain(res_dict, df.copy(), is_holding=is_holding, entry_cost=entry_cost, sector_panic=sector_panic)
     res_dict["tactical_blueprint"] = tactical_blueprint
     
