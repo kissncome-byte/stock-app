@@ -472,7 +472,7 @@ def unified_institutional_brain(res_dict, df_hist, is_holding=False, entry_cost=
 
         if "長上影" in final or "金流陷阱" in final:
             return {
-                "strategy_name": "🚨 爆量高檔出貨預警", "color": "#EF4444", "action_now": "🚨 🔴 【主力高檔出貨：主動執行減碼 50%】", "signal": "惡性 K 線結構與主力清算共振",
+                "strategy_name": "🚨 爆量高檔出貨預警", "color": "#EF4444", "action_now": "🚨 🔴 【主力高檔出貨：主動執行減碼 50%】", "signal": "惡性 K 線結構與主力開火共振",
                 "desc": f"目前部位損益 {pnl_pct:+.1f}%。個股盤中爆量且留長上影線，符合惡性主力倒貨特徵。為防範踩踏，強烈建議主動落袋一半部位，不允許利潤吐回！",
                 "blueprint": {"停損防守": f"技術底線 {trailing_stop:.2f} 元", "移動停利": "啟動防守落袋", "預期目標": "防禦性鎖利"}
             }
@@ -504,7 +504,7 @@ def unified_institutional_brain(res_dict, df_hist, is_holding=False, entry_cost=
         if "落後跟屁蟲" in wolf_rank_label and 'RIGHT_BREAKOUT' in st_type:
             return {
                 "strategy_name": "🚨 狼王位階風控：否決跟風開倉", "color": "#FF4B4B", "action_now": "🛑 🔴 【嚴禁開火：該標的為族群落後跟屁蟲】", "signal": "資金分化排斥效應",
-                "desc": "大腦精算顯示該股在同產業族群中屬於**落後跟屁蟲**。主力資金正在瘋狂往真正的領量羊抱團，買進跟風股隨時面臨補跌拉回風險。大腦一票否決！",
+                "desc": "大腦精算顯示該股在同產業族群中屬於**落後跟屁蟲**。主力資金正在瘋狂往真正的領頭羊抱團，買進跟風股隨時面臨補跌拉回風險。大腦一票否決！",
                 "blueprint": {"停損防守": "嚴禁進場", "移動停利": "無", "預期目標": "手握現金，要買就去買真正最強的隊長"}
             }
         
@@ -600,13 +600,20 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     is_broker_dumping_risk = False
     m_desc, m_color = "🟢 連線正常", "green"
     
-    # 🌟 數據模組最高防禦陣線：全量初始化所有可能因外接 API 異常而未被執行的核心變數
-    # 從物理底層將 `UnboundLocalError` 連根拔除，保障 2026 系統全局穩定
+    # 🌟 數據模組最高防禦陣線：全量前置宣告初始化所有可能漏寫的專家標籤
+    # 徹底將 `UnboundLocalError` 在函數最起點連根拔除，保障系統 100% 絕對穩定！
     news_analysis_report = "⚪ 暫無最新重要輿情。"
     recent_catalyst_summary = "⚪ 近 24H 內市場暫無顯著的突發消息面利多推升。"
     raw_news_list = []
     positive_catalysts_list = []
-    fin_df = pd.DataFrame()  # 🌟 【鐵壁防護鎖】：初始化為空大表，徹底超度第 836 行的 KeyError 冤魂！
+    fin_df = pd.DataFrame()
+    
+    # 🌟 【鐵壁防禦核心】：將破底翻狀態提早到函數最前線初始化！徹底超度第 869 行的連環 KeyError！
+    spring_verdict = "⚪ 未觸發破底翻結構"
+    spring_triggered = False
+    detected_prior_low = 0.0
+    detected_neckline = 0.0
+    spring_lowest_low = 0.0
     
     info_df_local = get_stock_info_df()
     match = info_df_local[info_df_local["stock_id"] == stock_id]
@@ -774,6 +781,28 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
         news_analysis_report = f"🔥 【輿情偏多】 利多消息主導市場（多 {pos_cnt} / 空 {neg_cnt}）。" if pos_cnt > neg_cnt else f"🚨 【輿情偏空】 利空雜音浮現（空 {neg_cnt} / 多 {pos_cnt}）。" if neg_cnt > pos_cnt else "⚖️ 【輿情中性】 多空消息勢均力敵。"
     recent_catalyst_summary = "<b>🎯 關鍵消息面利多題材：</b><br>" + "<br>".join([f"• {t}" for t in positive_catalysts_list[:2]]) if positive_catalysts_list else "⚪ 近 24H 內市場暫無顯著的突發消息面利多推升。"
 
+    # 🌟 破底翻實質技術精算（直接調用前方宣告好的籃子，完美安全！）
+    if len(df) >= 40:
+        prior_low_candidate, prior_low_idx = float(df.iloc[-40:-10]["low"].min()), df.iloc[-40:-10]["low"].idxmin()
+        spring_lowest_low = float(df.iloc[-10:]["low"].min())
+        for r_idx, row in df.iloc[-10:].iterrows():
+            if row["low"] < prior_low_candidate:
+                r_pos = df.iloc[-10:].index.get_loc(r_idx)
+                for offset in range(1, 4):
+                    if r_pos + offset < len(df.iloc[-10:]):
+                        chk_idx = df.iloc[-10:].index[r_pos + offset]
+                        if df.iloc[-10:].loc[chk_idx, "close"] > prior_low_candidate:
+                            spring_triggered = True
+                            detected_prior_low = prior_low_candidate
+                            detected_neckline = float(df.loc[prior_low_idx:r_idx]["high"].max()) if not df.loc[prior_low_idx:r_idx].empty else prior_low_candidate
+                            break
+                if spring_triggered: break
+                
+    if spring_triggered:
+        if current_price >= detected_prior_low and df["close"].iloc[-2] <= detected_prior_low and df["close"].iloc[-1] > df["open"].iloc[-1]: spring_verdict = f"🟢 【破底翻：買點一成立】主力砸盤誘空完成！重新站回前低 {detected_prior_low:.2f} 元。"
+        elif current_price >= detected_neckline and vol_spike: spring_verdict = f"🔮 【破底翻：買點二成立】強勢突破關鍵頸線 {detected_neckline:.2f} 元！"
+        else: spring_verdict = f"🔍 【破底翻結構醞釀中】觸發假破底洗盤（前低：{detected_prior_low:.2f}），正等待翻轉點火。"
+
     target_brk = round_to_tick(current_price + ((4.0 if df["amount"].tail(20).mean() > 2000000000 else 5.5) * atr), t)
     stop_brk = round_to_tick(real_resistance - (1.5 * atr) - (float(slip_ticks) * t), t) if round_to_tick(real_resistance - (1.5 * atr) - (float(slip_ticks) * t), t) < current_price else round_to_tick(current_price - (1.0 * atr), t)
     target_pb = round_to_tick(volume_poc, t)
@@ -783,7 +812,6 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     rr1_pb = (target_pb - current_price) / (current_price - stop_pb) if (current_price - stop_pb) > 0 else 0.0
     stop_line_text = f"{round_to_tick(peak_price_20d - (2.5 * atr), t):.2f} 元"
 
-    # 🌟 在此段防區執行安全、無損的季度數據清洗
     fin_df_raw = get_financial_statement_df(stock_id, years=2)
     fin_conclusion, pe_desc, pe_val, sum_eps_4q, gpm_now, opm_now = "📋 該標的暫無足夠季度財報數據。", "⚪ 數據不足無法計算估值", 0.0, 0.0, 0.0, 0.0
     if not fin_df_raw.empty and "Revenue" in fin_df_raw.columns and "EPS" in fin_df_raw.columns:
@@ -814,7 +842,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
         fin_df = fin_df_work[["date", "EPS", "Revenue", "GrossProfit", "OperatingIncome", "gpm", "opm"]].copy()
 
     # =======================================================================
-    # 🌟 資料全量前置對齊裝箱（核心對齊：所有專家因子在開會前 100% 完好出世！）
+    # 🌟 資料全量前置對齊裝箱（核心對齊：所有變數在大腦調用前，完成 100% 裝箱程序！）
     # =======================================================================
     res_dict["macro_bull"] = macro_bull
     res_dict["is_market_panic"] = is_market_panic
@@ -881,7 +909,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     res_dict["calendar_data"] = cycle_res
     res_dict["macro_season"] = cycle_res["macro_season"]
 
-    # 數據全量前置裝箱完成，安心啟動大腦決策
+    # 數據提早灌漿對齊後，安全呼叫策略大腦
     tactical_blueprint = unified_institutional_brain(res_dict, df.copy(), is_holding=is_holding, entry_cost=entry_cost, sector_panic=sector_panic)
     res_dict["tactical_blueprint"] = tactical_blueprint
     
