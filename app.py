@@ -9,7 +9,7 @@ from urllib3.util.retry import Retry
 from FinMind.data import DataLoader
 
 # ============ 1. Page Config ============
-st.set_page_config(page_title="SOP v48 機構級雙速狼王決策系統", layout="wide")
+st.set_page_config(page_title="SOP v48 機構級雙速狼王決決系統", layout="wide")
 
 # ============ 2. Global Constants ============
 TZ = pytz.timezone("Asia/Taipei")
@@ -419,7 +419,8 @@ def unified_institutional_brain(res_dict, df_hist, is_holding=False, entry_cost=
     is_rs_gold = res_dict["is_rs_gold"]                     
     is_volume_gap_spike = res_dict["is_volume_gap_spike"]  
     
-    pnl_pct = ((p - entry_cost) / entry_cost * 100) if (is_holding && entry_cost > 0) else 0.0
+    # 🌟 語法補強：將舊代碼手滑寫錯的 && 修正為 Python 的標準 and 算子
+    pnl_pct = ((p - entry_cost) / entry_cost * 100) if (is_holding and entry_cost > 0) else 0.0
 
     if is_holding and entry_cost > 0:
         if pnl_pct <= -7.0:
@@ -466,7 +467,7 @@ def unified_institutional_brain(res_dict, df_hist, is_holding=False, entry_cost=
         if pnl_pct >= 5.0 and p < ma5 and "短期多頭波段" not in short_trend:
             return {
                 "strategy_name": "🚀 短線達標・子部位獲利落袋", "color": "#F59E0B", "action_now": "⚠️ 🟡 【短線轉弱：減碼 50% 鎖定價差，剩餘放飛】", "signal": "股價跌破 5MA 短線攻擊線",
-                "desc": f"成本為 {entry_cost:.2f} 元。個股短線衝刺速率減緩且主趨勢線有放緩跡象，實質跌破 5MA。立即執行「現股賣出 50% 倉位」，鎖定大價差！",
+                "desc": f"成本為 {entry_cost:.2f} 元。個股短線衝刺速率減緩且主趨勢線有放緩跡象，實質跌破 5MA ({ma5:.2f} 元)。立即執行「現股賣出 50% 倉位」，鎖定大價差！",
                 "blueprint": {"停損防守": "已化為無風險種子部位", "移動停利": f"剩餘50%守技術底線 {trailing_stop:.2f} 元", "預期目標": f"長線目標看 {res_dict['target_brk']:.2f} 元"}
             }
 
@@ -501,6 +502,13 @@ def unified_institutional_brain(res_dict, df_hist, is_holding=False, entry_cost=
                 "blueprint": {"停損防守": "嚴禁進場", "移動停利": "無", "預期目標": "保全現金等待新季度開跑"}
             }
         
+        if "落後跟屁蟲" in wolf_rank_label and st_type == "RIGHT_BREAKOUT":
+            return {
+                "strategy_name": "🚨 狼王位階風控：否決跟風開倉", "color": "#FF4B4B", "action_now": "🛑 🔴 【嚴禁開火：該標的為族群落後跟屁蟲】", "signal": "資金分化排斥效應",
+                "desc": "大腦精算顯示該股在同產業族群中屬於**落後跟屁蟲**。主力資金正在瘋狂往真正的領頭羊抱團，買進跟風股隨時面臨補跌拉回風險。大腦一票否決！",
+                "blueprint": {"停損防守": "嚴禁進場", "移動停利": "無", "預期目標": "手握現金，要買就去買真正最強的隊長"}
+            }
+        
         if is_rs_gold and p >= m20 and not sector_panic:
             return {
                 "strategy_name": "🚀 統一特許：逆境黃金飆股劇本發動", "color": "#7D3CFF", "action_now": "🔮 🔮 【強者恆強：無視大盤恐慌立即開火】", "signal": "個股超額相對強度（RS）爆表",
@@ -519,7 +527,7 @@ def unified_institutional_brain(res_dict, df_hist, is_holding=False, entry_cost=
             if is_momentum_decelerate:
                 return {
                     "strategy_name": st_name, "color": "#F59E0B", "action_now": "⚠️ 🟡 【全新開倉指標過熱：暫緩追高觀望】", "signal": "短線指標高位修正雜訊",
-                    "desc": "您目前空倉。個股型態強勢但隨機指標出現高位死叉。請暫緩追高，等待拉回 5MA 再行開火。",
+                    "desc": "您目前空倉(). 個股型態強勢但隨機指標出現高位死叉。請暫緩追高，等待拉回 5MA 再行開火。",
                     "blueprint": {"停損防守": "嚴禁盲目進場", "移動停利": "無", "預期目標": f"靜待突破壓制牆 {r:.2f} 元"}
                 }
             
@@ -569,7 +577,7 @@ def unified_institutional_brain(res_dict, df_hist, is_holding=False, entry_cost=
             if "短期空頭修正" in short_trend:
                 return {
                     "strategy_name": "🛡️ 左側接飛刀遭無情否決", "color": "#FF4B4B", "action_now": "🚨 🔴 【主趨勢蓋頭下彎：嚴禁盲目左側低吸】", "signal": "拒絕逆勢接刀",
-                    "desc": "該股雖然在分價量密集牆附近，但當下個股 5日短期主趨勢線正集體向下修正。大腦一票否決任何低吸嘗試，空倉觀望！",
+                    "desc": "該股雖然在分價量密集牆附近，但當下個股 5日短期主趨勢線正集體向修正。大腦一票否決任何低吸嘗試，空倉觀望！",
                     "blueprint": {"停損防守": "嚴禁進場", "移動停利": "無", "預期目標": "手握現金防止抄底重傷"}
                 }
             
@@ -589,8 +597,6 @@ def unified_institutional_brain(res_dict, df_hist, is_holding=False, entry_cost=
 # ============ 9. Main Core Executor ============
 def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, slip_ticks: int, is_holding=False, entry_cost=0.0, sector_panic=False):
     res_dict = {}
-    
-    # 🌟 鋼鐵補漏：確保 latest_yoy 與大盤環境常態變數在最開頭一律進行 float 初始化，永遠絕緣 Unbound 錯誤
     latest_yoy = 0.0
     db_t, dc_t = 35.0, 13.0
     
@@ -736,7 +742,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
 
     if k9_now < 20 and d9_now < 20: kd_timing = "📥 超賣打底區：指標跌至 20 以下。必須等同步突破 50 分水線才算多頭反轉。"
     elif k9_now > 70 and d9_now > 70: kd_timing = "🦅 超買強勢區：主升段允許長時間高檔鈍化，未死叉無需恐慌賣出。"
-    elif (k9_now > d9_now) and (k9_now < 50): kd_timing = "⚠️ 短線修復雜訊：雖出現金叉，但未突破 50 分水線，多頭力道不扎實。"
+    elif (k9_now > d9_now) and (k9_now < 50): kd_timing = "⚠️ 短線修復雜訊：雖出現金叉，	但未突破 50 分水線，多頭力道不扎實。"
     else: kd_timing = f"⚖️ KD 指標定位：當前 K={k9_now:.1f} / D={d9_now:.1f} 處於多空常態調整箱型區間。"
 
     if dif_now > 0 and signal_now > 0: bb_stage = "🟢 多頭波段：雙線站上 0 軸，多頭動能充足。0軸下方一律定義為弱勢盤。"
@@ -803,21 +809,13 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
         if sum_eps_4q > 0:
             pe_val = current_price / sum_eps_4q
             
-            # 🌟 補強復原黃金點：全面棄用巢狀單行條件式，換上最強壯的強強制轉型型態防禦網，徹底根除第 800 行的崩潰！
-            try:
-                latest_yoy_val = float(latest_yoy)
-            except Exception:
-                latest_yoy_val = 0.0
+            # 🌟 強制轉型防禦網：全面根除巢狀單行條件式，完美收網
+            try: latest_yoy_val = float(latest_yoy)
+            except Exception: latest_yoy_val = 0.0
 
-            if latest_yoy_val >= 30.0:
-                db_t = 55.0
-                dc_t = 22.0
-            elif latest_yoy_val >= 15.0:
-                db_t = 45.0
-                dc_t = 18.0
-            else:
-                db_t = 35.0
-                dc_t = 13.0
+            if latest_yoy_val >= 30.0: db_t, dc_t = 55.0, 22.0
+            elif latest_yoy_val >= 15.0: db_t, dc_t = 45.0, 18.0
+            else: db_t, dc_t = 35.0, 13.0
                 
             pe_desc = "🚨 估值瘋狂（高檔吹泡泡）" if pe_val > db_t else "🟢 價值鐵板（安全邊際高）" if pe_val < dc_t else "⚖️ 估值合理區間"
         if len(fin_df_work) >= 5:
