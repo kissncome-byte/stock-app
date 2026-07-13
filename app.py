@@ -569,7 +569,6 @@ def unified_institutional_brain(res_dict, df_hist, is_holding=False, entry_cost=
 
 # ============ 9. Main Core Executor ============
 def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, slip_ticks: int, is_holding=False, entry_cost=0.0, sector_panic=False):
-    # 🌟 核心重構：主字典直接在最前端初始化，從源頭扼殺 KeyError
     res_dict = {}
     
     info_df_local = get_stock_info_df()
@@ -812,7 +811,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
 
     stop_line_text = f"{round_to_tick(peak_price_20d - (2.5 * atr), t):.2f} 元"
 
-    # 🌟 數據灌漿：所有計算出的專家因子，直接毫無保留地壓入 res_dict
+    # 🌟 所有基本數據直接裝箱
     res_dict["current_price"] = current_price
     res_dict["current_vol"] = current_vol
     res_dict["ma5_val"] = ma5_val
@@ -877,7 +876,6 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     res_dict["stable_short_color"] = stable_short_color
     res_dict["stable_short_desc"] = stable_short_desc
     
-    # 🌟 鋼鐵補漏線：把上一版漏掉的大盤特許因子死死釘進 res_dict
     res_dict["macro_bull"] = macro_bull
     res_dict["is_market_panic"] = is_market_panic
     res_dict["is_market_overextended"] = is_market_overextended
@@ -891,7 +889,6 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     res_dict["calendar_data"] = cycle_res
     res_dict["macro_season"] = cycle_res["macro_season"]
 
-    # 安全點火：這下子無論大腦在裡面怎麼翻閱，都絕對不會再回報 KeyError 了！
     tactical_blueprint = unified_institutional_brain(res_dict, df.copy(), is_holding=is_holding, entry_cost=entry_cost, sector_panic=sector_panic)
     res_dict["tactical_blueprint"] = tactical_blueprint
     
@@ -917,9 +914,13 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
         res_dict["is_pyramid_order"] = False
     
     max_safe_liquidity_lots = max(1, int(vol_ma5_val * 0.015))
+    
+    # 🌟 鋼鐵對齊修正：不論大於還是小於，都主動給出明確的 True/False 狀態，徹底封印 KeyError！
     if suggested_lots > max_safe_liquidity_lots:
         suggested_lots = max_safe_liquidity_lots
         res_dict["liquidity_capped"] = True
+    else:
+        res_dict["liquidity_capped"] = False
     
     res_dict["suggested_lots"] = suggested_lots
     res_dict["max_safe_liquidity_lots"] = max_safe_liquidity_lots
