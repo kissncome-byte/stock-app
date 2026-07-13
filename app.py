@@ -9,7 +9,7 @@ from urllib3.util.retry import Retry
 from FinMind.data import DataLoader
 
 # ============ 1. Page Config ============
-st.set_page_config(page_title="SOP v48 機構級雙速狼王決決系統", layout="wide")
+st.set_page_config(page_title="SOP v48 機構級雙速狼王決策系統", layout="wide")
 
 # ============ 2. Global Constants ============
 TZ = pytz.timezone("Asia/Taipei")
@@ -231,6 +231,46 @@ def get_taiwan_enhanced_chips(stock_id: str, days: int = 30):
     except Exception: pass
     return s_trend, m_trend, s_3d, m_diff
 
+# 🌟 補強復原點：將上一版意外洗掉的營收（get_rev_df）抓取模組完美焊接回來！
+@st.cache_data(ttl=900)
+def get_rev_df(stock_id: str, days: int = 730):
+    try:
+        return get_api().taiwan_stock_month_revenue(stock_id=stock_id, start_date=(datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d"))
+    except Exception: return None
+
+# 🌟 補強復原點：將被意外洗掉的季度綜合財報（get_financial_statement_df）模組全量焊接回來！
+@st.cache_data(ttl=86400)
+def get_financial_statement_df(stock_id: str, years: int = 2):
+    try:
+        raw = get_api().taiwan_stock_financial_statement(stock_id=stock_id, start_date=(datetime.now()-timedelta(days=years*365)).strftime("%Y-%m-%d"))
+        if raw is None or raw.empty: return pd.DataFrame()
+        df = raw.copy()
+        df["type"] = df["type"].replace({"OperatingRevenue": "Revenue"})
+        return df[df["type"].isin(["EPS", "Revenue", "GrossProfit", "OperatingIncome"])].pivot_table(index="date", columns="type", values="value", aggfunc="last").reset_index()
+    except Exception: return pd.DataFrame()
+
+# 🌟 補強復原點：將被意外洗掉的 24H 谷歌新聞即時雷達（get_realtime_news_list）完整焊接回來！
+@st.cache_data(ttl=300)
+def get_realtime_news_list(stock_id: str, stock_name: str):
+    news = []
+    try:
+        q = urllib.parse.quote(f"{str(stock_name)} {str(stock_id)} when:1d")
+        r = get_requests_session().get(f"https://news.google.com/rss/search?q={q}&hl=zh-TW&gl=TW&ceid=TW:zh-Hant", timeout=5)
+        if r.status_code == 200:
+            root = ET.fromstring(r.content)
+            for item in root.findall('.//item'):
+                t = item.find('title').text or ""
+                if " - " in t: t = t.rsplit(" - ", 1)[0]
+                news.append({"date": item.find('pubDate').text or "", "title": t, "source": item.find('source').text if item.find('source') is not None else "新聞財經", "link": item.find('link').text or ""})
+            if news:
+                df = pd.DataFrame(news)
+                df["parsed_date"] = pd.to_datetime(df["date"], errors="coerce", utc=True).dt.tz_convert('Asia/Taipei')
+                df["date"] = df["parsed_date"].dt.strftime('%Y-%m-%d %H:%M')
+                return df.sort_values(by="parsed_date", ascending=False)[["date", "title", "source", "link"]].to_dict('records')
+    except Exception: pass
+    return []
+
+# ============ 7. Technical Engine ============
 def analyze_calendar_cyclicality(df_hist):
     if df_hist is None or len(df_hist) < 90:
         return {"verdict": "📊 歷史數據不足，無法進行週期因果解耦", "early_win": 50, "mid_win": 50, "late_win": 50, "early_ret": 0, "mid_ret": 0, "late_ret": 0, "macro_season": "未知"}
@@ -354,7 +394,6 @@ def unified_institutional_brain(res_dict, df_hist, is_holding=False, entry_cost=
     u_panic, u_desc, wtx = res_dict.get("is_us_panic", False), res_dict.get("us_panic_desc", ""), res_dict.get("wtx_change", 0.0)
     final, atr = res_dict["final_decision"], res_dict["atr"]
     
-    # 🎯 全局最高主趨勢線狀態提取
     short_trend = res_dict.get("stable_short_trend", "")
     
     k9, d9 = df_hist["K9"].iloc[-1], df_hist["D9"].iloc[-1]
@@ -423,7 +462,6 @@ def unified_institutional_brain(res_dict, df_hist, is_holding=False, entry_cost=
             }
 
         # 🌟 全局對齊修正：唯有實質大賺 5% 以上，且短期主趨勢線『並非』多頭波段（躺平或下彎）時，5MA 的減碼鎖利才准發動！
-        # 如果趨勢線還在強力往上翹 (🟢 短期多頭波段)，即使價格日內跌破 5MA，系統一律強行封鎖減碼指令，拒絕被洗！
         if pnl_pct >= 5.0 and p < ma5 and "短期多頭波段" not in short_trend:
             return {
                 "strategy_name": "🚀 短線達標・子部位獲利落袋", "color": "#F59E0B", "action_now": "⚠️ 🟡 【短線轉弱：減碼 50% 鎖定價差，剩餘放飛】", "signal": "股價跌破 5MA 短線攻擊線",
@@ -479,7 +517,7 @@ def unified_institutional_brain(res_dict, df_hist, is_holding=False, entry_cost=
         if is_volume_gap_spike and p >= m20 and not sector_panic:
             return {
                 "strategy_name": "⚡ 突擊劇本：09:15 早盤量能斷層發動", "color": "#10B981", "action_now": "🔮 🟢 【量能斷層確立：全新開火進場熱錢追擊】", "signal": "開盤特大法人單極速掃貨",
-                "desc": "您目前空倉。該個股在開盤前 15~30 分鐘內成交量直接灌爆超越 5MA 均量的 25%！代表市場有絕對特大資金在進行不計價掃貨（量能斷層）。大腦自動無視任何指標死叉，啟動狼王突擊買進指令！",
+                "desc": "您目前空倉。該個股在開盤前 15~30 分鐘內成交量直接灌爆超越 5MA 均量的 25%！代表市場有絕對特大資金在進行不計價掃貨（量能斷層）。大腦自動無視 any 指標死叉，啟動狼王突擊買進指令！",
                 "blueprint": {"停損防守": f"開盤第一盤最低價 ｜ 收盤破月線", "移動停利": f"波動防線 {trailing_stop:.2f} 元", "預期目標": f"短線價差衝刺目標 {res_dict['target_brk']:.2f} 元"}
             }
 
@@ -520,8 +558,7 @@ def unified_institutional_brain(res_dict, df_hist, is_holding=False, entry_cost=
                     "blueprint": {"停損防守": f"收盤跌破前高壓力牆 {r:.2f} 元", "移動停利": f"波動防線 {trailing_stop:.2f} 元", "預期目標": f"獲利擴張目標對位 {res_dict['target_brk']:.2f} 元"}
                 }
 
-        # 🎯 全局對齊修正：左側拉回低吸/破底翻劇本「全面綁定趨勢線」
-        # 如果短期主趨勢線目前是蓋頭彎向下的 (🔴 短期空頭修正)，大腦一票否決任何低吸、接飛刀的買進動作！
+        # 🎯 全局對齊修正：左側拉回低吸/破底翻劇本全面綁定趨勢線
         elif st_type == "LEFT_SPRING" and not sector_panic:
             if "短期空頭修正" in short_trend:
                 return {
@@ -673,7 +710,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
 
     if dif_now > 0 and signal_now > 0: bb_stage = "🟢 多頭波段：雙線站上 0 軸，多頭動能充足。0軸下方一律定義為弱勢盤。"
     elif macd_hist < 0 and df["MACD_HIST"].iloc[-2] >= 0: bb_stage = "📉 高點下跌區：空頭釋放力道，綠柱連續堆建立。"
-    else: bb_stage = f"❌ 弱勢盤整走勢：DIF={dif_now:.2f} 在 0 軸下，綠柱縮短但未完好翻紅，不具備盲目追高條件。"
+    else: bb_stage = f"❌ 弱勢盤整走勢：DIF={dif_now:.2f} 在 0 軸下，綠柱縮短 but 未完好翻紅，不具備盲目追高條件。"
 
     volume_verdict = f"⚖️ RSI相對強弱：5日 RSI={rsi5_now:.1f}, 10日 RSI={rsi10_now:.1f}。RSI50 為多空分水嶺。"
 
@@ -707,10 +744,11 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     else: long_term_trend = "💤 季線橫向延伸（箱型潛伏築底）"
 
     if current_price >= ma20_val and ma20_val >= ma60_val and (df["MA20"].iloc[-1] > df["MA20"].iloc[-5]): trend_phase = "🔥 波段多頭主升段"
-    elif current_price < ma20_val and ma20_val >= ma60_val: trend_phase = "🛡️ 多頭架構拉回洗盤期"
+    elif current_price < ma20_val and ma20_val >= ma60_val: trend_phase = "🛡️ 多頭架獲拉回洗盤期"
     elif is_compressed: trend_phase = "💤 潛伏築底蓄勢期"
     else: trend_phase = "📉 空頭波段修正期"
 
+    # 🌟 補強復原呼叫點：讓被漏掉的三大數據成功灌進大腦核心！
     latest_yoy = 0.0
     rev_df = get_rev_df(stock_id, days=730)
     if rev_df is not None and not rev_df.empty and "revenue" in rev_df.columns:
@@ -850,16 +888,13 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     res_dict["volume_verdict"] = volume_verdict
     res_dict["radar_results"] = radar_results
 
-    # 🌟 將剛才算好的「防震主趨勢線三個核心變數」完美寫進 package，送進大腦
     res_dict["stable_short_trend"] = stable_short_trend
     res_dict["stable_short_color"] = stable_short_color
     res_dict["stable_short_desc"] = stable_short_desc
     
-    # 調用大腦決策
     tactical_blueprint = unified_institutional_brain(res_dict, df.copy(), is_holding=is_holding, entry_cost=entry_cost, sector_panic=sector_panic)
     res_dict["tactical_blueprint"] = tactical_blueprint
     
-    # 後續資金核心風控精算對齊
     expected_stop_price = target_brk - (1.5 * atr) if "突破" in tactical_blueprint["strategy_name"] else stop_pb
     if "破底翻" in tactical_blueprint["strategy_name"] and ("買點一成立" in spring_verdict or "買點二成立" in spring_verdict):
         expected_stop_price = round_to_tick(spring_lowest_low - t, t) if round_to_tick(spring_lowest_low - t, t) < current_price else round_to_tick(current_price - (1.0 * atr), t)
