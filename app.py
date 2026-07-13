@@ -600,6 +600,12 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     is_broker_dumping_risk = False
     m_desc, m_color = "🟢 連線正常", "green"
     
+    # 🌟 鋼鐵補護線：將所有與「谷歌即時新聞輿情」相關的變數，死死地在函數最前端初始化！
+    # 徹底摧毀因為數據搶跑裝箱導致的 UnboundLocalError 惡性 Bug！
+    news_analysis_report = "⚪ 暫無最新重要輿情。"
+    recent_catalyst_summary = "⚪ 近 24H 內市場暫無顯著的突發消息面利多推升。"
+    raw_news_list = []
+    
     info_df_local = get_stock_info_df()
     match = info_df_local[info_df_local["stock_id"] == stock_id]
     
@@ -621,10 +627,6 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
             stock_name = f"代號 {stock_id}"
             industry = "自訂追蹤板塊"
             
-    res_dict["stock_id"] = stock_id
-    res_dict["stock_name"] = stock_name
-    res_dict["industry"] = industry
-    
     df_raw = get_daily_df(stock_id, market_type=market_type, days=450)
     if df_raw is None or df_raw.empty: return None
 
@@ -635,8 +637,6 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     rt_open, rt_high, rt_low, rt_close, rt_vol_lots, rt_success, rt_source, rt_type = compute_live_data(stock_id, market_type, float(hist_last_raw["close"]), float(hist_last_raw["vol"]))
     
     current_price, current_vol = rt_close, rt_vol_lots 
-
-    # 🌟 鋼鐵對齊修正線：將升降級距（t）的宣告，直接焊死在現價 current_price 出生後的第一行！
     t = tick_size(current_price)
 
     df_for_indicators = df_raw.copy().sort_values("date").reset_index(drop=True)
@@ -753,6 +753,8 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     if k_shadow_trap: final_decision = "❌ 爆量長上影"
     elif is_broker_dumping_risk: final_decision = "🚨 惡性金流陷阱"
 
+    stop_line_text = f"{round_to_tick(peak_price_20d - (2.5 * atr), t):.2f} 元"
+
     last_trade_date_str = str(df.iloc[-1]["date"])
     _, local_m_desc, local_m_color = get_market_status_label(rt_success, last_trade_date_str)
     m_desc, m_color = local_m_desc, local_m_color
@@ -761,18 +763,20 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     elif is_us_panic: m_desc, m_color = "🚨 盤前美股暴跌警戒中", "#F59E0B"
     elif is_market_overextended: m_desc, m_color = "⚠️ 大盤極端正乖離過熱", "orange"
 
-    # 🌟 數據解耦物理精算
-    target_brk = round_to_tick(current_price + ((4.0 if df["amount"].tail(20).mean() > 2000000000 else 5.5) * atr), t)
-    stop_brk = round_to_tick(real_resistance - (1.5 * atr) - (float(slip_ticks) * t), t) if round_to_tick(real_resistance - (1.5 * atr) - (float(slip_ticks) * t), t) < current_price else round_to_tick(current_price - (1.0 * atr), t)
-    target_pb = round_to_tick(volume_poc, t)
-    stop_pb = round_to_tick(ma20_val - atr - (float(slip_ticks) * t), t) if round_to_tick(ma20_val - atr - (float(slip_ticks) * t), t) < current_price else round_to_tick(current_price - (1.5 * atr), t)
-    
-    rr1_brk = (target_brk - current_price) / (current_price - stop_brk) if (current_price - stop_brk) > 0 else 0.0
-    rr1_pb = (target_pb - current_price) / (current_price - stop_pb) if (current_price - stop_pb) > 0 else 0.0
-    stop_line_text = f"{round_to_tick(peak_price_20d - (2.5 * atr), t):.2f} 元"
+    # 🌟 實質去網路撈過路財神（News API 深度因果解析）
+    raw_news_list_data = get_realtime_news_list(stock_id, stock_name)
+    if raw_news_list_data:
+        raw_news_list = raw_news_list_data[:8]
+        for n in raw_news_list:
+            lbl, col = analyze_news_sentiment(n["title"])
+            n["sentiment"], n["color"] = lbl, col
+            if "利多" in lbl: positive_catalysts_list.append(n["title"])
+        pos_cnt, neg_cnt = sum(1 for n in raw_news_list if "利多" in n["sentiment"]), sum(1 for n in raw_news_list if "利空" in n["sentiment"])
+        news_analysis_report = f"🔥 【輿情偏多】 利多消息主導市場（多 {pos_cnt} / 空 {neg_cnt}）。" if pos_cnt > neg_cnt else f"🚨 【輿情偏空】 利空雜音浮現（空 {neg_cnt} / 多 {pos_cnt}）。" if neg_cnt > pos_cnt else "⚖️ 【輿情中性】 多空消息勢均力敵。"
+    recent_catalyst_summary = "<b>🎯 關鍵消息面利多題材：</b><br>" + "<br>".join([f"• {t}" for t in positive_catalysts_list[:2]]) if positive_catalysts_list else "⚪ 近 24H 內市場暫無顯著的突發消息面利多推升。"
 
     # =======================================================================
-    # 🌟 數據全量前置灌漿裝箱（核心對齊：所有變數在大腦調用前，完成 100% 裝箱程序！）
+    # 🌟 資料全量前置對齊裝箱（所有變數在此處已 100% 完好出世！）
     # =======================================================================
     res_dict["macro_bull"] = macro_bull
     res_dict["is_market_panic"] = is_market_panic
@@ -831,6 +835,8 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     res_dict["stable_short_trend"] = stable_short_trend
     res_dict["stable_short_color"] = stable_short_color
     res_dict["stable_short_desc"] = stable_short_desc
+    res_dict["news_analysis_report"] = news_analysis_report
+    res_dict["raw_news_list"] = raw_news_list
 
     cycle_res = analyze_calendar_cyclicality(df.copy())
     res_dict["calendar_verdict"] = cycle_res["verdict"]
@@ -989,3 +995,66 @@ if diag_trigger or stock_input:
                 st.markdown("""<div style="background-color:#FDF4FF; padding:12px; border-radius:6px; border-top:4px solid #7C3AED; min-height:185px; border-left:1px solid #E2E8F0; border-right:1px solid #E2E8F0; border-bottom:1px solid #E2E8F0;"><h5 style="margin:0; color:#5B21B6; font-size:14px; font-weight:700;">⏱️ 微觀技術與早盤監測</h5><ul style="margin:6px 0 0 0; padding-left:16px; font-size:13px; color:#1E293B; line-height:1.45; font-weight:600;"><li>09:15 量能斷層: <span style="color:#10B981; font-weight:700;">""" + vol_gap_text + """</span></li><li>分價量密集牆(POC): """ + f"{res['volume_poc']:.2f} 元" + """</li><li>隨機隨機指標: KD=""" + f"{res['k9_now']:.1f}/{res['d9_now']:.1f}" + """</li></ul><hr style="margin:6px 0; border:0; border-top:1px solid #E2E8F0;"><p style="margin:0; padding:0; font-size:12px; color:#6B21A8; line-height:1.45; font-weight:600;">""" + res["recent_catalyst_summary"] + """</p></div>""", unsafe_allow_html=True)
 
             st.markdown("<br>", unsafe_allow_html=True)
+            st.markdown("### 🗺️ 精密雙軌量化交易藍圖對照區 (空倉全新佈局參考)")
+            bl1, bl2 = st.columns(2)
+            with bl1: st.markdown(f"""<div style="background-color: #F8FAFC; padding: 16px; border-radius: 6px; border-left: 5px solid #2563EB; border-top: 1px solid #E2E8F0; border-right: 1px solid #E2E8F0; border-bottom: 1px solid #E2E8F0;"><h4 style="margin: 0 0 12px 0; color: #1E40AF; font-weight:800;">🚀 流派一：突破前高起漲劇本 (Breakout)</h4><p style="font-size: 14px; margin: 5px 0;"><b>精密建倉觸發點</b>：&le; {res['real_resistance']:.2f} 元</p><p style="font-size: 14px; margin: 5px 0;"><b>精密獲利目標</b>：<span style="color:#2563EB; font-weight:700;">{res['target_brk']:.2f} 元</span></p><p style="font-size: 14px; margin: 5px 0;"><b>技術防守停損</b>：{res['stop_brk']:.2f} 元</p><p style="font-size: 14px; margin: 5px 0;"><b>期望風險報酬比 (R:R)</b>：{res['rr1_brk']:.2f}</p></div>""", unsafe_allow_html=True)
+            with bl2: st.markdown(f"""<div style="background-color: #F8FAFC; padding: 16px; border-radius: 6px; border-left: 5px solid #10B981; border-top: 1px solid #E2E8F0; border-right: 1px solid #E2E8F0; border-bottom: 1px solid #E2E8F0;"><h4 style="margin: 0 0 12px 0; color: #065F46; font-weight:800;">🛡️ 流派二：均線拉回低吸劇本 (Pullback)</h4><p style="font-size: 14px; margin: 5px 0;"><b>精密低吸買點</b>：貼近 {res['ma20_val']:.2f} 元</p><p style="font-size: 14px; margin: 5px 0;"><b>期望反彈目標</b>：<span style="color:#10B981; font-weight:700;">{res['target_pb']:.2f} 元</span></p><p style="font-size: 14px; margin: 5px 0;"><b>技術防守停損</b>：{res['stop_pb']:.2f} 元</p><p style="font-size: 14px; margin: 5px 0;"><b>期望風險報酬比 (R:R)</b>：{res['rr1_pb']:.2f}</p></div>""", unsafe_allow_html=True)
+
+            st.markdown("<br>", unsafe_allow_html=True)
+            st.markdown("### 🛡️ 量化核心風控配額開火劇本")
+            
+            if res["liquidity_capped"]:
+                st.warning(f"⚠️ **【流動性上限啟動】**：為了防範台股鎖死踩踏，單筆限額已遭硬性限制（最大極限：{res['max_safe_liquidity_lots']} 張）。")
+                
+            if res["suggested_lots"] == 0:
+                st.error("🚨 【核心風控最高警戒：策略大腦拒絕開倉 / 已強制清倉】")
+
+            b1, b2, b3, b4 = st.columns(4)
+            label_text = "🔮 精算加碼頭寸配置" if res["is_pyramid_order"] else "精算風控進場配置"
+            with b1: st.metric(label_text, f"{res['suggested_lots']} 張", "流動性與多因子縱深控制中")
+            with b2: st.metric("當前劇本風控停損價", f"{res['expected_stop_price']:.2f} 元")
+            with b3: st.metric("大波段移動停利線 (ATR)", res["trailing_stop_line"])
+            with b4: st.metric("大盤加權指數防禦網", "大盤過熱" if is_market_overextended else "逆境黃金(RS放行)" if res["is_rs_gold"] else "多頭安全" if macro_bull else "空頭風險", res["macro_desc"])
+
+            st.markdown("---")
+            st.markdown("### 🔍 跨因子微觀底層驗證數據")
+            with st.expander("🧱 ⚙️ 核心指標副圖完整專家解碼面板", expanded=True):
+                st.markdown(f"**📈 KD 隨機指標副圖解讀**：{res['kd_timing']}")
+                st.markdown(f"**📊 MACD 趨勢力道副圖解讀**：{res['bb_stage']}")
+                st.markdown(f"**⚡ RSI 相對強弱副圖解讀**：{res['volume_verdict']}")
+
+            with st.expander("📅 ⏳ 個股歷史日曆效應（月週期循環）專家解碼面板", expanded=True):
+                st.markdown(f"### 📡 狼王大腦日曆綜合研判：")
+                st.markdown(f"> {res['calendar_verdict'].replace('\n', '<br>')}", unsafe_allow_html=True)
+                st.markdown("---")
+                st.markdown("**📊 過去 450 天內【月初、月中、月底】實質統計矩陣：**")
+                
+                c_data = res["calendar_data"]
+                cy_col1, cy_col2, cy_col3 = st.columns(3)
+                with cy_col1:
+                    st.markdown(f"""<div style="background-color: #F8FAFC; border-left: 4px solid #2563EB; padding: 10px; border-radius: 4px;"><small style="color: #64748B; font-weight: 700;">🟢 上旬 (1號 ~ 10號)</small><p style="margin: 4px 0 0 0; font-size: 13px; font-weight: bold; color: #1E293B;">平均報酬: <span style="color: {'#10B981' if c_data['early_ret'] >= 0 else '#EF4444'}">{c_data['early_ret']:+.3f}%</span><br>歷史勝率: {c_data['early_win']:.1f}%</p></div>""", unsafe_allow_html=True)
+                with cy_col2:
+                    st.markdown(f"""<div style="background-color: #F8FAFC; border-left: 4px solid #64748B; padding: 10px; border-radius: 4px;"><small style="color: #64748B; font-weight: 700;">🟡 中旬 (11號 ~ 20號)</small><p style="margin: 4px 0 0 0; font-size: 13px; font-weight: bold; color: #1E293B;">平均報酬: <span style="color: {'#10B981' if c_data['mid_ret'] >= 0 else '#EF4444'}">{c_data['mid_ret']:+.3f}%</span><br>歷史勝率: {c_data['mid_win']:.1f}%</p></div>""", unsafe_allow_html=True)
+                with cy_col3:
+                    st.markdown(f"""<div style="background-color: #F8FAFC; border-left: 4px solid #7C3AED; padding: 10px; border-radius: 4px;"><small style="color: #64748B; font-weight: 700;">🟣 下旬 (21號 ~ 月底)</small><p style="margin: 4px 0 0 0; font-size: 13px; font-weight: bold; color: #1E293B;">平均報酬: <span style="color: {'#10B981' if c_data['late_ret'] >= 0 else '#EF4444'}">{c_data['late_ret']:+.3f}%</span><br>歷史勝率: {c_data['late_win']:.1f}%</p></div>""", unsafe_allow_html=True)
+                
+                current_day_now = datetime.now(TZ).day
+                st.markdown(f"""<br><small style='color:#64748B;'><b>💡 提示：</b> 今天是當月 <b>{current_day_now} 號</b>。如果綜合研判為『典型月循環』且適逢月底拉回，量化期望值對多頭極有利。</small>""", unsafe_allow_html=True)
+
+            with st.expander("📊 財務基本面完整財務矩陣大表"):
+                if not res["fin_df"].empty:
+                    clean_fin_show = res["fin_df"].copy().sort_values("date", ascending=False)
+                    clean_fin_show.columns = ["季度日期", "單季 EPS", "營業收入", "營業毛利", "營業利益", "單季毛利率 (%)", "單季營益率 (%)"]
+                    st.dataframe(clean_fin_show.style.format({"單季 EPS": "{:.2f}", "營業收入": "{:,.0f}", "營業毛利": "{:,.0f}", "營業利益": "{:,.0f}", "單季毛利率 (%)": "{:.2f}%", "單季營益率 (%)": "{:.2f}%"}), use_container_width=True)
+
+            with st.expander("📈 技術面後台詳細物理量"):
+                st.write(f"**分價量密集牆(POC)** = `{res['volume_poc']:.2f}` 元 ｜ **5日線 MA5** = `{res['ma5_val']:.2f}` 元 ｜ **月線 MA20** = `{res['ma20_val']:.2f}` 元 ｜ **20週線 MA100** = `{res['ma100_val']:.2f}` 元")
+
+            with st.expander("📰 資訊面 24H 網路輿情即時新聞流水線"):
+                st.markdown(f"> **24H 網路即時輿情綜合定論**：`{res['news_analysis_report']}`")
+                if isinstance(res["raw_news_list"], list) and res["raw_news_list"]:
+                    for n in res["raw_news_list"]: st.markdown(f"* **[{n['date']}]** 【{n['source']}】 [{n['sentiment']}] [{n['title']}]({n['link']})")
+
+if auto_refresh:
+    time.sleep(5)
+    st.rerun()
