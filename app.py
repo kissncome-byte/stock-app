@@ -375,7 +375,7 @@ def prepare_indicator_df(df: pd.DataFrame):
     else: x["is_long_upper_shadow"] = False
     return x.dropna(subset=["ATR14", "MA5", "MA20", "MA60", "MA100", "Res_20D", "BB_bandwidth", "RSI14", "MACD_HIST", "K9", "D9", "ADX14", "RSI5", "RSI10"]).copy()
 
-# ============ 8. 統一狼王策略決策大腦模型 (v48 終極整合版) ============
+# ============ 8. 統一狼王策略決策大腦模型 ============
 def auto_strategy_classifier(res_dict):
     p, r, m20, spring, phase = res_dict["current_price"], res_dict["real_resistance"], res_dict["ma20_val"], res_dict["spring_verdict"], res_dict["trend_phase"]
     if "買點一成立" in spring or "買點二成立" in spring or "醞釀中" in spring:
@@ -406,9 +406,6 @@ def unified_institutional_brain(res_dict, df_hist, is_holding=False, entry_cost=
     
     pnl_pct = ((p - entry_cost) / entry_cost * 100) if (is_holding and entry_cost > 0) else 0.0
 
-    # =============================================================
-    # 🎭 劇本 A：【已持有部位管理劇本】
-    # =============================================================
     if is_holding and entry_cost > 0:
         if pnl_pct <= -7.0:
             return {
@@ -417,7 +414,6 @@ def unified_institutional_brain(res_dict, df_hist, is_holding=False, entry_cost=
                 "blueprint": {"停損防守": f"本金死穴 {entry_cost * 0.93:.2f} 元", "移動停利": "無", "預期目標": "保全資金殘餘"}
             }
 
-        # 🌟 智慧大腦：新開倉動能蜜月期保護機制 (1.5% 貼身區拒絕盲目甩洗)
         is_fresh_trade = (abs(pnl_pct) <= 1.5) and (is_volume_gap_spike or is_rs_gold or (p >= r * 0.95))
         if is_fresh_trade:
             return {
@@ -448,17 +444,16 @@ def unified_institutional_brain(res_dict, df_hist, is_holding=False, entry_cost=
         if p < trailing_stop:
             if pnl_pct > 0:
                 action_msg = "🛑 🔴 【波段獲利終結：剩餘母部位全數清倉】"
-                desc_msg = f"**【波段趨勢終結】**：您的持股成本為 {entry_cost:.2f} 元（帳面獲利：{pnl_pct:+.1f}%）。即時價已實質跌破近20日高點回撤的 ATR 防禦線 ({trailing_stop:.2f} 元)。雖然利潤從高點回吐，但目前仍屬獲利狀態，結構徹底改變，請全額清倉落袋！"
+                desc_msg = f"**【波段趨勢終結】**：您的持股成本為 {entry_cost:.2f} 元（帳面獲利：{pnl_pct:+.1f}%）。即時價已實質跌破近20日高點回撤的 ATR 防禦線 ({trailing_stop:.2f} 元)。請全額清倉落袋！"
             else:
                 action_msg = "🛑 🔴 【中線結構破防：全額認賠清倉】"
-                desc_msg = f"**【中線結構破防】**：您的持股成本為 {entry_cost:.2f} 元（帳面虧損：{pnl_pct:.1f}%）。即時價已實質跌破技術防線 ({trailing_stop:.2f} 元)。這檔股票先前拉高建立的防護網已被擊穿，目前已跌破您的本金成本，慣性徹底轉惡。請全額清倉認賠，嚴防虧損失控！"
+                desc_msg = f"**【中線結構破防】**：您的持股成本為 {entry_cost:.2f} 元（帳面虧損：{pnl_pct:.1f}%）。即時價已實質跌破技術防線 ({trailing_stop:.2f} 元)。慣性徹底轉惡。請全額清倉認賠，嚴防虧損失控！"
             
             return {
                 "strategy_name": "⏳ 中線波段趨勢終結", "color": "#EF4444", "action_now": action_msg, "signal": "跌破動態 ATR 波動防線", "desc": desc_msg,
                 "blueprint": {"停損防守": "全額清倉離場", "移動停利": "已觸發", "預期目標": "資金全額退場"}
             }
 
-        # 🌟 全局對齊修正：唯有實質大賺 5% 以上，且短期主趨勢線『並非』多頭波段（躺平或下彎）時，5MA 的減碼鎖利才准發動！
         if pnl_pct >= 5.0 and p < ma5 and "短期多頭波段" not in short_trend:
             return {
                 "strategy_name": "🚀 短線達標・子部位獲利落袋", "color": "#F59E0B", "action_now": "⚠️ 🟡 【短線轉弱：減碼 50% 鎖定價差，剩餘放飛】", "signal": "股價跌破 5MA 短線攻擊線",
@@ -490,9 +485,6 @@ def unified_institutional_brain(res_dict, df_hist, is_holding=False, entry_cost=
                 "blueprint": {"停損防守": f"硬性停損線 {entry_cost * 0.93:.2f} 元 ｜ 技術防線 {trailing_stop:.2f} 元", "移動停利": "暫無利潤可鎖", "預期目標": f"先看解套拉回成本價，再看目標 {res_dict['target_brk']:.2f} 元"}
             }
 
-    # =============================================================
-    # 🎯 劇本 B：【未持有・全新開倉劇本】
-    # =============================================================
     else:
         is_momentum_decelerate = (k9 < d9) and k9 > 75
         
@@ -526,19 +518,18 @@ def unified_institutional_brain(res_dict, df_hist, is_holding=False, entry_cost=
                     "blueprint": {"停損防守": "嚴禁盲目進場", "移動停利": "無", "預期目標": f"靜待突破壓制牆 {r:.2f} 元"}
                 }
             
-            # 🎯 全局對齊：突破劇本全面綁定趨勢線
             if not m_safe:
                 if "短期多頭波段" in short_trend or (is_ai_momentum and f_good and not sector_panic):
                     return {
                         "strategy_name": st_name + " (🛡️ 趨勢線多頭放行單)", "color": "#10B981", 
                         "action_now": "🔮 🟢 【短期趨勢多頭向上：允許全新開火建倉】", "signal": "主趨勢線斜率向上共振",
-                        "desc": "大盤環境雖不安全，但量化雷達解碼顯示，該股的 5日短期主趨勢線正集體強勢向上翹起（空間趨勢延續）。這不是 5 分鐘內的日內雜訊，而是實打實的波段多頭排列！大腦解除警報，特許釋放全新開倉權！",
+                        "desc": "大盤環境雖不安全，但量化雷達解碼顯示，該股的 5日短期主趨勢線正集體強勢向上翹起（空間趨勢延續）。大腦解除警報，特許釋放全新開倉權！",
                         "blueprint": {"停損防守": f"收盤跌破關鍵支撐牆 {m20:.2f} 元", "移動停利": f"波動防線 {trailing_stop:.2f} 元", "預期目標": f"獲利對位 {res_dict['target_brk']:.2f} 元"}
                     }
                 else:
                     return {
                         "strategy_name": st_name, "color": "#FF4B4B", "action_now": "🚨 🔴 【趨勢下彎且環境高風險：嚴禁開火】", "signal": "總體大盤與個股短期趨勢雙重破防",
-                        "desc": "大盤失守生命線，且該股短期主趨勢線已實質躺平或下彎，上方怨魂開始向下清算。此時全新開倉極易淪為提款機，一票否決新交易！",
+                        "desc": "大盤失守生命線，且該股短期主趨勢線已實質躺平或下彎，上方怨魂開始向下清算。一票否決新交易！",
                         "blueprint": {"停損防守": "嚴禁進場", "移動停利": "無", "預期目標": "手握現金等待安全期"}
                     }
 
@@ -555,12 +546,11 @@ def unified_institutional_brain(res_dict, df_hist, is_holding=False, entry_cost=
                     "blueprint": {"停損防守": f"收盤跌破前高壓力牆 {r:.2f} 元", "移動停利": f"波動防線 {trailing_stop:.2f} 元", "預期目標": f"獲利擴張目標對位 {res_dict['target_brk']:.2f} 元"}
                 }
 
-        # 🎯 全局對齊修正：左側拉回低吸/破底翻劇本全面綁定趨勢線
         elif st_type == "LEFT_SPRING" and not sector_panic:
             if "短期空頭修正" in short_trend:
                 return {
                     "strategy_name": "🛡️ 左側接飛刀遭無情否決", "color": "#FF4B4B", "action_now": "🚨 🔴 【主趨勢蓋頭下彎：嚴禁盲目左側低吸】", "signal": "拒絕逆勢接刀",
-                    "desc": "該股雖然在分價量密集牆 (POC) 或是跌深前低附近，但當下個股 5日短期主趨勢線正集體向下修正。這意味著空頭怨魂大部隊正在無情清算，下方任何支撐都是一張脆弱的紙。大腦一票否決任何低吸嘗試，空倉觀望！",
+                    "desc": "該股雖然在分價量密集牆附近，但當下個股 5日短期主趨勢線正集體向下修正。大腦一票否決任何低吸嘗試，空倉觀望！",
                     "blueprint": {"停損防守": "嚴禁進場", "移動停利": "無", "預期目標": "手握現金防止抄底重傷"}
                 }
             
@@ -573,13 +563,15 @@ def unified_institutional_brain(res_dict, df_hist, is_holding=False, entry_cost=
 
         return {
             "strategy_name": "💤 空倉常態觀望", "color": "#64748B", "action_now": "⚖️ 🔵 【常態調整區 : 保持空倉耐心等待】", "signal": "進入量化緩衝帶",
-            "desc": "個股處於無方向性的箱型整理區，既無主力暴量突圍，也無良性破底翻。此時盲目進場極易被來回雙向巴掌洗盤，請保持空倉觀望。",
+            "desc": "個股處於無方向性的箱型整理區，請保持空倉觀望。",
             "blueprint": {"停損防守": "嚴禁進場", "移動停利": "無", "預期目標": "等待金流重啟點火"}
         }
 
 # ============ 9. Main Core Executor ============
 def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, slip_ticks: int, is_holding=False, entry_cost=0.0, sector_panic=False):
-    fin_df = pd.DataFrame()
+    # 🌟 核心重構：主字典直接在最前端初始化，從源頭扼殺 KeyError
+    res_dict = {}
+    
     info_df_local = get_stock_info_df()
     match = info_df_local[info_df_local["stock_id"] == stock_id]
     
@@ -600,6 +592,10 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
         else:
             stock_name = f"代號 {stock_id}"
             industry = "自訂追蹤板塊"
+            
+    res_dict["stock_id"] = stock_id
+    res_dict["stock_name"] = stock_name
+    res_dict["industry"] = industry
     
     df_raw = get_daily_df(stock_id, market_type=market_type, days=450)
     if df_raw is None or df_raw.empty: return None
@@ -794,7 +790,6 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     target_pb = round_to_tick(volume_poc, t)
     stop_pb = round_to_tick(ma20_val - atr - (float(slip_ticks) * t), t) if round_to_tick(ma20_val - atr - (float(slip_ticks) * t), t) < current_price else round_to_tick(current_price - (1.5 * atr), t)
     
-    # 🌟 補強復原點：焊接回來這兩行被漏掉的風險報酬比核心精算公式！
     rr1_brk = (target_brk - current_price) / (current_price - stop_brk) if (current_price - stop_brk) > 0 else 0.0
     rr1_pb = (target_pb - current_price) / (current_price - stop_pb) if (current_price - stop_pb) > 0 else 0.0
 
@@ -817,10 +812,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
 
     stop_line_text = f"{round_to_tick(peak_price_20d - (2.5 * atr), t):.2f} 元"
 
-    res_dict = {}
-    res_dict["stock_id"] = stock_id
-    res_dict["stock_name"] = stock_name
-    res_dict["industry"] = industry
+    # 🌟 數據灌漿：所有計算出的專家因子，直接毫無保留地壓入 res_dict
     res_dict["current_price"] = current_price
     res_dict["current_vol"] = current_vol
     res_dict["ma5_val"] = ma5_val
@@ -861,20 +853,12 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     res_dict["target_pb"] = target_pb
     res_dict["stop_pb"] = stop_pb
     res_dict["rr1_pb"] = rr1_pb
-    res_dict["is_pyramid_order"] = False
-    res_dict["liquidity_capped"] = False
-    res_dict["max_safe_liquidity_lots"] = 0
-    res_dict["expected_stop_price"] = 0.0
-    res_dict["strategy_route"] = ""
-    res_dict["expected_target_price"] = 0.0
     res_dict["trailing_stop_line"] = stop_line_text
-    
     res_dict["atr"] = atr
     res_dict["stock_daily_pct"] = stock_daily_pct
     res_dict["relative_strength"] = relative_strength
     res_dict["is_rs_gold"] = is_rs_gold
     res_dict["is_volume_gap_spike"] = is_volume_gap_spike
-    
     res_dict["rt_source"] = rt_source
     res_dict["m_desc"] = m_desc
     res_dict["m_color"] = m_color
@@ -889,16 +873,25 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     res_dict["kd_timing"] = kd_timing
     res_dict["volume_verdict"] = volume_verdict
     res_dict["radar_results"] = radar_results
-
     res_dict["stable_short_trend"] = stable_short_trend
     res_dict["stable_short_color"] = stable_short_color
     res_dict["stable_short_desc"] = stable_short_desc
+    
+    # 🌟 鋼鐵補漏線：把上一版漏掉的大盤特許因子死死釘進 res_dict
+    res_dict["macro_bull"] = macro_bull
+    res_dict["is_market_panic"] = is_market_panic
+    res_dict["is_market_overextended"] = is_market_overextended
+    res_dict["is_us_panic"] = is_us_panic
+    res_dict["us_panic_desc"] = us_panic_desc
+    res_dict["wtx_change"] = wtx_change
+    res_dict["final_decision"] = final_decision
     
     cycle_res = analyze_calendar_cyclicality(df.copy())
     res_dict["calendar_verdict"] = cycle_res["verdict"]
     res_dict["calendar_data"] = cycle_res
     res_dict["macro_season"] = cycle_res["macro_season"]
 
+    # 安全點火：這下子無論大腦在裡面怎麼翻閱，都絕對不會再回報 KeyError 了！
     tactical_blueprint = unified_institutional_brain(res_dict, df.copy(), is_holding=is_holding, entry_cost=entry_cost, sector_panic=sector_panic)
     res_dict["tactical_blueprint"] = tactical_blueprint
     
