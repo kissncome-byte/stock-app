@@ -109,7 +109,7 @@ def compute_live_data(stock_id: str, market_type: str, hist_last_close: float, h
 @st.cache_data(ttl=1800)
 def get_overnight_radar():
     session = get_requests_session()
-    targets = {"台灣加權大盤 (^TWII)": "^TWII", "Nasdaq那指 (^IXIC)": "^IXIC", "費城半導體 (^SOX)": "^SOX", "台積電 ADR (TSM)": "TSM"}
+    targets = {"台灣加權大盤 (^TWII)": "^TWII", "Nasdaq那指 (^IXIC)": "^IXIC", "費城半導體 (^SOX)": "^SOX", "台計電 ADR (TSM)": "TSM"}
     radar_res, is_us_panic, panic_desc, wtx_change = {}, False, "", 0.0
     for label, symbol in targets.items():
         for prefix in ["query2", "query1"]:
@@ -622,6 +622,14 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     short_term_trend = f"📉 均線全面蓋頭 (KD 死亡交叉)"
     long_term_trend = "💤 季線橫向延伸（箱型潛伏築底）"
     
+    # 🌟 【最高階安全初始化大軍】：提前宣告所有核心財務變數，防範 API 無數據流時造成的 Unbound 幽靈錯誤
+    fin_conclusion = "📋 該標的暫無足夠季度財報數據。"
+    pe_desc = "⚪ 數據不足無法計算估值"
+    pe_val = 0.0
+    sum_eps_4q = 0.0
+    gpm_now = 0.0
+    opm_now = 0.0
+
     info_df_local = get_stock_info_df()
     match = info_df_local[info_df_local["stock_id"] == stock_id]
     
@@ -844,6 +852,13 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     elif is_compressed: trend_phase = "💤 潛伏築底蓄勢期"
     else: trend_phase = "📉 空頭波段修正期"
 
+    rev_df = get_rev_df(stock_id, days=730)
+    if rev_df is not None and not rev_df.empty and "revenue" in rev_df.columns:
+        rev_clean = rev_df.copy()
+        rev_clean["revenue"] = pd.to_numeric(rev_clean["revenue"].astype(str).str.replace(",", ""), errors="coerce")
+        rev_clean["revenue_year_growth_rate"] = rev_clean["revenue"].pct_change(12) * 100
+        if not rev_clean.dropna(subset=["revenue_year_growth_rate"]).empty: latest_yoy = float(rev_clean.dropna(subset=["revenue_year_growth_rate"]).sort_values("date").iloc[-1]["revenue_year_growth_rate"])
+
     fin_df_raw = get_financial_statement_df(stock_id, years=2)
     if not fin_df_raw.empty and "Revenue" in fin_df_raw.columns and "EPS" in fin_df_raw.columns:
         fin_df_work = fin_df_raw.copy()
@@ -873,7 +888,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
         fin_df = fin_df_work[["date", "EPS", "Revenue", "GrossProfit", "OperatingIncome", "gpm", "opm"]].copy()
 
     # =======================================================================
-    # 🌟 數據全量對齊裝箱（核心修補：將 trend_phase 與長短趨勢線 100% 綁定灌入！）
+    # 🌟 數據全量前置對齊灌漿裝箱（核心修補：將 trend_phase 與全量財務因子一併完好打包！）
     # =======================================================================
     res_dict["macro_bull"] = macro_bull
     res_dict["is_market_panic"] = is_market_panic
@@ -935,10 +950,17 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     res_dict["news_analysis_report"] = news_analysis_report
     res_dict["raw_news_list"] = raw_news_list
     
-    # 🚨 鋼鐵對齊標籤：把漏掉的長短趨勢、位階因子完好鎖進箱子裡
+    # 🚨 鋼鐵補漏點：把上一版在外面亂跑的長短趨勢、因果位階、財務定性因子通通關進字典裡
     res_dict["trend_phase"] = trend_phase
     res_dict["short_term_trend"] = short_term_trend
     res_dict["long_term_trend"] = long_term_trend
+    res_dict["latest_yoy"] = latest_yoy
+    res_dict["pe_val"] = pe_val
+    res_dict["pe_desc"] = pe_desc
+    res_dict["eps_4q"] = sum_eps_4q
+    res_dict["fin_conclusion"] = fin_conclusion
+    res_dict["gpm_now"] = gpm_now
+    res_dict["opm_now"] = opm_now
 
     cycle_res = analyze_calendar_cyclicality(df.copy())
     res_dict["calendar_verdict"] = cycle_res["verdict"]
