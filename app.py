@@ -140,7 +140,6 @@ def get_stock_info_df():
                 if col in df.columns: df[col] = df[col].astype(str).str.strip()
             return df
     except Exception: pass
-    
     fallback = [
         {"stock_id": "2330", "stock_name": "台積電", "type": "twse", "industry_category": "半導體業"},
         {"stock_id": "2454", "stock_name": "聯發科", "type": "twse", "industry_category": "半導體業"},
@@ -879,8 +878,12 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
         fin_df = fin_df_work[["date", "EPS", "Revenue", "GrossProfit", "OperatingIncome", "gpm", "opm"]].copy()
 
     # =======================================================================
-    # 🌟 數據全量前置灌漿裝箱（核心閉環：所有專家因子 100% 同步打包！）
+    # 🌟 數據全量前置灌漿裝箱（核心閉環：黃金鐵三角 100% 打包完成，杜絕 KeyError）
     # =======================================================================
+    res_dict["stock_id"] = stock_id
+    res_dict["stock_name"] = stock_name
+    res_dict["industry"] = industry
+    
     res_dict["macro_bull"] = macro_bull
     res_dict["is_market_panic"] = is_market_panic
     res_dict["is_market_overextended"] = is_market_overextended
@@ -894,6 +897,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     res_dict["wolf_rank_color"] = wolf_rank_color
     res_dict["is_box_compressed"] = is_box_compressed
     res_dict["box_width_pct"] = box_width_pct
+    
     res_dict["target_brk"] = target_brk
     res_dict["stop_brk"] = stop_brk
     res_dict["rr1_brk"] = rr1_brk
@@ -1073,7 +1077,7 @@ if diag_trigger or stock_input:
             </div>
             """)
 
-            # 🌟 【終極防護網優化】：將以下所有展示層前端組件，死死地用 4 格縮排釘在 else: 區塊內部！
+            # 🌟 展示層全量回歸 else 區塊，順序完全校正
             st.markdown("### 🌐 昨晚美股與台指期夜盤即時戰報")
             radar_show = res["radar_results"]
             if radar_show:
@@ -1082,7 +1086,6 @@ if diag_trigger or stock_input:
                     with rd_cols[i]:
                         st.markdown(f"""<div style="background-color:#F8FAFC; border:1px solid #E2E8F0; padding:10px; border-radius:6px; text-align:center;"><span style="font-size:12px; color:#64748B; font-weight:600;">{lbl}</span><h4 style="margin:4px 0 0 0; color:{'#10B981' if val >= 0 else '#EF4444'}; font-weight:800;">{'🔺' if val >= 0 else '🔻'} {val:.2f}%</h4></div>""", unsafe_allow_html=True)
 
-            # 🌟 物理拆解優化：將原本冗長容易出錯的單行區塊改寫為乾淨的多行 f-string 區塊
             st.markdown(
                 f"""
                 <div style="background-color: #1F2937; padding: 18px; border-radius: 8px; border: 2px solid #3B82F6; margin-bottom: 20px;">
@@ -1137,7 +1140,7 @@ if diag_trigger or stock_input:
             st.markdown("### 🗺️ 精密雙軌量化交易藍圖對照區 (空倉全新佈局參考)")
             bl1, bl2 = st.columns(2)
             with bl1: st.markdown(f"""<div style="background-color: #F8FAFC; padding: 16px; border-radius: 6px; border-left: 5px solid #2563EB; border-top: 1px solid #E2E8F0; border-right: 1px solid #E2E8F0; border-bottom: 1px solid #E2E8F0;"><h4 style="margin: 0 0 12px 0; color: #1E40AF; font-weight:800;">🚀 流派一：突破前高起漲劇本 (Breakout)</h4><p style="font-size: 14px; margin: 5px 0;"><b>精密建倉觸發點</b>：&le; {res['real_resistance']:.2f} 元</p><p style="font-size: 14px; margin: 5px 0;"><b>精密獲利目標</b>：<span style="color:#2563EB; font-weight:700;">{res['target_brk']:.2f} 元</span></p><p style="font-size: 14px; margin: 5px 0;"><b>技術防守停損</b>：{res['stop_brk']:.2f} 元</p><p style="font-size: 14px; margin: 5px 0;"><b>期望風險報酬比 (R:R)</b>：{res['rr1_brk']:.2f}</p></div>""", unsafe_allow_html=True)
-            with bl2: st.markdown(f"""<div style="background-color: #F8FAFC; padding: 16px; border-radius: 6px; border-left: 5px solid #10B981; border-top: 1px solid #E2E8F0; border-right: 1px solid #E2E8F0; border-bottom: 1px solid #E2E8F0;"><h4 style="margin: 0 0 12px 0; color: #065F46; font-weight:800;">🛡️ 流派二：均線拉回低吸劇本 (Pullback)</h4><p style="font-size: 14px; margin: 5px 0;"><b>精密低吸買點</b>：貼近 {res['ma20_val']:.2f} 元</p><p style="font-size: 14px; margin: 5px 0;"><b>精密獲利目標</b>：<span style="color:#10B981; font-weight:700;">{res['target_pb']:.2f} 元</span></p><p style="font-size: 14px; margin: 5px 0;"><b>技術防守停損</b>：{res['stop_pb']:.2f} 元</p><p style="font-size: 14px; margin: 5px 0;"><b>期望風險報酬比 (R:R)</b>：{res['rr1_pb']:.2f}</p></div>""", unsafe_allow_html=True)
+            with bl2: st.markdown(f"""<div style="background-color: #F8FAFC; padding: 16px; border-radius: 6px; border-left: 5px solid #10B981; border-top: 1px solid #E2E8F0; border-right: 1px solid #E2E8F0; border-bottom: 1px solid #E2E8F0;"><h4 style="margin: 0 0 12px 0; color: #065F46; font-weight:800;">🛡️ 流派二：均線拉回低吸劇本 (Pullback)</h4><p style="font-size: 14px; margin: 5px 0;"><b>精密低吸買點</b>：貼近 {res['ma20_val']:.2f} 元</p><p style="font-size: 14px; margin: 5px 0;"><b>期望反彈目標</b>：<span style="color:#10B981; font-weight:700;">{res['target_pb']:.2f} 元</span></p><p style="font-size: 14px; margin: 5px 0;"><b>技術防守停損</b>：{res['stop_pb']:.2f} 元</p><p style="font-size: 14px; margin: 5px 0;"><b>期望風險報酬比 (R:R)</b>：{res['rr1_pb']:.2f}</p></div>""", unsafe_allow_html=True)
 
             st.markdown("<br>", unsafe_allow_html=True)
             st.markdown("### 🛡️ 量化核心風控配額開火劇本")
@@ -1194,6 +1197,7 @@ if diag_trigger or stock_input:
                 if isinstance(res["raw_news_list"], list) and res["raw_news_list"]:
                     for n in res["raw_news_list"]: st.markdown(f"* **[{n['date']}]** 【{n['source']}】 [{n['sentiment']}] [{n['title']}]({n['link']})")
 
+# 🌟 全量對齊完工
 if auto_refresh:
     time.sleep(5)
     st.rerun()
