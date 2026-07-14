@@ -128,7 +128,6 @@ def get_overnight_radar():
             except Exception: pass
     return radar_res, is_us_panic, panic_desc, wtx_change
 
-# 🌟 鐵壁修正點：將被塞錯參數的 subset="all" 徹底抹除，回歸官方標準語法！
 @st.cache_data(ttl=3600)
 def get_stock_info_df():
     try:
@@ -884,7 +883,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
         fin_df = fin_df_work[["date", "EPS", "Revenue", "GrossProfit", "OperatingIncome", "gpm", "opm"]].copy()
 
     # =======================================================================
-    # 🌟 數據全量前置灌漿裝箱（核心閉環：所有專家因子 100% 同步打包！）
+    # 🌟 數據全量前置灌漿裝箱（核心對齊修正：全量因子在大腦調用前，完成 100% 裝箱程序！）
     # =======================================================================
     res_dict["macro_bull"] = macro_bull
     res_dict["is_market_panic"] = is_market_panic
@@ -960,13 +959,16 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     res_dict["margin_trend"] = margin_trend
     res_dict["sitc_3d_sum"] = sitc_3d_sum
     res_dict["margin_diff"] = margin_diff
+    
+    # 🚨 【鋼鐵核心補正線】：把 Yahoo 戰報的雷達圖數據，在最前線死死釘回字典，完美超度最後的 KeyError 冤魂！
+    res_dict["radar_results"] = radar_results
 
     cycle_res = analyze_calendar_cyclicality(df.copy())
     res_dict["calendar_verdict"] = cycle_res["verdict"]
     res_dict["calendar_data"] = cycle_res
     res_dict["macro_season"] = cycle_res["macro_season"]
 
-    # 安全呼叫大腦
+    # 數據全量前置對齊裝箱完成，安心啟動大腦決策
     tactical_blueprint = unified_institutional_brain(res_dict, df.copy(), is_holding=is_holding, entry_cost=entry_cost, sector_panic=sector_panic)
     res_dict["tactical_blueprint"] = tactical_blueprint
     
