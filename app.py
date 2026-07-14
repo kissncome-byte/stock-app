@@ -109,7 +109,7 @@ def compute_live_data(stock_id: str, market_type: str, hist_last_close: float, h
 @st.cache_data(ttl=1800)
 def get_overnight_radar():
     session = get_requests_session()
-    targets = {"台灣加權大盤 (^TWII)": "^TWII", "Nasdaq那指 (^IXIC)": "^IXIC", "費城半導體 (^SOX)": "^SOX", "台計電 ADR (TSM)": "TSM"}
+    targets = {"台灣加權大盤 (^TWII)": "^TWII", "Nasdaq那指 (^IXIC)": "^IXIC", "費城半導體 (^SOX)": "^SOX", "台積電 ADR (TSM)": "TSM"}
     radar_res, is_us_panic, panic_desc, wtx_change = {}, False, "", 0.0
     for label, symbol in targets.items():
         for prefix in ["query2", "query1"]:
@@ -473,7 +473,7 @@ def unified_institutional_brain(res_dict, df_hist, is_holding=False, entry_cost=
         if "長上影" in final or "金流陷阱" in final:
             return {
                 "strategy_name": "🚨 爆量高檔出貨預警", "color": "#EF4444", "action_now": "🚨 🔴 【主力高檔出貨：主動執行減碼 50%】", "signal": "惡性 K 線結構與主力開火共振",
-                "desc": f"目前部位損益 {pnl_pct:+.1f}%。個股盤中爆量且留長上影線，符合惡性主力倒貨特徵。為防範踩踏，強烈建議主動落袋一半部位，不允許利潤吐回！",
+                "desc": f"目前部位損益 {pnl_pct:+.1f}%。個股盤中爆量且留長上影線，符合惡性主力倒貨特特征。為防範踩踏，強烈建議主動落袋一半部位，不允許利潤吐回！",
                 "blueprint": {"停損防守": f"技術底線 {trailing_stop:.2f} 元", "移動停利": "啟動防守落袋", "預期目標": "防禦性鎖利"}
             }
 
@@ -613,6 +613,13 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     bb_stage = "❌ 數據不足無法計算趨勢力道"
     kd_timing = "⚖️ KD 指標定位：尚未取得足夠計算區間"
     volume_verdict = "⚖️ RSI相對強弱：數據載入中"
+    
+    # 🌟 頂層宣告大軍合體：把跟籌碼面有關的專家標籤也全面提前初始化，物理杜絕 Unbound
+    sitc_trend = "🟡 中性"
+    margin_trend = "🟡 平穩"
+    sitc_3d_sum = 0.0
+    margin_diff = 0.0
+    main_force_label = "⚖️ 常態調整 (0%)"
     wolf_rank_label = "⚖️ 族群常態輪動成員（隨大盤溫和浮動）"
     wolf_rank_color = "#64748B"
     stable_short_trend = "🟡 短期箱型潛伏（橫盤整理，多看少動）"
@@ -621,15 +628,10 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     trend_phase = "📉 空頭波段修正期"
     short_term_trend = f"📉 均線全面蓋頭 (KD 死亡交叉)"
     long_term_trend = "💤 季線橫向延伸（箱型潛伏築底）"
-    
-    # 🌟 【最高階安全初始化大軍】：提前宣告所有核心財務變數，防範 API 無數據流時造成的 Unbound 幽靈錯誤
     fin_conclusion = "📋 該標的暫無足夠季度財報數據。"
     pe_desc = "⚪ 數據不足無法計算估值"
-    pe_val = 0.0
-    sum_eps_4q = 0.0
-    gpm_now = 0.0
-    opm_now = 0.0
-
+    pe_val, sum_eps_4q, gpm_now, opm_now = 0.0, 0.0, 0.0, 0.0
+    
     info_df_local = get_stock_info_df()
     match = info_df_local[info_df_local["stock_id"] == stock_id]
     
@@ -852,13 +854,6 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     elif is_compressed: trend_phase = "💤 潛伏築底蓄勢期"
     else: trend_phase = "📉 空頭波段修正期"
 
-    rev_df = get_rev_df(stock_id, days=730)
-    if rev_df is not None and not rev_df.empty and "revenue" in rev_df.columns:
-        rev_clean = rev_df.copy()
-        rev_clean["revenue"] = pd.to_numeric(rev_clean["revenue"].astype(str).str.replace(",", ""), errors="coerce")
-        rev_clean["revenue_year_growth_rate"] = rev_clean["revenue"].pct_change(12) * 100
-        if not rev_clean.dropna(subset=["revenue_year_growth_rate"]).empty: latest_yoy = float(rev_clean.dropna(subset=["revenue_year_growth_rate"]).sort_values("date").iloc[-1]["revenue_year_growth_rate"])
-
     fin_df_raw = get_financial_statement_df(stock_id, years=2)
     if not fin_df_raw.empty and "Revenue" in fin_df_raw.columns and "EPS" in fin_df_raw.columns:
         fin_df_work = fin_df_raw.copy()
@@ -888,7 +883,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
         fin_df = fin_df_work[["date", "EPS", "Revenue", "GrossProfit", "OperatingIncome", "gpm", "opm"]].copy()
 
     # =======================================================================
-    # 🌟 數據全量前置對齊灌漿裝箱（核心修補：將 trend_phase 與全量財務因子一併完好打包！）
+    # 🌟 數據全量前置對齊灌漿裝箱（核心修補：將籌碼面所有因子集體焊入箱中！）
     # =======================================================================
     res_dict["macro_bull"] = macro_bull
     res_dict["is_market_panic"] = is_market_panic
@@ -949,8 +944,6 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     res_dict["stable_short_desc"] = stable_short_desc
     res_dict["news_analysis_report"] = news_analysis_report
     res_dict["raw_news_list"] = raw_news_list
-    
-    # 🚨 鋼鐵補漏點：把上一版在外面亂跑的長短趨勢、因果位階、財務定性因子通通關進字典裡
     res_dict["trend_phase"] = trend_phase
     res_dict["short_term_trend"] = short_term_trend
     res_dict["long_term_trend"] = long_term_trend
@@ -961,6 +954,12 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     res_dict["fin_conclusion"] = fin_conclusion
     res_dict["gpm_now"] = gpm_now
     res_dict["opm_now"] = opm_now
+
+    # 🚨 鐵粉鋼線補強：將投信融資主力等籌碼 Key 在此處一併解鎖裝箱
+    res_dict["sitc_trend"] = sitc_trend
+    res_dict["margin_trend"] = margin_trend
+    res_dict["sitc_3d_sum"] = sitc_3d_sum
+    res_dict["margin_diff"] = margin_diff
 
     cycle_res = analyze_calendar_cyclicality(df.copy())
     res_dict["calendar_verdict"] = cycle_res["verdict"]
@@ -1122,7 +1121,7 @@ if diag_trigger or stock_input:
             st.markdown("### 🗺️ 精密雙軌量化交易藍圖對照區 (空倉全新佈局參考)")
             bl1, bl2 = st.columns(2)
             with bl1: st.markdown(f"""<div style="background-color: #F8FAFC; padding: 16px; border-radius: 6px; border-left: 5px solid #2563EB; border-top: 1px solid #E2E8F0; border-right: 1px solid #E2E8F0; border-bottom: 1px solid #E2E8F0;"><h4 style="margin: 0 0 12px 0; color: #1E40AF; font-weight:800;">🚀 流派一：突破前高起漲劇本 (Breakout)</h4><p style="font-size: 14px; margin: 5px 0;"><b>精密建倉觸發點</b>：&le; {res['real_resistance']:.2f} 元</p><p style="font-size: 14px; margin: 5px 0;"><b>精密獲利目標</b>：<span style="color:#2563EB; font-weight:700;">{res['target_brk']:.2f} 元</span></p><p style="font-size: 14px; margin: 5px 0;"><b>技術防守停損</b>：{res['stop_brk']:.2f} 元</p><p style="font-size: 14px; margin: 5px 0;"><b>期望風險報酬比 (R:R)</b>：{res['rr1_brk']:.2f}</p></div>""", unsafe_allow_html=True)
-            with bl2: st.markdown(f"""<div style="background-color: #F8FAFC; padding: 16px; border-radius: 6px; border-left: 5px solid #10B981; border-top: 1px solid #E2E8F0; border-right: 1px solid #E2E8F0; border-bottom: 1px solid #E2E8F0;"><h4 style="margin: 0 0 12px 0; color: #065F46; font-weight:800;">🛡️ 流派二：均線拉回低吸劇本 (Pullback)</h4><p style="font-size: 14px; margin: 5px 0;"><b>精密低吸買點</b>：貼近 {res['ma20_val']:.2f} 元</p><p style="font-size: 14px; margin: 5px 0;"><b>期望反彈目標</b>：<span style="color:#10B981; font-weight:700;">{res['target_pb']:.2f} 元</span></p><p style="font-size: 14px; margin: 5px 0;"><b>技術防守停損</b>：{res['stop_pb']:.2f} 元</p><p style="font-size: 14px; margin: 5px 0;"><b>期望風險報酬比 (R:R)</b>：{res['rr1_pb']:.2f}</p></div>""", unsafe_allow_html=True)
+            with bl2: st.markdown(f"""<div style="background-color: #F8FAFC; padding: 16px; border-radius: 6px; border-left: 5px solid #10B981; border-top: 1px solid #E2E8F0; border-right: 1px solid #E2E8F0; border-bottom: 1px solid #E2E8F0;"><h4 style="margin: 0 0 12px 0; color: #065F46; font-weight:800;">🛡️ 流派二：均線拉回低吸劇本 (Pullback)</h4><p style="font-size: 14px; margin: 5px 0;"><b>精密低吸買點</b>：貼近 {res['ma20_val']:.2f} 元</p><p style="font-size: 14px; margin: 5px 0;"><b>精密獲利目標</b>：<span style="color:#10B981; font-weight:700;">{res['target_pb']:.2f} 元</span></p><p style="font-size: 14px; margin: 5px 0;"><b>技術防守停損</b>：{res['stop_pb']:.2f} 元</p><p style="font-size: 14px; margin: 5px 0;"><b>期望風險報酬比 (R:R)</b>：{res['rr1_pb']:.2f}</p></div>""", unsafe_allow_html=True)
 
             st.markdown("<br>", unsafe_allow_html=True)
             st.markdown("### 🛡️ 量化核心風控配額開火劇本")
