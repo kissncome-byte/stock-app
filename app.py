@@ -205,7 +205,6 @@ def get_rev_df(stock_id: str, days: int = 730):
     try: return get_api().taiwan_stock_month_revenue(stock_id=stock_id, start_date=(datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d"))
     except Exception: return None
 
-# 🌟 【季度財報大組件強勢歸位】：徹底超度第 375 行的 NameError 惡性內鬼！
 @st.cache_data(ttl=86400)
 def get_financial_statement_df(stock_id: str, years: int = 2):
     try:
@@ -227,8 +226,6 @@ def prepare_indicator_df(df: pd.DataFrame):
     x["Res_20D"], x["std20"] = x["high"].rolling(20).max(), x["close"].rolling(20).std()
     delta = x["close"].diff()
     x["RSI14"] = 100 - (100 / (1 + (delta.clip(lower=0).ewm(com=13, adjust=False).mean() / delta.clip(upper=0).ewm(com=13, adjust=False).mean().replace(0, -0.00001).abs())))
-    x["RSI5"] = 100 - (100 / (1 + (delta.clip(lower=0).ewm(com=4, adjust=False).mean() / delta.clip(upper=0).ewm(com=4, adjust=False).mean().replace(0, -0.00001).abs())))
-    x["RSI10"] = 100 - (100 / (1 + (delta.clip(lower=0).ewm(com=9, adjust=False).mean() / delta.clip(upper=0).ewm(com=9, adjust=False).mean().replace(0, -0.00001).abs())))
     
     up_diff, down_diff = x["high"].diff(), x["low"].shift(1) - x["low"]
     x["P_DI_raw"] = np.where((up_diff > down_diff) & (up_diff > 0), up_diff, 0.0)
@@ -278,20 +275,17 @@ def unified_institutional_brain(res_dict, df_hist, is_holding=False, entry_cost=
 
 # ============ 9. Main Core Executor ============
 def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, slip_ticks: int, is_holding=False, entry_cost=0.0, sector_panic=False):
-    # 🌟 時序鐵壁定錨：全函數最高優先級置頂宣告
     today_str = datetime.now(TZ).strftime("%Y-%m-%d")
-    
     res_dict = {}
     latest_yoy, is_broker_dumping_risk = 0.0, False
     raw_news_list, positive_catalysts_list, fin_df = [], [], pd.DataFrame()
     spring_verdict, spring_triggered, detected_prior_low, detected_neckline = "⚪ 未觸發破底翻結構", False, 0.0, 0.0
     
-    # 局部環境變數全量初始灌漿
     sitc_trend, margin_trend, sitc_3d_sum, margin_diff = "🟡 中性", "🟡 平穩", 0.0, 0.0
     main_force_label, wolf_rank_label, wolf_rank_color = "⚖️ 常態調整 (0%)", "⚖️ 族群常態輪動成員", "#64748B"
     stable_short_trend, stable_short_color, stable_short_desc = "🟡 短期箱型潛伏", "#F59E0B", "均線水平橫躺。"
     trend_phase, short_term_trend, long_term_trend = "📉 空頭修正期", "📉 均線全面蓋頭", "💤 季線橫向延伸"
-    fin_conclusion, gpm_now, opm_now, sum_eps_4q, pe_val = "📋 暫無財報數據", 0.0, 0.0, 0.0, 0.0
+    fin_conclusion, gpm_now, opm_now = "📋 暫無財報數據", 0.0, 0.0
     
     info_df_local = get_stock_info_df()
     match = info_df_local[info_df_local["stock_id"] == stock_id]
@@ -384,7 +378,6 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
             fin_df_work.loc[f_idx, "opm"] = (safe_float(fin_df_work.loc[f_idx, "OperatingIncome"]) / rev_amt * 100) if rev_amt > 0 else 0.0
         last_fin = fin_df_work.iloc[-1]
         gpm_now, opm_now, sum_eps_4q = safe_float(last_fin.get("gpm", 0.0)), safe_float(last_fin.get("opm", 0.0)), pd.to_numeric(fin_df_work.tail(4)['EPS'], errors='coerce').sum()
-        pe_val = current_price / sum_eps_4q if sum_eps_4q > 0 else 0.0
         fin_conclusion = "📈 【財報年增擴張】獲利指標超越去年同期！" if len(fin_df_work) >= 5 and gpm_now > safe_float(fin_df_work.iloc[-5].get("gpm", 0.0)) else "⚖️ 財報常態運作中"
         fin_df = fin_df_work[["date", "EPS", "Revenue", "GrossProfit", "OperatingIncome", "gpm", "opm"]].copy()
 
@@ -392,7 +385,6 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     short_term_trend = f"🚀 五日線多頭噴發 (KD {kd_status})" if current_price >= ma5_val and ma5_val >= ma20_val else f"📉 均線全面蓋頭 (KD {kd_status})"
     trend_phase = "🔥 波段多頭主升段" if current_price >= ma20_val and ma20_val >= ma60_val else "💤 潛伏築底期"
 
-    # 垂直封裝宣告
     res_dict["stock_id"] = stock_id
     res_dict["stock_name"] = stock_name
     res_dict["industry"] = industry
@@ -452,7 +444,7 @@ with st.sidebar:
     sector_panic_toggle = st.checkbox("🔥 同族群其他龍頭股「集體下殺破5%」", value=False)
     auto_refresh = st.checkbox("🔄 開啟盤中每 5 秒自動秒刷報價", value=False)
 
-macro_bull, macro_label, _, _, _, _ = get_market_macro_status()
+macro_bull, macro_label, _, _, market_vol_healthy, market_vol_desc = get_market_macro_status()
 st.markdown("## 📡 雙速策略大腦動態綜合看盤台 (v48 狼王特選版)")
 stock_input = st.text_input("請輸入核心目標個股代碼：", value="3037")
 
@@ -469,6 +461,7 @@ if diag_trigger or stock_input:
         bp_data = res["tactical_blueprint"]
         bp = bp_data["blueprint"]
         
+        # 👑 1. 最高決策大腦標籤
         st.html(f"""
         <div style="background-color: {bp_data['color']}10; border: 2px solid {bp_data['color']}; padding: 22px; border-radius: 8px; margin-bottom: 25px;">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
@@ -490,6 +483,17 @@ if diag_trigger or stock_input:
         </div>
         """)
 
+        # 👑 2. 標的頭部資訊欄
+        st.markdown(f"""<div style="background-color: #1F2937; padding: 18px; border-radius: 8px; border: 2px solid #3B82F6; margin-bottom: 20px;"><div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap;"><div><span style="color: #9CA3AF; font-size: 13px; font-weight: 600;">DIAGNOSTIC TARGET</span><h1 style="margin: 4px 0 0 0; color: #FFFFFF; font-size: 28px; font-weight: 800;">{res['stock_name']} <span style="color: #3B82F6;">({res['stock_id']})</span></h1></div><div><span style="color: #9CA3AF; font-size: 13px; font-weight: 600;">大類板塊歸屬</span><h3 style="margin: 4px 0 0 0; color: #F3F4F6; font-size: 18px; font-weight: 700;">{res['industry']}</h3></div><div style="text-align: right; background-color: rgba(255,255,255,0.05); padding: 6px 12px; border-radius: 6px;"><span style="color: #9CA3AF; font-size: 11px; font-weight: 600; display:block;">即時流報價狀態</span><span style="color: #F9FAFB; font-weight: 600; font-size: 13px;">來源: {res['rt_source']} | 狀態: </span><span style="color: {res['m_color']}; font-weight: 700; font-size: 13px;">{res['m_desc']}</span></div></div></div>""", unsafe_allow_html=True)
+
+        # 👑 3. 實時個股物理量報價箱歸位（全量釋放！）
+        c1, c2, c3, c4 = st.columns(4)
+        with c1: st.markdown(custom_hud_box("💡 當前即市價 (K線精密流)", f"<span style='font-size:20px; color:#0F172A;'>{res['current_price']:.2f} 元</span><br><small style='color:#64748B;'>今日成交: {res['current_vol']:.0f} 張</small>"), unsafe_allow_html=True)
+        with c2: st.markdown(custom_hud_box("⏱️ 五日短線攻擊速線 (MA5)", f"<span style='font-size:16px; color:#1E293B;'>{res['ma5_val']:.2f} 元</span><br><small style='color:#64748B;'>今日漲跌幅: {res['stock_daily_pct']:+.2f}%</small>"), unsafe_allow_html=True)
+        with c3: st.markdown(custom_hud_box("⏳ 母部位大波段防禦線 (ATR)", f"<span style='font-size:16px; color:#7C3AED;'>{res['trailing_stop_line']}</span><br><small style='color:#64748B;'>當前 ATR14: {res['atr']:.2f}</small>"), unsafe_allow_html=True)
+        with c4: st.markdown(custom_hud_box("📊 相對強度 (RS Matrix)", f"<span style='font-size:16px; color:#10B981;'>超額 {res['relative_strength']:+.2f}%</span><br><small style='color:#64748B;'>RS黃金箭頭: {'🔥 成立' if res['is_rs_gold'] else '⚪ 整理中'}</small>"), unsafe_allow_html=True)
+
+        # 👑 4. 大數據多因子動態變臉面板
         st.markdown("### 🧬 機構級多因子結構縱深大數據曝光面板")
         ib_col1, ib_col2, ib_col3 = st.columns(3)
         with ib_col1:
@@ -505,8 +509,22 @@ if diag_trigger or stock_input:
             box_status_desc = f"精算結果：個股波動完美收斂。主力大底時間縱深完美共振。" if res['is_box_compressed'] else f"精算結果：個股近30日震幅達 {res['box_width_pct']:.1f}%，已實質脫離底部的窄幅整理，進入動能狂飆擴張階段！請直接對位下方【短期趨勢定錨面板】。"
             st.markdown(render_panel_html("3. 箱型籌碼時間縱深（橫有多長）", box_status_text, box_status_desc, "#7C3AED"), unsafe_allow_html=True)
 
+        # 👑 5. 週趨勢與風控開火配額箱歸位
         trend_desc_connect = f"觀察提示：當前 5日主力成本線（MA5）強勢昂頭向上。此時與上方箱型發散高達 {res['box_width_pct']:.1f}% 的動能形成完美因果咬合——這正是促使最頂端決策大腦對您下達【{bp_data['strategy_name']}】的鋼鐵因果核心！"
         st.markdown(f"""<div style="background-color: #F8FAFC; border: 1px solid #E2E8F0; border-left: 6px solid {res['stable_short_color']}; padding: 16px; border-radius: 6px; margin-top: 15px; margin-bottom: 15px;"><div style="display: flex; justify-content: space-between; align-items: center;"><span style="font-size: 13px; color: #64748B; font-weight: 800; letter-spacing: 0.05em;">⏱️ 週級別・短期波段主趨勢定錨面板</span></div><h4 style="margin: 8px 0; color: {res['stable_short_color']}; font-weight: 800; font-size: 18px;">當前定錨狀態：{res['stable_short_trend']}</h4><p style="margin: 0; color: #1E293B; font-size: 13.5px; line-height: 1.55; font-weight: 600;">{trend_desc_connect}</p></div>""", unsafe_allow_html=True)
+
+        st.markdown("### 🛡️ 量化核心風控配額開火劇本")
+        bx1, bx2, bx3 = st.columns(3)
+        with bx1: st.metric("精算風控進場配置", f"{res['suggested_lots']} 張")
+        with bx2: st.metric("當前劇本風控停損價", f"{res['expected_stop_price']:.2f} 元")
+        with bx3: st.metric("大波段移動停利線 (ATR)", res["trailing_stop_line"])
+
+        # 👑 6. 財務歷史大表與新聞舆情流水線歸位
+        with st.expander("📊 財務基本面完整財務季度矩陣大表"):
+            if not res["fin_df"].empty: st.dataframe(res["fin_df"].copy().sort_values("date", ascending=False), use_container_width=True)
+        with st.expander("📰 資訊面 24H 網路輿情即時新聞流水線"):
+            if isinstance(res["raw_news_list"], list) and res["raw_news_list"]:
+                for n in res["raw_news_list"]: st.markdown(f"* {n['title']}")
 
 if auto_refresh:
     time.sleep(5)
