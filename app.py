@@ -182,7 +182,6 @@ def get_market_macro_status():
     except Exception: pass
     return True, "🟢 多頭常態", False, False, True, "🟢 常態安全血量"
 
-# 🌟 【籌碼大雷達完好歸位】：重裝上陣，徹底消滅 line 363 的 NameError 內鬼！
 @st.cache_data(ttl=900)
 def get_taiwan_enhanced_chips(stock_id: str, days: int = 30):
     s_trend, m_trend, s_3d, m_diff = "🟡 中性", "🟡 平穩", 0.0, 0.0
@@ -270,17 +269,20 @@ def unified_institutional_brain(res_dict, df_hist, is_holding=False, entry_cost=
 
 # ============ 9. Main Core Executor ============
 def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, slip_ticks: int, is_holding=False, entry_cost=0.0, sector_panic=False):
+    # 🌟 【時序鐵壁焊接】：將今日時間字串置頂宣告，100% 擊殺第 306 行的 NameError
+    today_str = datetime.now(TZ).strftime("%Y-%m-%d")
+    
     res_dict = {}
     latest_yoy, is_broker_dumping_risk = 0.0, False
     raw_news_list, positive_catalysts_list, fin_df = [], [], pd.DataFrame()
     spring_verdict, spring_triggered, detected_prior_low, detected_neckline = "⚪ 未觸發破底翻結構", False, 0.0, 0.0
     
-    # 局部作用域防禦牆
+    # 局部作用域作用域初始防護
     sitc_trend, margin_trend, sitc_3d_sum, margin_diff = "🟡 中性", "🟡 平穩", 0.0, 0.0
     main_force_label, wolf_rank_label, wolf_rank_color = "⚖️ 常態調整 (0%)", "⚖️ 族群常態輪動成員", "#64748B"
     stable_short_trend, stable_short_color, stable_short_desc = "🟡 短期箱型潛伏", "#F59E0B", "均線水平橫躺。"
     trend_phase, short_term_trend, long_term_trend = "📉 空頭修正期", "📉 均線全面蓋頭", "💤 季線橫向延伸"
-    fin_conclusion, pe_desc, pe_val, sum_eps_4q, gpm_now, opm_now = "📋 暫無財報數據", "⚪ 數據不足", 0.0, 0.0, 0.0, 0.0
+    fin_conclusion, gpm_now, opm_now = "📋 暫無財報數據", 0.0, 0.0
     
     info_df_local = get_stock_info_df()
     match = info_df_local[info_df_local["stock_id"] == stock_id]
@@ -306,7 +308,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
         if str(df_for_indicators.iloc[-1]["date"]) == today_str:
             df_for_indicators.loc[df_for_indicators.index[-1], ["close", "vol"]] = [rt_close, rt_vol_lots * 1000.0]
         else:
-            df_for_indicators = pd.concat([df_for_indicators, pd.DataFrame([{"date": datetime.now(TZ).strftime("%Y-%m-%d"), "open": float(rt_open), "high": float(rt_high), "low": float(rt_low), "close": float(rt_close), "vol": float(rt_vol_lots * 1000.0), "amount": float(rt_close * rt_vol_lots * 1000.0)}])], ignore_index=True)
+            df_for_indicators = pd.concat([df_for_indicators, pd.DataFrame([{"date": today_str, "open": float(rt_open), "high": float(rt_high), "low": float(rt_low), "close": float(rt_close), "vol": float(rt_vol_lots * 1000.0), "amount": float(rt_close * rt_vol_lots * 1000.0)}])], ignore_index=True)
 
     df = prepare_indicator_df(df_for_indicators)
     if df is None or df.empty: return None
@@ -318,19 +320,17 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     ma5_slope = ((ma5_val - float(df["MA5"].iloc[-3])) / float(df["MA5"].iloc[-3] or 1) * 100) if len(df) >= 3 else 0.0
 
     if ma5_slope > 0.15: stable_short_trend, stable_short_color, stable_short_desc = "🟢 短期多頭波段（結構穩固，忽略一日拉回）", "#10B981", "5日主力成本線集體向上。請保持定力！"
-    elif ma5_slope < -0.15: stable_short_trend, stable_short_color, stable_short_desc = "🔴 短期空頭修正（上方有壓，防禦觀望）", "#EF4444", "5日主力成本線集體下彎。短期多頭動能退潮，切勿追高！"
+    elif ma5_slope < -0.15: stable_short_trend, stable_short_color, stable_short_desc = "🔴 短期空頭修正（上方有壓，防禦觀望）", "#EF4444", "5日主力成本線集體下彎。切勿追高！"
     else: stable_short_trend, stable_short_color, stable_short_desc = "🟡 短期箱型潛伏（橫盤整理，多看少動）", "#F59E0B", "5日線處於水平狀態。大腦叫你『把手綁起來』。"
 
-    rsi_now, adx_now, macd_hist, atr, k9_now, d9_now = safe_float(hist_last.get("RSI14", 50.0)), safe_float(hist_last.get("ADX14", 20.0)), safe_float(hist_last.get("MACD_HIST", 0.0)), safe_float(hist_last.get("ATR14", 1.0)), safe_float(hist_last.get("K9", 50.0)), safe_float(hist_last.get("D9", 50.0))
-    kd_status = "黃金交叉" if k9_now > d9_now else "死亡交叉"
+    rsi_now, adx_now, macd_hist, atr = safe_float(hist_last.get("RSI14", 50.0)), safe_float(hist_last.get("ADX14", 20.0)), safe_float(hist_last.get("MACD_HIST", 0.0)), safe_float(hist_last.get("ATR14", 1.0))
     stock_daily_pct = ((current_price - float(hist_last_raw["close"])) / float(hist_last_raw["close"])) * 100 if float(hist_last_raw["close"]) > 0 else 0.0
     relative_strength = stock_daily_pct - wtx_change
     is_rs_gold = (wtx_change <= -1.0) and (relative_strength >= 3.0)
 
-    # 🌟 籌碼雷達連線執行
     sitc_trend, margin_trend, sitc_3d_sum, margin_diff = get_taiwan_enhanced_chips(stock_id)
     vol_spike = (current_vol * 1000.0) > (vol_ma20_val * 1.5)
-    if relative_strength > 4.0 and sitc_3d_sum > 300: wolf_rank_label, wolf_rank_color = "👑 族群領頭狼王（主主導資金絕對攻勢）", "#7D3CFF"
+    if relative_strength > 4.0 and sitc_3d_sum > 300: wolf_rank_label, wolf_rank_color = "👑 族群領頭狼王（主導資金絕對攻勢）", "#7D3CFF"
     elif relative_strength < -2.0: wolf_rank_label, wolf_rank_color = "🐌 族群落後跟屁蟲（嚴防資金棄養踩踏）", "#EF4444"
     else: wolf_rank_label, wolf_rank_color = "⚖️ 族群常態輪動成員（隨大盤溫和浮動）", "#64748B"
 
@@ -363,7 +363,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     pnl_pct = ((current_price - entry_cost) / entry_cost * 100) if (is_holding and entry_cost > 0) else 0.0
     trend_phase = "🔥 波段多頭主升段" if current_price >= ma20_val and ma20_val >= ma60_val else "💤 潛伏築底期"
 
-    # 垂直封裝宣告
+    # 垂直封裝對齊宣告
     res_dict["stock_id"] = stock_id
     res_dict["stock_name"] = stock_name
     res_dict["industry"] = industry
