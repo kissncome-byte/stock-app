@@ -172,11 +172,9 @@ def get_market_macro_status():
             last, prev = df.iloc[-1], (df.iloc[-5] if len(df) >= 5 else df.iloc[0])
             ret = ((last['close'] - prev['close']) / prev['close']) * 100
             panic = (last['close'] < last['MA20']) and (ret <= -3.5)
-            bias = ((last['close'] - last['MA60']) / last['MA60']) * 100
             market_vol_healthy = float(last['vol_work']) >= float(last['MA20_Vol'])
             market_vol_desc = "🟢 大盤資金大部隊在線" if market_vol_healthy else "🚨 大盤量能窒息流失（大盤缺血假突破率高）"
             if panic: return False, f"🚨 大盤瀑布重挫 ({last['close']:.1f})", True, False, market_vol_healthy, market_vol_desc
-            if bias >= 8.5: return True, f"⚠️ 大盤過熱警告 ({last['close']:.1f})", False, True, market_vol_healthy, market_vol_desc
             macro_bull = last['close'] >= last['MA20']
             return macro_bull, f"加權指數 ({last['close']:.1f})", False, False, market_vol_healthy, market_vol_desc
     except Exception: pass
@@ -205,6 +203,14 @@ def get_taiwan_enhanced_chips(stock_id: str, days: int = 30):
     except Exception: pass
     return s_trend, m_trend, s_3d, m_diff
 
+# 🌟 【營收雷達重裝歸位】：修補完全體，阻斷 Line 342 人間蒸發內鬼！
+@st.cache_data(ttl=900)
+def get_rev_df(stock_id: str, days: int = 730):
+    try:
+        return get_api().taiwan_stock_month_revenue(stock_id=stock_id, start_date=(datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d"))
+    except Exception:
+        return None
+
 def prepare_indicator_df(df: pd.DataFrame):
     if df is None or df.empty: return None
     x = df.copy().sort_values("date").reset_index(drop=True)
@@ -214,11 +220,6 @@ def prepare_indicator_df(df: pd.DataFrame):
     x["MA5"], x["MA5_Vol"] = x["close"].rolling(5).mean(), x["vol"].rolling(5).mean()
     x["MA20"], x["MA60"], x["MA100"], x["MA20_Vol"] = x["close"].rolling(20).mean(), x["close"].rolling(60).mean(), x["close"].rolling(100).mean(), x["vol"].rolling(20).mean()
     x["Res_20D"], x["std20"] = x["high"].rolling(20).max(), x["close"].rolling(20).std()
-    x["BB_bandwidth"] = ((x["MA20"] + (x["std20"] * 2)) - (x["MA20"] - (x["std20"] * 2))) / x["MA20"]
-    delta = x["close"].diff()
-    x["RSI14"] = 100 - (100 / (1 + (delta.clip(lower=0).ewm(com=13, adjust=False).mean() / delta.clip(upper=0).ewm(com=13, adjust=False).mean().replace(0, -0.00001).abs())))
-    x["RSI5"] = 100 - (100 / (1 + (delta.clip(lower=0).ewm(com=4, adjust=False).mean() / delta.clip(upper=0).ewm(com=4, adjust=False).mean().replace(0, -0.00001).abs())))
-    x["RSI10"] = 100 - (100 / (1 + (delta.clip(lower=0).ewm(com=9, adjust=False).mean() / delta.clip(upper=0).ewm(com=9, adjust=False).mean().replace(0, -0.00001).abs())))
     
     up_diff, down_diff = x["high"].diff(), x["low"].shift(1) - x["low"]
     x["P_DI_raw"] = np.where((up_diff > down_diff) & (up_diff > 0), up_diff, 0.0)
@@ -235,7 +236,7 @@ def prepare_indicator_df(df: pd.DataFrame):
         if pd.isna(rsv): k_l.append(np.nan); d_l.append(np.nan)
         else: ck = (2/3)*ck + (1/3)*rsv; cd = (2/3)*cd + (1/3)*ck; k_l.append(ck); d_l.append(cd)
     x["K9"], x["D9"] = k_l, d_l
-    return x.dropna(subset=["ATR14", "MA5", "MA20", "MA60", "MA100", "Res_20D", "RSI14", "MACD_HIST", "K9", "D9", "ADX14"]).copy()
+    return x.dropna(subset=["ATR14", "MA5", "MA20", "MA60", "MA100", "Res_20D", "MACD_HIST", "K9", "D9", "ADX14"]).copy()
 
 # ============ 8. 統一狼王策略決策大腦模型 ============
 def auto_strategy_classifier(res_dict):
@@ -247,7 +248,7 @@ def auto_strategy_classifier(res_dict):
 
 def unified_institutional_brain(res_dict, df_hist, is_holding=False, entry_cost=0.0, sector_panic=False):
     st_type, st_name = auto_strategy_classifier(res_dict)
-    p, r, m20, m100, ma5 = res_dict["current_price"], res_dict["real_resistance"], res_dict["ma20_val"], res_dict["ma100_val"], res_dict["ma5_val"]
+    p, r, m20, ma5 = res_dict["current_price"], res_dict["real_resistance"], res_dict["ma20_val"], res_dict["ma5_val"]
     m_safe, atr, pnl_pct = res_dict["macro_bull"], res_dict["atr"], res_dict["pnl_pct"]
     trailing_stop = float(df_hist["close"].tail(20).max()) - (2.5 * atr)
     wolf_rank_label = res_dict.get("wolf_rank_label", "常態輪動")
@@ -263,13 +264,12 @@ def unified_institutional_brain(res_dict, df_hist, is_holding=False, entry_cost=
             if not m_safe: return {"strategy_name": "🚨 大盤量能失血：假突破防禦機制", "color": "#F59E0B", "action_now": "⚠️ 🟡 【大盤總血量不足：強制削減60%防守型開火】", "signal": "流動性窒息枯竭警告", "desc": "在缺血市場中，假突破率高達 70%。大腦硬性閹割您的追高權，只允許拉回低吸並砍掉 60% 配額！", "blueprint": { "停損防守": f"戰術硬停損 {res_dict['stop_brk']:.2f} 元", "移動停利": "防守型控量", "預期目標": f"衝刺前高壓力牆 {r:.2f} 元即走"}}
             return {"strategy_name": st_name, "color": "#7D3CFF", "action_now": "🔮 🔮 【頂級信號：全新多頭建倉開火】", "signal": "頂級多頭共振：黃金主升飆股型態發動", "desc": "基本面擴張、法人強力鎖碼、帶量突破前高壓力牆，適合執行全新多頭開火建倉！", "blueprint": {"停損防守": f"收盤跌破前高壓力牆 {r:.2f} 元", "移動停利": f"動態守 ATR 防線 ({trailing_stop:.2f} 元)", "預期目標": f"獲利擴張目標對位 {res_dict['target_brk']:.2f} 元"}}
         
-        # 🌟 四骨牌完美互鎖：常態緩衝帶完美演繹下方曝光因子
         neutral_desc = f"由於此時下方面板 1【{res_dict['market_vol_desc']}】，且面板 2 精算顯示個股僅屬於【{wolf_rank_label}】，缺乏機構大金流表態。大腦決策防線硬性退守至【量化緩衝帶】。此處毫無多頭期望值，強制空倉，手綁起來！"
         return {"strategy_name": "💤 空倉常態觀望", "color": "#64748B", "action_now": "⚖️ 🔵 【常態調整區 : 保持空倉耐心等待】", "signal": "進入量化緩衝帶", "desc": neutral_desc, "blueprint": {"停損防守": "嚴禁盲目進場", "移動停利": "無", "預期目標": "等待金流重啟點火"}}
 
 # ============ 9. Main Core Executor ============
 def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, slip_ticks: int, is_holding=False, entry_cost=0.0, sector_panic=False):
-    # 🌟 【時序鐵壁焊接】：將今日時間字串置頂宣告，100% 擊殺第 306 行的 NameError
+    # 🌟 【時序鐵壁焊接置頂】：優先宣告今日日期，彻底粉碎第 306 行 NameError 地雷！
     today_str = datetime.now(TZ).strftime("%Y-%m-%d")
     
     res_dict = {}
@@ -277,7 +277,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     raw_news_list, positive_catalysts_list, fin_df = [], [], pd.DataFrame()
     spring_verdict, spring_triggered, detected_prior_low, detected_neckline = "⚪ 未觸發破底翻結構", False, 0.0, 0.0
     
-    # 局部作用域作用域初始防護
+    # 局部環境變數全置頂初始灌漿
     sitc_trend, margin_trend, sitc_3d_sum, margin_diff = "🟡 中性", "🟡 平穩", 0.0, 0.0
     main_force_label, wolf_rank_label, wolf_rank_color = "⚖️ 常態調整 (0%)", "⚖️ 族群常態輪動成員", "#64748B"
     stable_short_trend, stable_short_color, stable_short_desc = "🟡 短期箱型潛伏", "#F59E0B", "均線水平橫躺。"
@@ -316,7 +316,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     hist_last = df.iloc[-1]
     ma5_val, vol_ma5_val = float(hist_last["MA5"]), float(hist_last["MA5_Vol"])
     ma20_val, ma60_val, ma100_val = float(hist_last["MA20"]), float(hist_last["MA60"]), float(hist_last["MA100"])
-    vol_ma20_val, real_resistance, current_bandwidth = float(hist_last["MA20_Vol"]), float(hist_last["Res_20D"]), float(hist_last["BB_bandwidth"])
+    vol_ma20_val, real_resistance = float(hist_last["MA20_Vol"]), float(hist_last["Res_20D"])
     ma5_slope = ((ma5_val - float(df["MA5"].iloc[-3])) / float(df["MA5"].iloc[-3] or 1) * 100) if len(df) >= 3 else 0.0
 
     if ma5_slope > 0.15: stable_short_trend, stable_short_color, stable_short_desc = "🟢 短期多頭波段（結構穩固，忽略一日拉回）", "#10B981", "5日主力成本線集體向上。請保持定力！"
@@ -339,11 +339,19 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     target_brk = round_to_tick(current_price + (4.0 * atr), t)
     stop_brk = round_to_tick(real_resistance - (1.5 * atr), t) if round_to_tick(real_resistance - (1.5 * atr), t) < current_price else round_to_tick(current_price - (1.0 * atr), t)
     
+    # 🌟 【營收精算數據焊接安全解鎖】：抗震保護全啟動
     rev_df = get_rev_df(stock_id, days=730)
-    if rev_df is not None and not rev_df.empty and "revenue" in rev_df.columns:
-        rev_clean = rev_df.copy()
-        rev_clean["revenue"] = pd.to_numeric(rev_clean["revenue"].astype(str).str.replace(",", ""), errors="coerce")
-        latest_yoy = float(rev_clean.dropna().pct_change(12).iloc[-1]["revenue"] * 100 or 0.0)
+    if rev_df is not None and not rev_df.empty:
+        try:
+            rev_clean = rev_df.copy()
+            col = [c for c in rev_clean.columns if c.lower() == "revenue"]
+            if col:
+                c_name = col[0]
+                rev_clean[c_name] = pd.to_numeric(rev_clean[c_name].astype(str).str.replace(",", ""), errors="coerce")
+                rev_clean = rev_clean.dropna(subset=[c_name]).sort_values("date")
+                if len(rev_clean) > 12:
+                    latest_yoy = float(rev_clean[c_name].pct_change(12).iloc[-1] * 100)
+        except Exception: latest_yoy = 0.0
 
     try: raw_news_list_data = get_realtime_news_list(stock_id, stock_name)
     except Exception: raw_news_list_data = []
@@ -361,9 +369,10 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
         fin_df = fin_df_work[["date", "EPS", "Revenue", "GrossProfit", "OperatingIncome", "gpm", "opm"]].copy()
 
     pnl_pct = ((current_price - entry_cost) / entry_cost * 100) if (is_holding and entry_cost > 0) else 0.0
+    short_term_trend = f"🚀 五日線多頭噴發 (KD {kd_status})" if current_price >= ma5_val and ma5_val >= ma20_val else f"📉 均線全面蓋頭 (KD {kd_status})"
     trend_phase = "🔥 波段多頭主升段" if current_price >= ma20_val and ma20_val >= ma60_val else "💤 潛伏築底期"
 
-    # 垂直封裝對齊宣告
+    # 高密度垂直宣告裝箱
     res_dict["stock_id"] = stock_id
     res_dict["stock_name"] = stock_name
     res_dict["industry"] = industry
