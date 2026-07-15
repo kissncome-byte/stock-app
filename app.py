@@ -136,10 +136,7 @@ def get_overnight_radar():
 def get_stock_info_df():
     try:
         df = get_api().taiwan_stock_info()
-        if df is not None and not df.empty:
-            df = df.copy()
-            df.columns = [str(c).strip() for c in df.columns]
-            return df
+        if df is not None and not df.empty: return df.copy()
     except Exception: pass
     return pd.DataFrame([{"stock_id": "2330", "stock_name": "台積電", "market_type": "twse", "industry_category": "半導體業"}, {"stock_id": "3037", "stock_name": "欣興", "market_type": "twse", "industry_category": "電子零組件業"}, {"stock_id": "2382", "stock_name": "廣達", "market_type": "twse", "industry_category": "電腦及週邊設備業"}])
 
@@ -208,6 +205,17 @@ def get_rev_df(stock_id: str, days: int = 730):
     try: return get_api().taiwan_stock_month_revenue(stock_id=stock_id, start_date=(datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d"))
     except Exception: return None
 
+# 🌟 【季度財報大組件強勢歸位】：徹底超度第 375 行的 NameError 惡性內鬼！
+@st.cache_data(ttl=86400)
+def get_financial_statement_df(stock_id: str, years: int = 2):
+    try:
+        raw = get_api().taiwan_stock_financial_statement(stock_id=stock_id, start_date=(datetime.now()-timedelta(days=years*365)).strftime("%Y-%m-%d"))
+        if raw is None or raw.empty: return pd.DataFrame()
+        df = raw.copy()
+        df["type"] = df["type"].replace({"OperatingRevenue": "Revenue"})
+        return df[df["type"].isin(["EPS", "Revenue", "GrossProfit", "OperatingIncome"])].pivot_table(index="date", columns="type", values="value", aggfunc="last").reset_index()
+    except Exception: return pd.DataFrame()
+
 def prepare_indicator_df(df: pd.DataFrame):
     if df is None or df.empty: return None
     x = df.copy().sort_values("date").reset_index(drop=True)
@@ -237,7 +245,7 @@ def prepare_indicator_df(df: pd.DataFrame):
         if pd.isna(rsv): k_l.append(np.nan); d_l.append(np.nan)
         else: ck = (2/3)*ck + (1/3)*rsv; cd = (2/3)*cd + (1/3)*ck; k_l.append(ck); d_l.append(cd)
     x["K9"], x["D9"] = k_l, d_l
-    return x.dropna(subset=["ATR14", "MA5", "MA20", "MA60", "MA100", "Res_20D", "MACD_HIST", "K9", "D9", "ADX14"]).copy()
+    return x.dropna(subset=["ATR14", "MA5", "MA20", "MA60", "MA100", "Res_20D", "RSI14", "MACD_HIST", "K9", "D9", "ADX14"]).copy()
 
 # ============ 8. 統一狼王策略決策大腦模型 ============
 def auto_strategy_classifier(res_dict):
@@ -270,7 +278,7 @@ def unified_institutional_brain(res_dict, df_hist, is_holding=False, entry_cost=
 
 # ============ 9. Main Core Executor ============
 def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, slip_ticks: int, is_holding=False, entry_cost=0.0, sector_panic=False):
-    # 🌟 【時序鋼鐵定錨】：將今日時間絕對置頂！100% 擊殺 any 306 行 NameError 內鬼
+    # 🌟 時序鐵壁定錨：全函數最高優先級置頂宣告
     today_str = datetime.now(TZ).strftime("%Y-%m-%d")
     
     res_dict = {}
@@ -278,7 +286,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     raw_news_list, positive_catalysts_list, fin_df = [], [], pd.DataFrame()
     spring_verdict, spring_triggered, detected_prior_low, detected_neckline = "⚪ 未觸發破底翻結構", False, 0.0, 0.0
     
-    # 局部變數生存週期全量安全前置
+    # 局部環境變數全量初始灌漿
     sitc_trend, margin_trend, sitc_3d_sum, margin_diff = "🟡 中性", "🟡 平穩", 0.0, 0.0
     main_force_label, wolf_rank_label, wolf_rank_color = "⚖️ 常態調整 (0%)", "⚖️ 族群常態輪動成員", "#64748B"
     stable_short_trend, stable_short_color, stable_short_desc = "🟡 短期箱型潛伏", "#F59E0B", "均線水平橫躺。"
@@ -316,7 +324,6 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     peak_price_20d = float(df["close"].tail(20).max())
     hist_last = df.iloc[-1]
     
-    # 🌟 【最致命內鬼徹底擊殺】：完好歸位並安全提取 k9_now 與 d9_now 變數，超度 NameError！
     ma5_val, vol_ma5_val = float(hist_last["MA5"]), float(hist_last["MA5_Vol"])
     ma20_val, ma60_val, ma100_val = float(hist_last["MA20"]), float(hist_last["MA60"]), float(hist_last["MA100"])
     vol_ma20_val, real_resistance = float(hist_last["MA20_Vol"]), float(hist_last["Res_20D"])
@@ -341,7 +348,6 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     stop_brk = round_to_tick(real_resistance - (1.5 * atr), t) if round_to_tick(real_resistance - (1.5 * atr), t) < current_price else round_to_tick(current_price - (1.0 * atr), t)
     stop_line_text = f"{round_to_tick(peak_price_20d - (2.5 * atr), t):.2f} 元"
 
-    # 🌟 營收雷達安全防錯
     rev_df = get_rev_df(stock_id, days=730)
     if rev_df is not None and not rev_df.empty:
         try:
@@ -352,7 +358,6 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
                 if len(rev_df) > 12: latest_yoy = float(rev_df["revenue_clean"].pct_change(12).iloc[-1] * 100)
         except Exception: latest_yoy = 0.0
 
-    # 🌟 輿情雷達完整還原
     try: raw_news_list_data = get_realtime_news_list(stock_id, stock_name)
     except Exception: raw_news_list_data = []
     if raw_news_list_data:
@@ -362,7 +367,6 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
             n["sentiment"], n["color"] = lbl, col
         news_analysis_report = "🔥 【輿情偏多】 利多消息主導市場" if sum(1 for n in raw_news_list if "利多" in n["sentiment"]) > sum(1 for n in raw_news_list if "利空" in n["sentiment"]) else "⚖️ 中性輿情"
 
-    # 🌟 破底翻精密精算大還原
     if len(df) >= 40:
         low_cand = float(df.iloc[-40:-10]["low"].min())
         for r_idx, row in df.iloc[-10:].iterrows():
@@ -371,7 +375,6 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     if spring_triggered:
         spring_verdict = f"🟢 【破底翻成立】站回前低 {detected_prior_low:.2f} 元 ｜ 關鍵頸線 {detected_neckline:.2f} 元"
 
-    # 🌟 財報模組安全焊接
     fin_df_raw = get_financial_statement_df(stock_id, years=2)
     if not fin_df_raw.empty and "Revenue" in fin_df_raw.columns:
         fin_df_work = fin_df_raw.copy().sort_values("date").reset_index(drop=True)
@@ -381,15 +384,15 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
             fin_df_work.loc[f_idx, "opm"] = (safe_float(fin_df_work.loc[f_idx, "OperatingIncome"]) / rev_amt * 100) if rev_amt > 0 else 0.0
         last_fin = fin_df_work.iloc[-1]
         gpm_now, opm_now, sum_eps_4q = safe_float(last_fin.get("gpm", 0.0)), safe_float(last_fin.get("opm", 0.0)), pd.to_numeric(fin_df_work.tail(4)['EPS'], errors='coerce').sum()
+        pe_val = current_price / sum_eps_4q if sum_eps_4q > 0 else 0.0
         fin_conclusion = "📈 【財報年增擴張】獲利指標超越去年同期！" if len(fin_df_work) >= 5 and gpm_now > safe_float(fin_df_work.iloc[-5].get("gpm", 0.0)) else "⚖️ 財報常態運作中"
         fin_df = fin_df_work[["date", "EPS", "Revenue", "GrossProfit", "OperatingIncome", "gpm", "opm"]].copy()
 
-    if ma5_slope > 0.15: stable_short_trend, stable_short_color, stable_short_desc = "🟢 短期多頭波段（結構穩固，忽略一日拉回）", "#10B981", "5日主力成本線集體向上。不管單日如何震盪，大部隊集體趨勢並未改變。請保持定力！"
-    elif ma5_slope < -0.15: stable_short_trend, stable_short_color, stable_short_desc = "🔴 短期空頭修正（上方有壓，防禦觀望）", "#EF4444", "5日主力成本線集體下彎。短期多頭動能退潮，切勿追高！"
-    else: stable_short_trend, stable_short_color, stable_short_desc = "🟡 短期箱型潛伏（橫盤整理，多看少動）", "#F59E0B", "5日線處於水平躺平狀態。股價原地亂晃屬於常態，把手綁起來。"
+    pnl_pct = ((current_price - entry_cost) / entry_cost * 100) if (is_holding and entry_cost > 0) else 0.0
+    short_term_trend = f"🚀 五日線多頭噴發 (KD {kd_status})" if current_price >= ma5_val and ma5_val >= ma20_val else f"📉 均線全面蓋頭 (KD {kd_status})"
     trend_phase = "🔥 波段多頭主升段" if current_price >= ma20_val and ma20_val >= ma60_val else "💤 潛伏築底期"
 
-    # 垂直精細裝箱分配
+    # 垂直封裝宣告
     res_dict["stock_id"] = stock_id
     res_dict["stock_name"] = stock_name
     res_dict["industry"] = industry
@@ -449,7 +452,7 @@ with st.sidebar:
     sector_panic_toggle = st.checkbox("🔥 同族群其他龍頭股「集體下殺破5%」", value=False)
     auto_refresh = st.checkbox("🔄 開啟盤中每 5 秒自動秒刷報價", value=False)
 
-macro_bull, macro_label, _, _, market_vol_healthy, market_vol_desc = get_market_macro_status()
+macro_bull, macro_label, _, _, _, _ = get_market_macro_status()
 st.markdown("## 📡 雙速策略大腦動態綜合看盤台 (v48 狼王特選版)")
 stock_input = st.text_input("請輸入核心目標個股代碼：", value="3037")
 
