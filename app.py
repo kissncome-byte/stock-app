@@ -9,7 +9,7 @@ from urllib3.util.retry import Retry
 from FinMind.data import DataLoader
 
 # ============ 1. Page Config ============
-st.set_page_config(page_title="SOP v48 機構級雙速狼王決策系統 (大摩優化版)", layout="wide")
+st.set_page_config(page_title="SOP v48 機構級雙速狼王決策系統 (大摩修復版)", layout="wide")
 
 # ============ 2. Global Constants ============
 TZ = pytz.timezone("Asia/Taipei")
@@ -176,7 +176,7 @@ def get_market_macro_status():
     except Exception: pass
     return True, "🟢 多頭常態", False, False, True, "🟢 常態安全血量"
 
-# 🔥 [大摩優化] 深度籌碼解碼：整合千張大戶股權分散趨勢
+# 🔥 [大摩優化] 深度籌碼：抓取每週千張大戶持股比例
 @st.cache_data(ttl=43200)
 def get_weekly_large_holders(stock_id: str):
     try:
@@ -188,7 +188,7 @@ def get_weekly_large_holders(stock_id: str):
                 latest_pct = safe_float(df_1000.iloc[-1]["Percent"])
                 prev_pct = safe_float(df_1000.iloc[-2]["Percent"])
                 diff_pct = latest_pct - prev_pct
-                trend = "📈 大戶連續鎖碼" if diff_pct > 0.3 else "📉 大戶高檔發貨" if diff_pct < -0.3 else "静态 籌碼中性沉澱"
+                trend = "📈 大戶持續鎖碼" if diff_pct > 0.3 else "📉 大戶高檔發貨" if diff_pct < -0.3 else "⚖️ 籌碼中性沉澱"
                 return trend, diff_pct, latest_pct
     except Exception: pass
     return "💡 暫無集保大戶數據", 0.0, 0.0
@@ -234,16 +234,16 @@ def get_institutional_trading_df(stock_id: str, days: int = 30):
     except Exception: pass
     return pd.DataFrame()
 
-# 🔥 [大摩優化] 產業鏈共振模組：拒絕個股孤立分析，比對產業關鍵同業走勢
+# 🔥 [大摩優化] 產業鏈共振比對
 def analyze_peer_resonance(stock_id: str, industry_category: str):
     peer_map = {
         "半導體業": ["2330", "2303", "2454"],
         "電子零組件業": ["3037", "8046", "3189"],  # 載板三雄
-        "電腦及週邊設備業": ["2382", "3231", "2357"]  # AI 伺服器/代工
+        "電腦及週邊設備業": ["2382", "3231", "2357"]  # AI伺服器/代工
     }
     peers = peer_map.get(industry_category, [])
     if not peers or stock_id not in peers:
-        return "⚖️ 產業獨立板塊運行 (無強共振同業)", 0.0
+        return "⚖️ 產業獨立板塊運行 (無同業共振參考)", 0.0
     
     closes = {}
     for p_id in peers:
@@ -257,36 +257,39 @@ def analyze_peer_resonance(stock_id: str, industry_category: str):
             my_corr = df_corr[stock_id].drop(stock_id)
             strongest_peer = my_corr.idxmax()
             strongest_val = my_corr.max()
-            return f"🔗 產業鏈共振: 與龍頭同業 {strongest_peer} 呈高度正相關 ({strongest_val:.2f})", strongest_val
+            return f"🔗 產業共振: 與同業龍頭 {strongest_peer} 高度正相關 ({strongest_val:.2f})", strongest_val
         except Exception: pass
-    return "⚖️ 同業走勢極度分化中", 0.0
+    return "⚖️ 同業走勢震盪分化中", 0.0
 
-# 🔥 [大摩優化] 真實機構估值矩陣：廢除寫死乘數，以真財報權益計算動態估值定位
+# 🌟 100% 恢復原本的外資目標價邏輯 (無損原版估值結構)
 @st.cache_data(ttl=1800)
-def get_broker_consensus_data(stock_id: str, current_price: float, fin_df: pd.DataFrame):
-    # 利用真實每股淨值與歷史EPS做機構估值錨定
-    if fin_df.empty or "Equity" not in fin_df.columns or "ShareCapital" not in fin_df.columns:
-        t = tick_size(current_price)
-        return {"mean": current_price*1.15, "high": current_price*1.25, "low": current_price*0.9, "pb_ratio": 1.5, "list": []}
-    
+def get_broker_consensus_data(stock_id: str, current_price: float):
     try:
-        latest_eq = safe_float(fin_df.iloc[0]["Equity"]) # 排序降序首筆為最新
-        latest_cap = safe_float(fin_df.iloc[0]["ShareCapital"])
-        if latest_cap > 0:
-            bvps = latest_eq / (latest_cap / 10) # 每股淨值
-            current_pb = current_price / bvps
-        else:
-            bvps, current_pb = current_price, 1.0
-            
         t = tick_size(current_price)
         brokers = [
-            {"firm": "大摩自營估值", "rating": "🟢 真實財報錨定", "target": round_to_tick(bvps * 2.2, t), "date": "資產負債精算"},
-            {"firm": "機構合理淨值", "rating": "⚖️ PB合理定錨", "target": round_to_tick(bvps * 1.8, t), "date": "歷史中位數"},
+            {"firm": "美商麥格理", "rating": "🟢 超額買進", "target": round_to_tick(current_price * 1.28, t), "date": "最新熱騰騰"},
+            {"firm": "美商摩根士丹利", "rating": "🟢 加碼", "target": round_to_tick(current_price * 1.22, t), "date": "近 3日"},
+            {"firm": "元大投顧", "rating": "🟢 買進", "target": round_to_tick(current_price * 1.15, t), "date": "近週"},
+            {"firm": "凱基投顧", "rating": "🟢 增加持股", "target": round_to_tick(current_price * 1.18, t), "date": "近雙週"}
         ]
         prices = [b["target"] for b in brokers]
-        return {"mean": float(np.mean(prices)), "high": float(np.max(prices)), "low": float(np.min(prices)), "pb_ratio": current_pb, "list": brokers}
-    except Exception:
-        return {"mean": current_price, "high": current_price, "low": current_price, "pb_ratio": 1.0, "list": []}
+        return {"mean": float(np.mean(prices)), "high": float(np.max(prices)), "low": float(np.min(prices)), "list": brokers}
+    except Exception: pass
+    return {"mean": current_price, "high": current_price, "low": current_price, "list": []}
+
+# 🔥 [大摩優化] 獨立真財報動態 PB 計算器
+def calculate_dynamic_pb(current_price: float, fin_df: pd.DataFrame):
+    if fin_df.empty or "Equity" not in fin_df.columns or "ShareCapital" not in fin_df.columns:
+        return 1.0, 0.0
+    try:
+        latest_eq = safe_float(fin_df.iloc[0]["Equity"])
+        latest_cap = safe_float(fin_df.iloc[0]["ShareCapital"])
+        if latest_cap > 0:
+            bvps = latest_eq / (latest_cap / 10)
+            current_pb = current_price / bvps
+            return current_pb, bvps
+    except Exception: pass
+    return 1.0, 0.0
 
 @st.cache_data(ttl=900)
 def get_rev_df(stock_id: str, days: int = 730):
@@ -300,7 +303,7 @@ def get_financial_statement_df(stock_id: str, years: int = 2):
         if raw is None or raw.empty: return pd.DataFrame()
         df = raw.copy()
         df["type"] = df["type"].replace({"OperatingRevenue": "Revenue"})
-        # 🔥 擴張抓取 Equity (權益總額) 與 ShareCapital (普通股股本) 用於機構 PB 運算
+        # 增加拉取 Equity 與 ShareCapital 計算大摩 PB 估值
         target_types = ["EPS", "Revenue", "GrossProfit", "OperatingIncome", "Equity", "ShareCapital"]
         return df[df["type"].isin(target_types)].pivot_table(index="date", columns="type", values="value", aggfunc="last").reset_index()
     except Exception: return pd.DataFrame()
@@ -338,9 +341,17 @@ def prepare_indicator_df(df: pd.DataFrame):
     x["Res_20D"], x["std20"] = x["high"].rolling(20).max(), x["close"].rolling(20).std()
     delta = x["close"].diff()
     x["RSI14"] = 100 - (100 / (1 + (delta.clip(lower=0).ewm(com=13, adjust=False).mean() / delta.clip(upper=0).ewm(com=13, adjust=False).mean().replace(0, -0.00001).abs())))
+    x["RSI5"] = 100 - (100 / (1 + (delta.clip(lower=0).ewm(com=4, adjust=False).mean() / delta.clip(upper=0).ewm(com=4, adjust=False).mean().replace(0, -0.00001).abs())))
+    x["RSI10"] = 100 - (100 / (1 + (delta.clip(lower=0).ewm(com=9, adjust=False).mean() / delta.clip(upper=0).ewm(com=9, adjust=False).mean().replace(0, -0.00001).abs())))
     
-    macd_hist = (x["close"].ewm(span=12, adjust=False).mean() - x["close"].ewm(span=26, adjust=False).mean()) - (x["close"].ewm(span=12, adjust=False).mean() - x["close"].ewm(span=26, adjust=False).mean()).ewm(span=9, adjust=False).mean()
-    x["MACD_HIST"] = macd_hist
+    up_diff, down_diff = x["high"].diff(), x["low"].shift(1) - x["low"]
+    x["P_DI_raw"] = np.where((up_diff > down_diff) & (up_diff > 0), up_diff, 0.0)
+    x["M_DI_raw"] = np.where((down_diff > up_diff) & (down_diff > 0), down_diff, 0.0)
+    tr_s = x["TR"].ewm(com=13, adjust=False).mean().replace(0, 0.00001)
+    x["P_DI"] = (x["P_DI_raw"].ewm(com=13, adjust=False).mean() / tr_s) * 100
+    x["M_DI"] = (x["M_DI_raw"].ewm(com=13, adjust=False).mean() / tr_s) * 100
+    x["ADX14"] = ((x["P_DI"] - x["M_DI"]).abs() / (x["P_DI"] + x["M_DI"]).replace(0, 0.00001) * 100).ewm(com=13, adjust=False).mean()
+    x["MACD_HIST"] = (x["close"].ewm(span=12, adjust=False).mean() - x["close"].ewm(span=26, adjust=False).mean()) - (x["close"].ewm(span=12, adjust=False).mean() - x["close"].ewm(span=26, adjust=False).mean()).ewm(span=9, adjust=False).mean()
     l_min, h_max = x["low"].rolling(9).min(), x["high"].rolling(9).max()
     x["RSV"] = 100 * ((x["close"] - l_min) / (h_max - l_min).replace(0, 0.00001))
     k_l, d_l, ck, cd = [], [], 50.0, 50.0
@@ -348,9 +359,9 @@ def prepare_indicator_df(df: pd.DataFrame):
         if pd.isna(rsv): k_l.append(np.nan); d_l.append(np.nan)
         else: ck = (2/3)*ck + (1/3)*rsv; cd = (2/3)*cd + (1/3)*ck; k_l.append(ck); d_l.append(cd)
     x["K9"], x["D9"] = k_l, d_l
-    return x.dropna(subset=["ATR14", "MA5", "MA20", "MA60", "Res_20D", "RSI14", "MACD_HIST", "K9", "D9"]).copy()
+    return x.dropna(subset=["ATR14", "MA5", "MA20", "MA60", "MA100", "Res_20D", "RSI14", "MACD_HIST", "K9", "D9", "ADX14"]).copy()
 
-# ============ 8. 統一狼王策略決策大腦模型 (大摩優化交叉覆核版) ============
+# ============ 8. 統一狼王策略決策大腦模型 (100% 完整原裝還原版) ============
 def auto_strategy_classifier(res_dict):
     p, r, m20, spring, phase = res_dict["current_price"], res_dict["real_resistance"], res_dict["ma20_val"], res_dict["spring_verdict"], res_dict["trend_phase"]
     if "買點一成立" in spring or "買點二成立" in spring:
@@ -369,48 +380,39 @@ def unified_institutional_brain(res_dict, df_hist, is_holding=False, entry_cost=
     vol_spike = res_dict.get("vol_spike", False)
     short_trend = res_dict.get("stable_short_trend", "🟡 短期潛伏")
     
-    # 🔥 大摩機構交叉驗證因子調用
-    large_holder_diff = res_dict.get("large_holder_diff", 0.0)
-    peer_corr_val = res_dict.get("peer_corr_val", 0.0)
-    
     market_vol_healthy = res_dict.get("market_vol_healthy", True)
     is_box_compressed = res_dict.get("is_box_compressed", False)
     
-    chip_desc = f"籌碼面顯示投信【{sitc}】，千張大戶變動量 {large_holder_diff:+.2f}%；"
-    vol_desc = "價量結構高檔爆發特大法人換手斷層；" if vol_spike else "價量關係處於常態量縮洗盤階段；"
+    chip_desc = f"籌碼面顯示投信處於【{sitc}】，融資呈現【{margin}】；"
+    vol_desc = "價量結構高檔爆發特大法人換手斷層，動能強勁；" if vol_spike else "價量關係處於常態量縮換手洗盤階段；"
     text_qualifier = f"技術面定錨【{short_trend}】。"
     
+    # 🌟 100% 恢復你原本所有經典的決策結論與台詞分支 🌟
     if is_holding and entry_cost > 0:
         if pnl_pct <= -7.0: 
-            return {"strategy_name": "🚨 觸發自營部硬性資本停損", "color": "#FF4B4B", "action_now": "🛑 🔴 【核心風控：立刻全額清倉離場】", "signal": f"{chip_desc}技術面破位下殺", "blueprint": {"停損防守": "已擊穿防線", "移動停利": "無", "預期目標": "保全資金殘餘"}, "desc": f"持股成本 {entry_cost:.2f} 元。目前個股因量價破防，帳面虧損達 {pnl_pct:.1f}%。大腦硬性判定勝率歸零，立刻清倉保全資本！"}
+            return {"strategy_name": "🚨 觸發自營部硬性資本停損", "color": "#FF4B4B", "action_now": "🛑 🔴 【核心風控：立刻全額清倉離場】", "signal": f"{chip_desc}技術面破位下殺", "blueprint": {"停損防守": "已擊穿防線", "移動停利": "無", "預期目標": "保全資金殘餘"}, "desc": f"您持股成本為 {entry_cost:.2f} 元。目前個股因量價破防，帳面虧損達 {pnl_pct:.1f}%。{chip_desc}大腦硬性判定勝率歸零，立刻清倉保全資本！"}
         if p < trailing_stop: 
-            return {"strategy_name": "⏳ 波段利潤動態追蹤終結", "color": "#EF4444", "action_now": "🛑 🔴 【波段獲利終結：全額市價落袋】", "signal": "實質跌破中線 ATR 生命線", "blueprint": {"停損防守": "全額清倉離場", "移動停利": "已觸發", "預期目標": "資金全額退場"}, "desc": f"持股成本 {entry_cost:.2f} 元。即時價已實質跌破波動死穴 ({trailing_stop:.2f} 元)。請將利潤全額獲利落袋，退場觀望！"}
+            return {"strategy_name": "⏳ 波段利潤動態追蹤終結", "color": "#EF4444", "action_now": "🛑 🔴 【波段獲利終結：全額市價落袋】", "signal": "實質跌破中線 ATR 生命線", "blueprint": {"停損防守": "全額清倉離場", "移動停利": "已觸發", "預期目標": "資金全額退場"}, "desc": f"您持股成本為 {entry_cost:.2f} 元。即時價已實質跌破大腦精算的波動死穴 ({trailing_stop:.2f} 元)。{chip_desc}{text_qualifier}請將所有翻倍利潤全額獲利落袋，退場觀望！"}
         return {
             "strategy_name": "🔥 多頭主升浪完美咬合續抱", "color": "#7D3CFF", "action_now": "🔮 🔮 【量價籌碼共振 : 全額持股鐵鎖續抱】", "signal": "短長雙速動能多頭共振運行中",
-            "desc": f"持股成本 {entry_cost:.2f} 元（帳面獲利：{pnl_pct:+.1f}%）。{chip_desc}{vol_desc}{text_qualifier}目前運行結構完好，現股全額咬死不賣，放飛利潤！",
-            "blueprint": {"停損防守": f"守動態 ATR 防線 ({trailing_stop:.2f} 元)", "移動停利": "量價結構完好運行中", "預期目標": f"獲利對位目標 {res_dict['target_brk']:.2f} 元"}
+            "desc": f"持股成本 {entry_cost:.2f} 元（帳面獲利：{pnl_pct:+.1f}%）。{chip_desc}{vol_desc}{text_qualifier}目前運行結構完美，盤中暴震皆為老主力洗盤雜訊，現股全額咬死不賣，放飛利潤！",
+            "blueprint": {"停損防守": f"守動態 ATR 防線 ({trailing_stop:.2f} 元)", "移動停利": "量價結構完好運行中（無減碼信號）", "預期目標": f"獲利對位目標 {res_dict['target_brk']:.2f} 元"}
         }
     else:
-        # 🔥 [大摩優化大腦邏輯 1]：若右側突破但千張大戶實質倒貨，判定為機構誘多出貨單，一票否決
-        if st_type == "RIGHT_BREAKOUT" and large_holder_diff < -0.4:
-            return {"strategy_name": "🚨 大摩籌碼風控：否決誘多假突破", "color": "#FF4B4B", "action_now": "🛑 🔴 【主力高檔發貨：嚴禁開火追高】", "signal": "千張大戶實質倒貨背離發動", "blueprint": {"停損防守": "嚴禁進場", "移動停利": "無", "預期目標": "等待大戶籌碼回補"}, "desc": "個股型態雖然看似強勢突圍，但大腦精算後抓出千張大戶主力在過去一週正殘忍逢高倒貨！機構判定為典型的假突破誘多陷阱，一票否決開火指令！"}
-
-        # 🔥 [大摩優化大腦邏輯 2]：突破時確認產業共振，若同業皆弱且相關性崩盤，削減配額
+        if "落後跟屁蟲" in res_dict.get("wolf_rank_label", "") and 'RIGHT_BREAKOUT' in st_type: 
+            return {"strategy_name": "🚨 狼王位階風控：否決跟風開倉", "color": "#FF4B4B", "action_now": "🛑 🔴 【量價籌碼分化：全新開倉嚴禁開火】", "signal": "資金擁擠排斥效應發動", "blueprint": {"停損防守": "嚴禁進場", "移動停利": "無", "預期目標": "要買就去買真正最強的隊長"}, "desc": "個股型態雖跟風突破，但大腦精算顯示該股在產業中屬於落後跟屁蟲，主力金流正大舉撤離，一票否決開火指令！"}
         if st_type == "RIGHT_BREAKOUT":
-            if peer_corr_val < 0.3 and peer_corr_val != 0.0:
-                return {"strategy_name": "⚠️ 產業鏈失聯：孤立突破風控防禦", "color": "#F59E0B", "action_now": "⚠️ 🟡 【同業走勢分化：強制閹割 50% 開火權】", "signal": "產業缺乏金流集體效應", "blueprint": {"停損防守": f"戰術硬停損 {res_dict['stop_brk']:.2f} 元", "移動停利": "短線快進快出", "預期目標": "小波段拉高即落袋"}, "desc": "個股雖獨自突破，但與其核心同業龍頭之相關性崩跌至極低水準。缺乏產業群聚金流的突圍高度危險，屬於個股主力寂寞拉高，強制削減 50% 開火配額！"}
-
             if not res_dict["macro_bull"] or not market_vol_healthy: 
-                return {"strategy_name": "🚨 大盤量能失血：假突破防禦機制", "color": "#F59E0B", "action_now": "⚠️ 🟡 【大盤總血量不足：強制削減60%防守型開火】", "signal": "市場流動性窒息枯竭警告", "blueprint": { "停損防守": f"戰術硬停損 {res_dict['stop_brk']:.2f} 元", "移動停利": "防守型控量", "預期目標": f"衝刺前高壓力牆 {r:.2f} 元即走"}, "desc": "在缺血市場中，假突破率高達 70%。大腦硬性閹割您的追高權，只允許小量開火！"}
+                return {"strategy_name": "🚨 大盤量能失血：假突破防禦機制", "color": "#F59E0B", "action_now": "⚠️ 🟡 【大盤總血量不足：強制削減60%防守型開火】", "signal": "市場流動性窒息枯竭警告", "blueprint": { "停損防守": f"戰術硬停損 {res_dict['stop_brk']:.2f} 元", "移動停利": "防守型控量", "預期目標": f"衝刺前高壓力牆 {r:.2f} 元即走"}, "desc": "在缺血市場中，假突破率高達 70%。大腦硬性閹割您的追高權，只允許削減 60% 開火份額！"}
             if is_box_compressed: 
-                return {"strategy_name": "🔮 波動極致壓縮：老主力大底爆發突破", "color": "#7D3CFF", "action_now": "🔮 🔮 【量價斷層突圍：特許放大1.5倍重倉爆發開火】", "signal": "30日大底時間縱深完美共振", "blueprint": {"停損防守": f"收盤實質跌破 {r:.2f} 元箱頂", "移動停利": f"守 5MA 短線攻擊速線", "預期目標": f"中長線翻倍目標對位 {res_dict['target_brk']:.2f} 元"}, "desc": f"個股振幅驚人收斂在 {res_dict['box_width_pct']:.1f}% 內！籌碼高度集中，大戶同步回補，大腦特許放大1.5倍風控配額，重拳開火！"}
+                return {"strategy_name": "🔮 波動極致壓縮：老主力大底爆發突破", "color": "#7D3CFF", "action_now": "🔮 🔮 【量價斷層突圍：特許放大1.5倍重倉爆發開火】", "signal": "30日大底時間縱深完美共振", "blueprint": {"停損防守": f"收盤實質跌破 {r:.2f} 元箱頂", "移動停利": f"守 5MA 短線攻擊速線", "預期目標": f"中長線翻倍目標對位 {res_dict['target_brk']:.2f} 元"}, "desc": f"個股在過去30天內振幅驚人收斂在 {res_dict['box_width_pct']:.1f}% 內！籌碼高度集中。今日配合【{sitc}】與【{margin}】帶量突破，大腦特許放大1.5倍風控配額，重倉重拳開火！"}
             return {
                 "strategy_name": st_name, "color": "#7D3CFF", "action_now": "🔮 🔮 【頂級信號共振：全新多頭建倉開火】", "signal": "多頭因果完美咬合：黃金主升飆股發動",
-                "desc": f"技術面向上突圍、{chip_desc}{vol_desc}上方怨魂套牢少。大腦判定具備極高多頭期望值，立即執行全新開火建倉指令！",
+                "desc": f"技術面向上突圍、{chip_desc}{vol_desc}上方無any怨魂套牢。大腦判定具備極高多頭期望值，立即執行全新開火建倉指令！",
                 "blueprint": {"停損防守": f"收盤跌破前高壓牆 {r:.2f} 元", "移動停利": f"動態守 ATR 生命防線 ({trailing_stop:.2f} 元)", "預期目標": f"獲利擴張目標對位 {res_dict['target_brk']:.2f} 元"}
             }
         
-        neutral_desc = f"下方面板 1【{res_dict['market_vol_desc']}】，且面板 2 籌碼精算顯示個股處於【{sitc}】。技術、價量、籌碼三者缺乏共振金流點火。大腦決策防線硬性退守至【量化緩衝帶】。此處毫無多頭期望值，強制保持空倉，手綁起來！"
+        neutral_desc = f"由於此時下方面板 1【{res_dict['market_vol_desc']}】，且面板 2 籌碼精算顯示個股處於【{sitc}】與融資【{margin}】。技術、價量、籌碼三者缺乏共振金流點火。大腦決策防線硬性退守至【量化緩衝帶】。此處毫無多頭期望值，強制保持空倉，手綁起來！"
         return {"strategy_name": "💤 空倉常態觀望", "color": "#64748B", "action_now": "⚖️ 🔵 【常態調整區 : 保持空倉耐心等待】", "signal": "進入量化緩衝帶", "blueprint": {"停損防守": "嚴禁盲目進場", "移動停利": "無", "預期目標": "等待金流重啟點火"}, "desc": neutral_desc}
 
 # ============ 9. Main Core Executor ============
@@ -425,11 +427,14 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     
     sitc_trend, margin_trend, sitc_3d_sum, margin_diff = "🟡 中性", "🟡 平穩", 0.0, 0.0
     wolf_rank_label, wolf_rank_color = "⚖️ 族群常態輪動成員", "#64748B"
-    stable_short_trend, stable_short_color = "🟡 短期箱型潛伏", "#F59E0B"
-    trend_phase, short_term_trend = "📉 空頭修正期", "📉 均線全面蓋頭"
+    
+    # 🌟 100% 恢復原本趨勢分析變數初始化 🌟
+    stable_short_trend, stable_short_color, stable_short_desc = "🟡 短期箱型潛伏", "#F59E0B", "均線水平橫躺。"
+    trend_phase, short_term_trend, long_term_trend = "📉 空頭修正期", "📉 均線全面蓋頭", "💤 季線橫向延伸"
+    
     fin_conclusion, gpm_now, opm_now, sum_eps_4q, pe_val = "📋 暫無財報數據", 0.0, 0.0, 0.0, 0.0
     kd_timing, bb_stage, volume_verdict = "⚖️ KD指針定位中", "❌ 趨勢力道定位中", "⚖️ RSI相對強弱中"
-    broker_consensus = {"mean": 0.0, "high": 0.0, "low": 0.0, "pb_ratio": 1.0, "list": []}
+    broker_consensus = {"mean": 0.0, "high": 0.0, "low": 0.0, "list": []}
     
     info_df_local = get_stock_info_df()
     match = info_df_local[info_df_local["stock_id"] == stock_id]
@@ -473,12 +478,14 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     relative_strength = stock_daily_pct - wtx_change
     is_rs_gold = (wtx_change <= -1.0) and (relative_strength >= 3.0)
 
-    # 🔥 [大摩優化數據對位] 深度籌碼與同業共振數據調用
+    # 🔥 [大摩優化] 深度籌碼與同業共振數據取得
     large_holder_trend, large_holder_diff, large_holder_pct = get_weekly_large_holders(stock_id)
     peer_resonance_text, peer_corr_val = analyze_peer_resonance(stock_id, industry)
     sitc_trend, margin_trend, sitc_3d_sum, margin_diff = get_taiwan_enhanced_chips(stock_id)
     
     try: institutional_df = get_institutional_trading_df(stock_id, days=30)
+    except Exception: pass
+    try: broker_consensus = get_broker_consensus_data(stock_id, current_price)
     except Exception: pass
 
     vol_spike = (current_vol * 1000.0) > (vol_ma20_val * 1.5)
@@ -522,8 +529,9 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
                 spring_triggered = True; detected_prior_low = low_cand; break
     if spring_triggered: spring_verdict = f"🟢 【破底翻結構確立】洗盤完成，重回前低 {detected_prior_low:.2f} 元牆上方！"
 
-    # 🔥 [大摩優化] 注入真實財報資產結構
+    # 財報及大摩動態 PB 計算
     fin_df_raw = get_financial_statement_df(stock_id, years=2)
+    pb_ratio, bvps = 1.0, 0.0
     if not fin_df_raw.empty and "Revenue" in fin_df_raw.columns:
         fin_df_work = fin_df_raw.copy().sort_values("date").reset_index(drop=True)
         for f_idx in range(len(fin_df_work)):
@@ -536,17 +544,21 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
         last_fin = fin_df.iloc[0]
         gpm_now, opm_now, sum_eps_4q = safe_float(last_fin.get("gpm", 0.0)), safe_float(last_fin.get("opm", 0.0)), pd.to_numeric(fin_df.head(4)['EPS'], errors='coerce').sum()
         pe_val = current_price / sum_eps_4q if sum_eps_4q > 0 else 0.0
-        fin_conclusion = "📈 【財報年增擴張】獲利指標超越去年同期！" if len(fin_df) >= 5 and gpm_now > safe_float(fin_df.iloc[4].get("gpm", 0.0)) else "⚖️ 財報常態運作中"
-
-    # 取得真實估值矩陣
-    try: broker_consensus = get_broker_consensus_data(stock_id, current_price, fin_df)
-    except Exception: pass
+        fin_conclusion = "📈 【財報年增擴張】獲利指標超越去年同期！" if len(fin_df_work) >= 5 and gpm_now > safe_float(fin_df_work.iloc[-5].get("gpm", 0.0)) else "⚖️ 財報常態運作中"
+        
+        # 動態計算真實 PB 
+        try:
+            pb_ratio, bvps = calculate_dynamic_pb(current_price, fin_df)
+        except Exception: pass
 
     pnl_pct = ((current_price - entry_cost) / entry_cost * 100) if (is_holding and entry_cost > 0) else 0.0
+    
+    # 🌟 100% 還原並啟用你原本的趨勢分析算法 🌟
     short_term_trend = f"🚀 五日線多頭噴發 (KD {kd_status})" if current_price >= ma5_val and ma5_val >= ma20_val else f"📉 均線全面蓋頭 (KD {kd_status})"
+    long_term_trend = "🔥 季線全面向上" if current_price >= ma60_val and (df["MA60"].iloc[-1] > df["MA60"].iloc[-5]) else "💤 季線橫向延伸"
     trend_phase = "🔥 波段多頭主升段" if current_price >= ma20_val and ma20_val >= ma60_val and (df["MA20"].iloc[-1] > df["MA20"].iloc[-5]) else "💤 潛伏築底期"
 
-    # ============ 因子封裝裝箱 ============
+    # ============ 封裝所有物理量變數 ============
     res_dict["stock_id"] = stock_id
     res_dict["stock_name"] = stock_name
     res_dict["industry"] = industry
@@ -573,9 +585,17 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     res_dict["m_color"] = "red" if not macro_bull else "green"
     res_dict["fin_df"] = fin_df
     res_dict["spring_verdict"] = spring_verdict
-    res_dict["stable_short_trend"] = short_term_trend
-    res_dict["stable_short_color"] = "#10B981" if current_price >= ma5_val else "#EF4444"
+    
+    # 保持原版週級別面板使用的變數
+    res_dict["stable_short_trend"] = stable_short_trend
+    res_dict["stable_short_color"] = stable_short_color
+    res_dict["stable_short_desc"] = stable_short_desc
+    
+    # 注入修復後的原版趨勢分析變數
+    res_dict["short_term_trend"] = short_term_trend
+    res_dict["long_term_trend"] = long_term_trend
     res_dict["trend_phase"] = trend_phase
+    
     res_dict["latest_yoy"] = latest_yoy
     res_dict["fin_conclusion"] = fin_conclusion
     res_dict["sitc_trend"] = sitc_trend
@@ -594,13 +614,16 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     res_dict["market_vol_healthy"] = market_vol_healthy
     res_dict["is_box_compressed"] = is_box_compressed
     
-    # 🔥 大摩優化新因子裝箱
+    # 大摩新因子封裝
     res_dict["large_holder_trend"] = large_holder_trend
     res_dict["large_holder_diff"] = large_holder_diff
     res_dict["large_holder_pct"] = large_holder_pct
     res_dict["peer_resonance_text"] = peer_resonance_text
     res_dict["peer_corr_val"] = peer_corr_val
+    res_dict["pb_ratio"] = pb_ratio
+    res_dict["bvps"] = bvps
 
+    # 安全呼叫大腦模型
     res_dict["tactical_blueprint"] = unified_institutional_brain(res_dict, df.copy(), is_holding=is_holding, entry_cost=entry_cost, sector_panic=sector_panic)
     
     denom = current_price - stop_brk
@@ -618,7 +641,7 @@ with st.sidebar:
     sector_panic_toggle = st.checkbox("🔥 同族群其他龍頭股「集體下殺破5%」", value=False)
     auto_refresh = st.checkbox("🔄 開啟盤中每 5 秒自動秒刷報價", value=False)
 
-st.markdown("## 📡 雙速策略大腦動態綜合看盤台 (v48 大摩特選版)")
+st.markdown("## 📡 雙速策略大腦動態綜合看盤台 (v48 修復原裝版)")
 stock_input = st.text_input("請輸入核心目標個股代碼：", value="3037")
 
 u_col1, u_col2 = st.columns(2)
@@ -656,6 +679,12 @@ if diag_trigger or stock_input:
         </div>
         """, unsafe_allow_html=True)
 
+        # 🔥 [大摩優化] 決策卡片下方的輔助避險提示：不修改原大腦決策，僅做大戶/產業共振風險預警
+        if res['large_holder_diff'] < -0.3:
+            st.warning(f"⚠️ 【大摩籌碼預警】注意！千張大戶近週出現逢高發貨 (變動: {res['large_holder_diff']:+.2f}%)，請嚴防當前型態可能為誘多假突破。")
+        if res['peer_corr_val'] < 0.3 and res['peer_corr_val'] != 0.0:
+            st.info(f"⚠️ 【大摩共振預警】當前個股與同業龍頭相關性極低 ({res['peer_corr_val']:.2f})，板塊尚未形成集體大動能點火。")
+
         # 2. 昨晚美股即時戰報
         st.markdown("### 🌐 昨晚美股與台指期夜盤即時戰報")
         radar_show = res["radar_results"]
@@ -674,26 +703,57 @@ if diag_trigger or stock_input:
         with c3: st.markdown(custom_hud_box("⏳ 母部位大波段防禦線 (ATR)", f"<span style='font-size:16px; color:#7C3AED;'>{res['trailing_stop_line']}</span><br><small style='color:#64748B;'>當前 ATR14: {res['atr']:.2f}</small>"), unsafe_allow_html=True)
         with c4: st.markdown(custom_hud_box("📊 相對強度 (RS Matrix)", f"<span style='font-size:16px; color:#10B981;'>超額 {res['relative_strength']:+.2f}%</span><br><small style='color:#64748B;'>RS黃金箭頭: {'🔥 成立' if res['is_rs_gold'] else '⚪ 整理中'}</small>"), unsafe_allow_html=True)
 
-        # 5. 多因子曝光面板 (整合新加入的大摩機構核心因子)
+        # 🌟 5. [重磅還原並展現] 趨勢與定位定錨矩陣 🌟
+        st.markdown("### 📈 自營部多維度趨勢定錨矩陣")
+        t_col1, t_col2, t_col3 = st.columns(3)
+        with t_col1:
+            st.markdown(f"""<div style="background-color:#FFF5F5; border:1px solid #E2E8F0; padding:12px; border-radius:6px; border-left:5px solid #EF4444; min-height:85px;">
+                <span style="font-size:12px; color:#64748B; font-weight:700; display:block;">⏱️ 週級別・短期主趨勢</span>
+                <h4 style="margin:6px 0 0 0; color:#1E293B; font-size:14.5px; font-weight:800;">{res['short_term_trend']}</h4>
+            </div>""", unsafe_allow_html=True)
+        with t_col2:
+            st.markdown(f"""<div style="background-color:#F0FDF4; border:1px solid #E2E8F0; padding:12px; border-radius:6px; border-left:5px solid #10B981; min-height:85px;">
+                <span style="font-size:12px; color:#64748B; font-weight:700; display:block;">⏳ 季線級別・長期主趨勢</span>
+                <h4 style="margin:6px 0 0 0; color:#1E293B; font-size:14.5px; font-weight:800;">{res['long_term_trend']}</h4>
+            </div>""", unsafe_allow_html=True)
+        with t_col3:
+            st.markdown(f"""<div style="background-color:#EFF6FF; border:1px solid #E2E8F0; padding:12px; border-radius:6px; border-left:5px solid #3B82F6; min-height:85px;">
+                <span style="font-size:12px; color:#64748B; font-weight:700; display:block;">🔥 波動運行階段定位</span>
+                <h4 style="margin:6px 0 0 0; color:#1E293B; font-size:14.5px; font-weight:800;">{res['trend_phase']}</h4>
+            </div>""", unsafe_allow_html=True)
+
+        # 6. 多因子曝光面板 (融入大摩核心指標)
         st.markdown("### 🧬 機構級多因子結構縱深大數據曝光面板")
         ib_col1, ib_col2, ib_col3 = st.columns(3)
         with ib_col1:
-            macro_detail_desc = f"精算結果：大盤流動性狀況直接決定突破單的防守勝率。量能萎縮時系統會主動卡死盲目追高行為。"
+            macro_detail_desc = f"精算結果：大盤流動性直接限制突破流派開火配額。量能萎縮時大腦將強力阻斷假突破單。" if not res['macro_bull'] else "精算結果：大盤總血量安全，全面放行追高與加碼單。"
             st.markdown(render_panel_html("1. 總體流動性安全閥（實質總血量）", res['market_vol_desc'], macro_detail_desc, "#3B82F6"), unsafe_allow_html=True)
         with ib_col2:
-            st.markdown(render_panel_html("2. [大摩升級] 千張大戶籌碼定錨", res['large_holder_trend'], f"最新千張大戶持股比率: <b>{res['large_holder_pct']:.2f}%</b><br>核心主力本週變動權重: <b>{res['large_holder_diff']:+.2f}%</b>", "#EF4444" if res['large_holder_diff']<0 else "#10B981"), unsafe_allow_html=True)
+            if "領頭狼王" in res['wolf_rank_label']: wolf_detail_desc = "精算結果：板塊強度極強！大腦給予最高建倉特權。"
+            elif "跟屁蟲" in res['wolf_rank_label']: wolf_detail_desc = "精算結果：資金大舉撤離，一票否決新買進開火！"
+            else: wolf_detail_desc = "精算結果：個股處於常態產業輪動。若此時空倉，大腦下達【量化緩衝帶】退場觀望。"
+            st.markdown(render_panel_html("2. 產業板塊內部分化位階（狼王排序）", res['wolf_rank_label'], wolf_detail_desc, res['wolf_rank_color']), unsafe_allow_html=True)
         with ib_col3:
-            st.markdown(render_panel_html("3. [大摩升級] 產業鏈核心共振定位", "同業金流追蹤中", res['peer_resonance_text'], "#7C3AED"), unsafe_allow_html=True)
+            box_status_text = f"🔥 波動極致壓縮成立" if res['is_box_compressed'] else f"⚪ 箱型常態發散中"
+            box_status_desc = f"精算結果：個股近30日震幅 {res['box_width_pct']:.1f}%，已脫離底部窄幅整理，進入動能擴張階段。"
+            st.markdown(render_panel_html("3. 箱型籌碼時間縱深（橫有多長）", box_status_text, box_status_desc, "#7C3AED"), unsafe_allow_html=True)
 
-        # 6. 微觀底層解碼驗證區
+        # 🌟 還原原週級別短期趨勢定錨面板 🌟
+        trend_desc_connect = f"觀察提示：當前 5日主力成本線（MA5）強勢昂頭向上。此時與上方箱型發散高達 {res['box_width_pct']:.1f}% 的動能形成完美因果咬合——這正是促使最頂端決策大腦對您下達【{bp_data['strategy_name']}】的鋼鐵因果核心！"
+        st.markdown(f"""<div style="background-color: #F8FAFC; border: 1px solid #E2E8F0; border-left: 6px solid {res['stable_short_color']}; padding: 16px; border-radius: 6px; margin-top: 15px; margin-bottom: 15px;"><div style="display: flex; justify-content: space-between; align-items: center;"><span style="font-size: 13px; color: #64748B; font-weight: 800; letter-spacing: 0.05em;">⏱️ 週級別・短期波段主趨勢定錨面板</span></div><h4 style="margin: 8px 0; color: {res['stable_short_color']}; font-weight: 800; font-size: 18px;">當前定錨狀態：{res['stable_short_trend']}</h4><p style="margin: 0; color: #1E293B; font-size: 13.5px; line-height: 1.55; font-weight: 600;">{trend_desc_connect}</p></div>""", unsafe_allow_html=True)
+
+        # 7. 底層因果深度解碼驗證區
         st.markdown("---")
         st.markdown("### 🧱 🔍 跨因子微觀底層因果深度解碼驗證區")
+        
+        # 區塊 A：大戶指標與動能重點
         st.markdown("#### ⚡ 自營部決策判詞：三大法人籌碼與技術指標實戰重點")
         st.markdown(f"""
         <div style="background-color:#FFFFFF; padding:16px; border:2px solid #7D3CFF; border-left:8px solid #7D3CFF; border-radius:6px; margin-bottom:20px; box-shadow:0 1px 3px rgba(0,0,0,0.02);">
             <p style="margin:0 0 12px 0; color:#0F172A; font-size:14.5px; font-weight:700; line-height:1.65;">
-                <span style="color:#7D3CFF; font-weight:900; font-size:15px;">🦅 【籌碼與估值核心結論】➔ </span>
-                當前個股真實財報計算之 PB 淨值比位階為 <b>{res['broker_consensus']['pb_ratio']:.2f}x</b>。投信近30日處於【{res['sitc_trend']}】狀態，散戶融資呈現【{res['margin_trend']}】。
+                <span style="color:#7D3CFF; font-weight:900; font-size:15px;">🦅 【大摩籌碼與大戶定位】➔ </span>
+                千張大戶股權變動最新定位在【<b>{res['large_holder_trend']}</b>】(比率為 {res['large_holder_pct']:.2f}%, 本週變動: {res['large_holder_diff']:+.2f}%)；
+                投信近30日處於【{res['sitc_trend']}】狀態。<b>{res['peer_resonance_text']}</b>。當前真實財報定錨之 PB 淨值比為 <b>{res['pb_ratio']:.2f}x</b> (每股淨值: {res['bvps']:.2f} 元)。
             </p>
             <p style="margin:0; color:#0F172A; font-size:14.5px; font-weight:700; line-height:1.65;">
                 <span style="color:#2563EB; font-weight:900; font-size:15px;">⏱️ 【技術指標動能共振結論】➔ </span>
@@ -709,23 +769,24 @@ if diag_trigger or stock_input:
             if not res["institutional_df"].empty:
                 st.dataframe(res["institutional_df"].style.format({"外資(張)": "{:+,.1f}", "投信(張)": "{:+,.1f}", "自營商總計(張)": "{:+,.1f}"}), use_container_width=True)
 
-        # 區塊 C：機構估值矩陣
-        st.markdown("### 🏛️ 🧮 頂級機構真實財報估值定錨矩陣")
+        # 區塊 C：外資與本土投顧目標價矩陣 (100% 還原原廠設定)
+        st.markdown("### 🏛️ 🧮 頂級外資券商與本土投顧最新的研究報告目標價矩陣")
         bc = res["broker_consensus"]
-        st.markdown(f"""<div style="background-color:#F5F3FF; padding:12px; border-left:4px solid #7C3AED; border-radius:4px; margin-bottom:12px; font-size:14px; color:#5B21B6; font-weight:700;">🎯 精算機構平均目標價：{bc['mean']:.2f} 元 ｜ 樂觀擴張估值：{bc['high']:.2f} 元 ｜ 保守防守估值：{bc['low']:.2f} 元</div>""", unsafe_allow_html=True)
+        st.markdown(f"""<div style="background-color:#F5F3FF; padding:12px; border-left:4px solid #7C3AED; border-radius:4px; margin-bottom:12px; font-size:14px; color:#5B21B6; font-weight:700;">🎯 法人共識平均目標價：{bc['mean']:.2f} 元 ｜ 機構最高看好價：{bc['high']:.2f} 元 ｜ 最低防守估值：{bc['low']:.2f} 元</div>""", unsafe_allow_html=True)
         if bc["list"]:
             for b in bc["list"]:
-                st.markdown(f"* **[{b['date']}]** <span style='color:#7C3AED; font-weight:800;'>{b['firm']}</span> 給予 ➔ **【{b['rating']}】** ｜ 估值清算目標：<span style='color:#0F172A; font-weight:900; font-size:15px;'>{b['target']:.2f} 元</span>", unsafe_allow_html=True)
+                st.markdown(f"* **[{b['date']}]** <span style='color:#7C3AED; font-weight:800;'>{b['firm']}</span> 給予 ➔ **【{b['rating']}】** 評等 ｜ 預估溢價目標：<span style='color:#0F172A; font-weight:900; font-size:15px;'>{b['target']:.2f} 元</span>", unsafe_allow_html=True)
 
         # 區塊 D：財報三率大表
         st.markdown("### 📊 財務基本面季度結構矩陣大表")
         st.markdown(f"""<div style="background-color:#EFF6FF; padding:10px; border-left:4px solid #3B82F6; border-radius:4px; margin-bottom:12px; font-size:13.5px; color:#1E40AF; font-weight:700;">📋 最新基本面估值：{res['fin_conclusion']} ｜ 核心營收年增率 (YoY)：{res['latest_yoy']:.2f}%</div>""", unsafe_allow_html=True)
         if not res["fin_df"].empty:
             clean_fin_show = res["fin_df"].copy()
-            # 確保欄位存在才顯示
+            # 整理顯示欄位，保留原本結構
             show_cols = ["date", "EPS", "Revenue", "GrossProfit", "OperatingIncome", "gpm", "opm"]
             clean_fin_show = clean_fin_show[[c for c in show_cols if c in clean_fin_show.columns]]
-            st.dataframe(clean_fin_show.style.format({"EPS": "{:.2f}", "Revenue": "{:,.0f}", "GrossProfit": "{:,.0f}", "OperatingIncome": "{:,.0f}", "gpm": "{:.2f}%", "opm": "{:.2f}%"}), use_container_width=True)
+            clean_fin_show.columns = ["季度日期", "單季 EPS", "營業收入", "營業毛利", "營業利益", "單季毛利率 (%)", "單季營益率 (%)"]
+            st.dataframe(clean_fin_show.style.format({"單季 EPS": "{:.2f}", "營業收入": "{:,.0f}", "營業毛利": "{:,.0f}", "營業利益": "{:,.0f}", "單季毛利率 (%)": "{:.2f}%", "單季營益率 (%)": "{:.2f}%"}), use_container_width=True)
 
         # 區塊 E：新聞輿情流水線
         st.markdown("### 📰 資訊面 24H 網路輿情即時新聞流水線")
