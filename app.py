@@ -52,17 +52,6 @@ def render_panel_html(title, heading, desc, top_border_color):
     </div>
     """
 
-def get_market_status_label(rt_success: bool, last_trade_date_str: str):
-    now = datetime.now(TZ)
-    if now.weekday() >= 5: return "CLOSED_WEEKEND", f"市場休市 (週末) | 數據日期: {last_trade_date_str}", "gray"
-    start, end = datetime.strptime("09:00", "%H:%M").time(), datetime.strptime("13:35", "%H:%M").time()
-    if rt_success:
-        if start <= now.time() <= end: return "OPEN", "市場交易中 (即時更新)", "red"
-        return ("PRE_MARKET", "盤前準備中", "blue") if now.time() < start else ("POST_MARKET", "今日已收盤 (即時報價)", "green")
-    else:
-        if start <= now.time() <= end: return "API_WAIT", f"連線受限改用歷史價 | 歷史日期: {last_trade_date_str}", "orange"
-        return ("PRE_MARKET", f"盤前準備中 | 歷史日期: {last_trade_date_str}", "blue") if now.time() < start else ("POST_MARKET", f"今日已收盤 | 歷史日期: {last_trade_date_str}", "green")
-
 def analyze_news_sentiment(title: str) -> tuple:
     pos = ['創新高', '大賺', '暴增', '飆', '大成長', '利多', '優於預期', '加碼', '看旺', '強勢', '獲利', '突破', '轉盈', '買超', '爆發', '新高', '三率三升']
     neg = ['衰退', '虧損', '重挫', '低於預期', '縮水', '跌破', '警告', '利空', '下滑', '疲弱', '裁員', '大跌', '慘', '賣壓', '修正', '暴跌', '逆風']
@@ -308,29 +297,48 @@ def auto_strategy_classifier(res_dict):
     if p >= r * 0.97 or (p > m20 and phase == "🔥 波段多頭主升段"): return "RIGHT_BREAKOUT", "🚀 右側交易：強勢突破型態"
     return "NEUTRAL_ZONE", "⚖️ 混沌常態：無極端共振型態"
 
+# 🌟 【三大板塊融合核心建議演算法】：全面將技術面、價量關係、籌碼流向三位一體打包，生成動態操盤判詞
 def unified_institutional_brain(res_dict, df_hist, is_holding=False, entry_cost=0.0, sector_panic=False):
     st_type, st_name = auto_strategy_classifier(res_dict)
     p, r, m20, ma5 = res_dict["current_price"], res_dict["real_resistance"], res_dict["ma20_val"], res_dict["ma5_val"]
-    m_safe, atr, pnl_pct = res_dict["macro_bull"], res_dict["atr"], res_dict["pnl_pct"]
+    atr, pnl_pct = res_dict["atr"], res_dict["pnl_pct"]
     trailing_stop = float(df_hist["close"].tail(20).max()) - (2.5 * atr)
-    wolf_rank_label = res_dict.get("wolf_rank_label", "常態輪動")
-
+    
+    sitc = res_dict.get("sitc_trend", "🟡 中性")
+    margin = res_dict.get("margin_trend", "🟡 平穩")
+    vol_spike = res_dict.get("vol_spike", False)
+    short_trend = res_dict.get("stable_short_trend", "🟡 短期潛伏")
+    
+    # 動態構造籌碼與技術交叉評語
+    chip_desc = f"籌碼面顯示投信處於【{sitc}】，融資呈現【{margin}】；"
+    vol_desc = "價量結構高檔爆發特大法人換手斷層，動能強勁；" if vol_spike else "價量關係處於常態量縮換手洗盤階段；"
+    tech_desc = f"技術面定錨【{short_trend}】。"
+    
     if is_holding and entry_cost > 0:
-        if pnl_pct <= -7.0: return {"strategy_name": "🚨 觸發硬性資本停損", "color": "#FF4B4B", "action_now": "🛑 🔴 【部位重傷：全額立刻清倉】", "signal": "本金敞口破防", "blueprint": {"停損防守": f"本金死穴 {entry_cost * 0.93:.2f} 元", "移動停利": "無", "預期目標": "保全資金殘餘"}, "desc": f"您成本為 {entry_cost:.2f} 元。目前帳面虧損達 {pnl_pct:.1f}%，立刻執行全額市價離場！"}
-        if p < trailing_stop: return {"strategy_name": "⏳ 中線波段趨勢終結", "color": "#EF4444", "action_now": "🛑 🔴 【波段獲利終結/結構破防：全額清倉】", "signal": "跌破動態 ATR 波動防線", "blueprint": {"停損防守": "全額清倉離場", "移動停利": "已觸發", "預期目標": "資金全額退場"}, "desc": f"持股成本為 {entry_cost:.2f} 元。即時價已實質跌破中線結構防禦線 ({trailing_stop:.2f} 元)，請全額清倉退場避險！"}
-        return {"strategy_name": "🔥 強勢主升浪完美續抱", "color": "#7D3CFF", "action_now": "🔮 🔮 【強勢狂飆 : 全額持股續抱】", "signal": "短長雙速動能多頭共振", "blueprint": {"停損防守": f"守 ATR 防線 ({trailing_stop:.2f} 元)", "移動停利": "結構完美運行中", "預期目標": f"獲利對位目標 {res_dict['target_brk']:.2f} 元"}, "desc": f"持股成本 {entry_cost:.2f} 元（帳面獲利：{pnl_pct:+.1f}%）。量價結構健康，5MA 攻擊線完美上翹。全額咬死不賣，放飛利潤！"}
+        if pnl_pct <= -7.0: 
+            return {"strategy_name": "🚨 觸發自營部硬性資本停損", "color": "#FF4B4B", "action_now": "🛑 🔴 【核心風控：立刻全額清倉離場】", "signal": f"{chip_desc}技術面破位下殺", "blueprint": {"停損防守": "已擊穿防線", "移動停利": "無", "預期目標": "保全資金殘餘"}, "desc": f"您持股成本為 {entry_cost:.2f} 元。目前個股因量價破防，帳面虧損達 {pnl_pct:.1f}%。{chip_desc}大腦硬性判定勝率歸零，立刻清倉保全資本！"}
+        if p < trailing_stop: 
+            return {"strategy_name": "⏳ 波段利潤動態追蹤終結", "color": "#EF4444", "action_now": "🛑 🔴 【波段獲利終結：全額市價落袋】", "signal": "實質跌破中線 ATR 生命線", "blueprint": {"停損防守": "全額清倉離場", "移動停利": "已觸發", "預期目標": "資金全額退場"}, "desc": f"您持股成本為 {entry_cost:.2f} 元。即時價已實質跌破大腦精算的波動死穴 ({trailing_stop:.2f} 元)。{chip_desc}{tech_desc}請將所有翻倍利潤全額獲利落袋，退場觀望！"}
+        return {
+            "strategy_name": "🔥 多頭主升浪完美咬合續抱", "color": "#7D3CFF", "action_now": "🔮 🔮 【量價籌碼共振 : 全額持股鐵鎖續抱】", "signal": "短長雙速動能多頭共振運行中",
+            "desc": f"持股成本 {entry_cost:.2f} 元（帳面獲利：{pnl_pct:+.1f}%）。{chip_desc}{vol_desc}{tech_desc}目前運行結構完美，盤中暴震皆為老主力洗盤雜訊，現股全額咬死不賣，放飛利潤！",
+            "blueprint": {"停損防守": f"守動態 ATR 防線 ({trailing_stop:.2f} 元)", "移動停利": "量價結構完好運行中（無減碼信號）", "預期目標": f"獲利對位目標 {res_dict['target_brk']:.2f} 元"}
+        }
     else:
-        if "落後跟屁蟲" in wolf_rank_label and 'RIGHT_BREAKOUT' in st_type: return {"strategy_name": "🚨 狼王位階風控：否決跟風開倉", "color": "#FF4B4B", "action_now": "🛑 🔴 【環境極端風險：全新開倉嚴禁開火】", "signal": "資金分化排斥效應", "blueprint": {"停損防守": "嚴禁進場", "移動停利": "無", "預期目標": "要買就去買真正最強的隊長"}, "desc": "大腦精算顯示該股在同產業族群中屬於落後跟屁蟲，追高跟風股隨時面臨補跌踩踏，一票否決！"}
-        if res_dict["is_rs_gold"] and p >= m20 and not sector_panic: return {"strategy_name": "🚀 統一特許：逆境黃金飆股劇本發動", "color": "#7D3CFF", "action_now": "🔮 🔮 【強者恆強 : 無視大盤恐慌立即開火】", "signal": "個股超額相對強度（RS）爆表", "blueprint": {"停損防守": f"開倉技術停損位", "移動停利": f"波動防線 {trailing_stop:.2f} 元", "預期目標": f"獲利對位目標 {res_dict['target_brk']:.2f} 元"}, "desc": f"大盤目前破位下殺。但該個股今日爆發出高達 {res_dict['relative_strength']:.1f}% 的超額相對強度(RS)！特許放行防守型低吸建倉！"}
+        if "落後跟屁蟲" in res_dict.get("wolf_rank_label", "") and 'RIGHT_BREAKOUT' in st_type: 
+            return {"strategy_name": "🚨 狼王位階風控：否決跟風開倉", "color": "#FF4B4B", "action_now": "🛑 🔴 【量價籌碼分化：全新開倉嚴禁開火】", "signal": "資金擁擠排斥效應發動", "blueprint": {"停損防守": "嚴禁進場", "移動停利": "無", "預期目標": "要買就去買真正最強的隊長"}, "desc": "個股型態雖跟風突破，但大腦精算顯示該股在產業中屬於落後跟屁蟲，主力金流正大舉撤離，一票否決開火指令！"}
         if st_type == "RIGHT_BREAKOUT":
-            if not res_dict["macro_bull"]: return {"strategy_name": "🚨 大盤量能失血：假突破防禦機制", "color": "#F59E0B", "action_now": "⚠️ 🟡 【大盤總血量不足：強制削減60%防守型開火】", "signal": "流動性窒息枯竭警告", "blueprint": { "停損防守": f"戰術硬停損 {res_dict['stop_brk']:.2f} 元", "移動停利": "防守型控量", "預期目標": f"衝刺前高壓力牆 {res_dict['real_resistance']:.2f} 元即走"}, "desc": "在缺血市場中，假突破率高達 70%。大腦硬性閹割您的追高權，只允許拉回低吸並砍掉 60% 配額！"}
-            if res_dict["is_box_compressed"]: return {"strategy_name": "🔮 波動極致壓縮：老主力築底大底爆發", "color": "#7D3CFF", "action_now": "🔮 🔮 【蓄勢火山突破：特許放大1.5倍重倉爆發開火】", "signal": "30日大底時間縱深完美共振", "blueprint": {"停損防守": f"收盤跌破箱型上軌 {r:.2f} 元", "移動停利": f"守 5MA 攻擊線", "預期目標": f"長線翻倍目標對位 {res_dict['target_brk']:.2f} 元"}, "desc": f"該股在過去30天內，高低價差驚人地收斂在 {res_dict['box_width_pct']:.1f}% 的極致窄幅箱型內！籌碼高度集中。今日帶量突破，大腦特許放大 1.5 倍資金重倉開火！"}
+            if not res_dict["macro_bull"] or not res_dict.get("market_vol_healthy", True): 
+                return {"strategy_name": "🚨 大盤量能失血：假突破防禦機制", "color": "#F59E0B", "action_now": "⚠️ 🟡 【大盤總血量不足：強制削減60%防守型開火】", "signal": "市場流動性窒息枯竭警告", "blueprint": { "停損防守": f"戰術硬停損 {res_dict['stop_brk']:.2f} 元", "移動停利": "防守型控量", "預期目標": f"衝刺前高壓力牆 {r:.2f} 元即走"}, "desc": "個股籌碼雖然強勢，但此時大盤實質成交總血量窒息。在缺血市場中假突破率高達70%。大腦硬性閹割您的追高權，只允許削減 60% 開火份額！"}
+            if res_dict["is_box_compressed"]: 
+                return {"strategy_name": "🔮 波動極致壓縮：老主力大底爆發突破", "color": "#7D3CFF", "action_now": "🔮 🔮 【量價斷層突圍：特許放大1.5倍重倉爆發開火】", "signal": "30日大大底時間縱深完美共振", "blueprint": {"停損防守": f"收盤實質跌破 {r:.2f} 元箱頂", "移動停利": f"守 5MA 短線攻擊速線", "預期目標": f"中長線翻倍目標對位 {res_dict['target_brk']:.2f} 元"}, "desc": f"個股在過去30天內振幅驚人收斂在 {res_dict['box_width_pct']:.1f}% 內！籌碼高度集中。今日配合【{sitc}】與【{margin}】帶量突破，大腦特許放大1.5倍風控配額，重倉重拳開火！"}
             return {
-                "strategy_name": st_name, "color": "#7D3CFF", "action_now": "🔮 🔮 【頂級信號：全新多頭建倉開火】", "signal": "頂級多頭共振：黃金主升飆股型態發動", "desc": "基本面擴張、法人強力鎖碼、帶量突破前高壓力牆，上方無怨魂，適合執行全新多頭開火建倉！",
-                "blueprint": {"停損防守": f"收盤跌破壓力線 {r:.2f} 元", "移動停利": f"動態守波動防線 ({trailing_stop:.2f} 元)", "預期目標": f"獲利對位目標 {res_dict['target_brk']:.2f} 元"}
+                "strategy_name": st_name, "color": "#7D3CFF", "action_now": "🔮 🔮 【頂級信號共振：全新多頭建倉開火】", "signal": "多頭因果完美咬合：黃金主升飆股發動",
+                "desc": f"技術面向上突圍、{chip_desc}{vol_desc}上方無any怨魂套牢。大腦判定具備極高多頭期望值，立即執行全新開火建倉指令！",
+                "blueprint": {"停損防守": f"收盤跌破前高壓牆 {r:.2f} 元", "移動停利": f"動態守 ATR 生命防線 ({trailing_stop:.2f} 元)", "預期目標": f"獲利擴張目標對位 {res_dict['target_brk']:.2f} 元"}
             }
         
-        neutral_desc = f"由於此時下方面板 1【{res_dict['market_vol_desc']}】，且面板 2 精算顯示個股僅屬於【{wolf_rank_label}】，缺乏機構大金流點火表態。大腦決策防線硬性退守至【量化緩衝帶】。此處毫無多頭期望值，強制空倉，手綁起來！"
+        neutral_desc = f"由於此時下方面板 1【{res_dict['market_vol_desc']}】，且面板 2 籌碼精算顯示個股處於【{sitc}】與融資【{margin}】。技術、價量、籌碼三者缺乏共振金流點火。大腦決策防線硬性退守至【量化緩衝帶】。此處毫無多頭期望值，強制保持空倉，手綁起來！"
         return {"strategy_name": "💤 空倉常態觀望", "color": "#64748B", "action_now": "⚖️ 🔵 【常態調整區 : 保持空倉耐心等待】", "signal": "進入量化緩衝帶", "blueprint": {"停損防守": "嚴禁盲目進場", "移動停利": "無", "預期目標": "等待金流重啟點火"}, "desc": neutral_desc}
 
 # ============ 9. Main Core Executor ============
@@ -427,14 +435,12 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
                 if len(rev_df) > 12: latest_yoy = float(rev_df["revenue_clean"].pct_change(12).iloc[-1] * 100)
         except Exception: latest_yoy = 0.0
 
-    # 🌟 🌟 🌟 【核心修復焊接點】：重灌標籤指定迴圈，彻底超度第 438 行 KeyError 內鬼！ 🌟 🌟 🌟
+    # 封裝保護點：為每條新聞貼上多空標籤
     try: raw_news_list_data = get_realtime_news_list(stock_id, stock_name)
     except Exception: raw_news_list_data = []
     if raw_news_list_data:
         raw_news_list = raw_news_list_data[:8]
-        # 焊接防禦點：優先為每一條新聞貼上多空標籤，防堵空抽屜死結
-        for n in raw_news_list: 
-            n["sentiment"], n["color"] = analyze_news_sentiment(n["title"])
+        for n in raw_news_list: n["sentiment"], n["color"] = analyze_news_sentiment(n["title"])
         news_analysis_report = "🔥 【輿情偏多】 利多消息主導市場" if sum(1 for n in raw_news_list if "利多" in n["sentiment"]) > sum(1 for n in raw_news_list if "利空" in n["sentiment"]) else "⚖️ 中性輿情"
 
     if len(df) >= 40:
@@ -470,7 +476,6 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     res_dict["market_vol_desc"] = market_vol_desc
     res_dict["wolf_rank_label"] = wolf_rank_label
     res_dict["wolf_rank_color"] = wolf_rank_color
-    res_dict["is_box_compressed"] = is_box_compressed
     res_dict["box_width_pct"] = box_width_pct
     res_dict["target_brk"] = target_brk
     res_dict["stop_brk"] = stop_brk
@@ -486,7 +491,6 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     res_dict["stock_daily_pct"] = stock_daily_pct
     res_dict["relative_strength"] = relative_strength
     res_dict["is_rs_gold"] = is_rs_gold
-    res_dict["is_volume_gap_spike"] = False
     res_dict["rt_source"] = rt_source
     res_dict["m_desc"] = macro_text
     res_dict["m_color"] = "red" if not macro_bull else "green"
@@ -546,8 +550,8 @@ if diag_trigger or stock_input:
         bp_data = res["tactical_blueprint"]
         bp = bp_data["blueprint"]
         
-        # 1. 大腦策略卡片
-        st.html(f"""
+        # 1. 大腦決策卡片
+        st.markdown(f"""
         <div style="background-color: {bp_data['color']}10; border: 2px solid {bp_data['color']}; padding: 22px; border-radius: 8px; margin-bottom: 25px;">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
                 <span style="color: {bp_data['color']}; font-size: 14px; font-weight: 900;">📢 狀態定錨決策大腦標籤：{bp_data['strategy_name']}</span>
@@ -566,7 +570,7 @@ if diag_trigger or stock_input:
                 </div>
             </div>
         </div>
-        """)
+        """, unsafe_allow_html=True)
 
         # 2. 昨晚美股即時戰報
         st.markdown("### 🌐 昨晚美股與台指期夜盤即時戰報")
@@ -605,20 +609,20 @@ if diag_trigger or stock_input:
         trend_desc_connect = f"觀察提示：當前 5日主力成本線（MA5）強勢昂頭向上。此時與上方箱型發散高達 {res['box_width_pct']:.1f}% 的動能形成完美因果咬合——這正是促使最頂端決策大腦對您下達【{bp_data['strategy_name']}】的鋼鐵因果核心！"
         st.markdown(f"""<div style="background-color: #F8FAFC; border: 1px solid #E2E8F0; border-left: 6px solid {res['stable_short_color']}; padding: 16px; border-radius: 6px; margin-top: 15px; margin-bottom: 15px;"><div style="display: flex; justify-content: space-between; align-items: center;"><span style="font-size: 13px; color: #64748B; font-weight: 800; letter-spacing: 0.05em;">⏱️ 週級別・短期波段主趨勢定錨面板</span></div><h4 style="margin: 8px 0; color: {res['stable_short_color']}; font-weight: 800; font-size: 18px;">當前定錨狀態：{res['stable_short_trend']}</h4><p style="margin: 0; color: #1E293B; font-size: 13.5px; line-height: 1.55; font-weight: 600;">{trend_desc_connect}</p></div>""", unsafe_allow_html=True)
 
-        # 👑 7. 操盤手精密覆核黃金中間段
+        # 👑 8. 操盤手精密覆核黃金中間段
         st.markdown("---")
         st.markdown("### 🧱 🔍 跨因子微觀底層因果深度解碼驗證區")
         
-        # 區塊 A：指標與籌碼大腦重點判詞完全曝光（前台不摺疊！）
+        # 🌟 🌟 🌟 【徹底修復點】：更換為相容性最高的 st.markdown(..., unsafe_allow_html=True)，將三大因子重點判詞流暢列印，終結 Metrics Wrapper KeyError 內鬼！
         st.markdown("#### ⚡ 自營部決策判詞：三大法人籌碼與技術指標實戰重點")
-        st.html(f"""
+        st.markdown(f"""
         <div style="background-color:#FFFFFF; padding:16px; border:2px solid #7D3CFF; border-left:8px solid #7D3CFF; border-radius:6px; margin-bottom:20px; box-shadow:0 1px 3px rgba(0,0,0,0.02);">
             <p style="margin:0 0 12px 0; color:#0F172A; font-size:14.5px; font-weight:700; line-height:1.65;">
-                <span style="color:#7D3CFF; font-weight:900; font-size:15px;">🦅 【籌碼金流核心結論】➔ </span>
+                <span style="color:#7D3CFF; font-weight:900; font-size:15px;">🦅 【籌碼與價量核心結論】➔ </span>
                 投信大部隊近30日處於【{res['sitc_trend']}】狀態，實質連續性砸下重金鎖碼，屬於絕對的作帳波段真隊長；外資高位雖有短線利潤調節換手，但大盤高檔失血拉回時，融資呈現【{res['margin_trend']}】，籌碼未見散落，沉澱結構健康度極高！
             </p>
             <p style="margin:0; color:#0F172A; font-size:14.5px; font-weight:700; line-height:1.65;">
-                <span style="color:#2563EB; font-weight:900; font-size:15px;">⏱️ 【技術指標動能共振】➔ </span>
+                <span style="color:#2563EB; font-weight:900; font-size:15px;">⏱️ 【技術指標動能共振結論】➔ </span>
                 <b>1. 隨機指標定位：</b>{res['kd_timing']}<br>
                 <b>2. 趨勢力道動能：</b>{res['bb_stage']}<br>
                 <b>3. 相對強弱對峙：</b>{res['volume_verdict']}
@@ -658,7 +662,7 @@ if diag_trigger or stock_input:
 
         st.markdown("---")
         
-        # 8. 最底部開火指令
+        # 9. 最底部開火指令
         st.markdown("### 🛡/⚔️ 風控指揮中心：量化核心配額開火劇本")
         bx1, bx2, bx3 = st.columns(3)
         with bx1: st.metric("精算風控進場配置", f"{res['suggested_lots']} 張")
