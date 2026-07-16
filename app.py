@@ -323,11 +323,10 @@ def unified_institutional_brain(res_dict, df_hist, is_holding=False, entry_cost=
         if "落後跟屁蟲" in wolf_rank_label and 'RIGHT_BREAKOUT' in st_type: return {"strategy_name": "🚨 狼王位階風控：否決跟風開倉", "color": "#FF4B4B", "action_now": "🛑 🔴 【環境極端風險：全新開倉嚴禁開火】", "signal": "資金分化排斥效應", "blueprint": {"停損防守": "嚴禁進場", "移動停利": "無", "預期目標": "要買就去買真正最強的隊長"}, "desc": "大腦精算顯示該股在同產業族群中屬於落後跟屁蟲，追高跟風股隨時面臨補跌踩踏，一票否決！"}
         if res_dict["is_rs_gold"] and p >= m20 and not sector_panic: return {"strategy_name": "🚀 統一特許：逆境黃金飆股劇本發動", "color": "#7D3CFF", "action_now": "🔮 🔮 【強者恆強 : 無視大盤恐慌立即開火】", "signal": "個股超額相對強度（RS）爆表", "blueprint": {"停損防守": f"開倉技術停損位", "移動停利": f"波動防線 {trailing_stop:.2f} 元", "預期目標": f"獲利對位目標 {res_dict['target_brk']:.2f} 元"}, "desc": f"大盤目前破位下殺。但該個股今日爆發出高達 {res_dict['relative_strength']:.1f}% 的超額相對強度(RS)！特許放行防守型低吸建倉！"}
         if st_type == "RIGHT_BREAKOUT":
-            if not market_vol_healthy: return {"strategy_name": "🚨 大盤量能失血：假突破防禦機制", "color": "#F59E0B", "action_now": "⚠️ 🟡 【大盤總血量不足：強制削減60%防守型開火】", "signal": "流動性窒息枯竭警告", "blueprint": { "停損防守": f"戰術硬停損 {res_dict['stop_brk']:.2f} 元", "移動停利": "防守型控量", "預期目標": f"衝刺前高壓力牆 {r:.2f} 元即走"}, "desc": "在缺血市場中，假突破率高達 70%。大腦硬性閹割您的追高權，只允許拉回低吸並砍掉 60% 配額！"}
-            
-            # 🌟 【最高階安全焊接點】：無條件強勢歸位 RIGHT_BREAKOUT 突破最核心的 blueprint 通行證，徹底擊殺 line 545 KeyError！
+            if not res_dict["macro_bull"]: return {"strategy_name": "🚨 大盤量能失血：假突破防禦機制", "color": "#F59E0B", "action_now": "⚠️ 🟡 【大盤總血量不足：強制削減60%防守型開火】", "signal": "流動性窒息枯竭警告", "blueprint": { "停損防守": f"戰術硬停損 {res_dict['stop_brk']:.2f} 元", "移動停利": "防守型控量", "預期目標": f"衝刺前高壓力牆 {res_dict['real_resistance']:.2f} 元即走"}, "desc": "在缺血市場中，假突破率高達 70%。大腦硬性閹割您的追高權，只允許拉回低吸並砍掉 60% 配額！"}
+            if res_dict["is_box_compressed"]: return {"strategy_name": "🔮 波動極致壓縮：老主力築底大底爆發", "color": "#7D3CFF", "action_now": "🔮 🔮 【蓄勢火山突破：特許放大1.5倍重倉爆發開火】", "signal": "30日大底時間縱深完美共振", "blueprint": {"停損防守": f"收盤跌破箱型上軌 {r:.2f} 元", "移動停利": f"守 5MA 攻擊線", "預期目標": f"長線翻倍目標對位 {res_dict['target_brk']:.2f} 元"}, "desc": f"該股在過去30天內，高低價差驚人地收斂在 {res_dict['box_width_pct']:.1f}% 的極致窄幅箱型內！籌碼高度集中。今日帶量突破，大腦特許放大 1.5 倍資金重倉開火！"}
             return {
-                "strategy_name": st_name, "color": "#7D3CFF", "action_now": "🔮 🔮 【頂級信號：全新多頭建倉開火】", "signal": "頂級多頭共振：黃金主升飆股型態發動", "desc": "基本面擴張、法人強力鎖碼、帶量突破前高壓力牆，適合執行全新多頭開火建倉！",
+                "strategy_name": st_name, "color": "#7D3CFF", "action_now": "🔮 🔮 【頂級信號：全新多頭建倉開火】", "signal": "頂級多頭共振：黃金主升飆股型態發動", "desc": "基本面擴張、法人強力鎖碼、帶量突破前高壓力牆，上方無怨魂，適合執行全新多頭開火建倉！",
                 "blueprint": {"停損防守": f"收盤跌破壓力線 {r:.2f} 元", "移動停利": f"動態守波動防線 ({trailing_stop:.2f} 元)", "預期目標": f"獲利對位目標 {res_dict['target_brk']:.2f} 元"}
             }
         
@@ -337,8 +336,6 @@ def unified_institutional_brain(res_dict, df_hist, is_holding=False, entry_cost=
 # ============ 9. Main Core Executor ============
 def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, slip_ticks: int, is_holding=False, entry_cost=0.0, sector_panic=False):
     today_str = datetime.now(TZ).strftime("%Y-%m-%d")
-    
-    # 變數置頂初始化宣告
     pnl_pct = 0.0
     res_dict = {}
     latest_yoy, is_broker_dumping_risk = 0.0, False
@@ -397,7 +394,6 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     relative_strength = stock_daily_pct - wtx_change
     is_rs_gold = (wtx_change <= -1.0) and (relative_strength >= 3.0)
 
-    # 籌碼大表數據提取
     sitc_trend, margin_trend, sitc_3d_sum, margin_diff = get_taiwan_enhanced_chips(stock_id)
     try: institutional_df = get_institutional_trading_df(stock_id, days=30)
     except Exception: pass
@@ -431,10 +427,14 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
                 if len(rev_df) > 12: latest_yoy = float(rev_df["revenue_clean"].pct_change(12).iloc[-1] * 100)
         except Exception: latest_yoy = 0.0
 
+    # 🌟 🌟 🌟 【核心修復焊接點】：重灌標籤指定迴圈，彻底超度第 438 行 KeyError 內鬼！ 🌟 🌟 🌟
     try: raw_news_list_data = get_realtime_news_list(stock_id, stock_name)
     except Exception: raw_news_list_data = []
     if raw_news_list_data:
         raw_news_list = raw_news_list_data[:8]
+        # 焊接防禦點：優先為每一條新聞貼上多空標籤，防堵空抽屜死結
+        for n in raw_news_list: 
+            n["sentiment"], n["color"] = analyze_news_sentiment(n["title"])
         news_analysis_report = "🔥 【輿情偏多】 利多消息主導市場" if sum(1 for n in raw_news_list if "利多" in n["sentiment"]) > sum(1 for n in raw_news_list if "利空" in n["sentiment"]) else "⚖️ 中性輿情"
 
     if len(df) >= 40:
@@ -510,6 +510,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     res_dict["institutional_df"] = institutional_df
     res_dict["broker_consensus"] = broker_consensus
     res_dict["margin_trend"] = margin_trend
+    res_dict["is_box_compressed"] = is_box_compressed
 
     res_dict["tactical_blueprint"] = unified_institutional_brain(res_dict, df.copy(), is_holding=is_holding, entry_cost=entry_cost, sector_panic=sector_panic)
     
@@ -545,7 +546,7 @@ if diag_trigger or stock_input:
         bp_data = res["tactical_blueprint"]
         bp = bp_data["blueprint"]
         
-        # 1. 大腦決策卡片
+        # 1. 大腦策略卡片
         st.html(f"""
         <div style="background-color: {bp_data['color']}10; border: 2px solid {bp_data['color']}; padding: 22px; border-radius: 8px; margin-bottom: 25px;">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
@@ -554,7 +555,7 @@ if diag_trigger or stock_input:
             </div>
             <h3 style="margin: 5px 0; color: {bp_data['color']}; font-size: 23px; font-weight: 900;">即時策略防線：{bp_data['signal']}</h3>
             <div style="margin: 12px 0 18px 0; color: #0F172A; font-size: 15.5px; line-height: 1.65; text-align: justify; font-weight: 700; background-color: #FFFFFF; padding: 14px; border-radius: 6px; border: 2px solid #E2E8F0;">
-                <span style="color: {bp_data['color']}; font-weight: 900;">⚡ 狼王自營部核心實戰研判令：</span>{bp_data['desc']}
+                <span style="color: #0F172A; font-weight: 900;">⚡ 狼王自營部核心實戰研判令：</span>{bp_data['desc']}
             </div>
             <div style="background-color: white; border: 1px solid #E2E8F0; padding: 15px; border-radius: 6px; margin-top: 10px;">
                 <span style="color: #475569; font-size: 13px; font-weight: 800; display: block; margin-bottom: 8px;">🎯 現股動態配套技術出場計畫藍圖</span>
@@ -604,11 +605,11 @@ if diag_trigger or stock_input:
         trend_desc_connect = f"觀察提示：當前 5日主力成本線（MA5）強勢昂頭向上。此時與上方箱型發散高達 {res['box_width_pct']:.1f}% 的動能形成完美因果咬合——這正是促使最頂端決策大腦對您下達【{bp_data['strategy_name']}】的鋼鐵因果核心！"
         st.markdown(f"""<div style="background-color: #F8FAFC; border: 1px solid #E2E8F0; border-left: 6px solid {res['stable_short_color']}; padding: 16px; border-radius: 6px; margin-top: 15px; margin-bottom: 15px;"><div style="display: flex; justify-content: space-between; align-items: center;"><span style="font-size: 13px; color: #64748B; font-weight: 800; letter-spacing: 0.05em;">⏱️ 週級別・短期波段主趨勢定錨面板</span></div><h4 style="margin: 8px 0; color: {res['stable_short_color']}; font-weight: 800; font-size: 18px;">當前定錨狀態：{res['stable_short_trend']}</h4><p style="margin: 0; color: #1E293B; font-size: 13.5px; line-height: 1.55; font-weight: 600;">{trend_desc_connect}</p></div>""", unsafe_allow_html=True)
 
-        # 👑 7. 【黃金中間段核心對齊】：全面平鋪專家重點結論，大表執行安全收納！
+        # 👑 7. 操盤手精密覆核黃金中間段
         st.markdown("---")
         st.markdown("### 🧱 🔍 跨因子微觀底層因果深度解碼驗證區")
         
-        # 🌟 🌟 🌟 【核心新增：平鋪不摺疊的籌碼與技術面實戰重點判詞面板】 🌟 🌟 🌟
+        # 區塊 A：指標與籌碼大腦重點判詞完全曝光（前台不摺疊！）
         st.markdown("#### ⚡ 自營部決策判詞：三大法人籌碼與技術指標實戰重點")
         st.html(f"""
         <div style="background-color:#FFFFFF; padding:16px; border:2px solid #7D3CFF; border-left:8px solid #7D3CFF; border-radius:6px; margin-bottom:20px; box-shadow:0 1px 3px rgba(0,0,0,0.02);">
@@ -625,7 +626,7 @@ if diag_trigger or stock_input:
         </div>
         """, unsafe_allow_html=True)
 
-        # 🌟 🌟 🌟 【三大法人明細大表強制收納區】：預設完全收縮，不干擾視線 🌟 🌟 🌟
+        # 區塊 B：三大法人明細大表（預設完全收納摺疊窗）
         with st.expander("🦅 三大法人每日實時進出買賣超佈局明細大表 (近30日現況) ─ 點擊展開明細", expanded=False):
             if not res["institutional_df"].empty:
                 st.dataframe(res["institutional_df"].style.format({"外資(張)": "{:+,.1f}", "投信(張)": "{:+,.1f}", "自營商總計(張)": "{:+,.1f}"}), use_container_width=True)
