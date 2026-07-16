@@ -52,6 +52,17 @@ def render_panel_html(title, heading, desc, top_border_color):
     </div>
     """
 
+def get_market_status_label(rt_success: bool, last_trade_date_str: str):
+    now = datetime.now(TZ)
+    if now.weekday() >= 5: return "CLOSED_WEEKEND", f"市場休市 (週末) | 數據日期: {last_trade_date_str}", "gray"
+    start, end = datetime.strptime("09:00", "%H:%M").time(), datetime.strptime("13:35", "%H:%M").time()
+    if rt_success:
+        if start <= now.time() <= end: return "OPEN", "市場交易中 (即時更新)", "red"
+        return ("PRE_MARKET", "盤前準備中", "blue") if now.time() < start else ("POST_MARKET", "今日已收盤 (即時報價)", "green")
+    else:
+        if start <= now.time() <= end: return "API_WAIT", f"連線受限改用歷史價 | 歷史日期: {last_trade_date_str}", "orange"
+        return ("PRE_MARKET", f"盤前準備中 | 歷史日期: {last_trade_date_str}", "blue") if now.time() < start else ("POST_MARKET", f"今日已收盤 | 歷史日期: {last_trade_date_str}", "green")
+
 def analyze_news_sentiment(title: str) -> tuple:
     pos = ['創新高', '大賺', '暴增', '飆', '大成長', '利多', '優於預期', '加碼', '看旺', '強勢', '獲利', '突破', '轉盈', '買超', '爆發', '新高', '三率三升']
     neg = ['衰退', '虧損', '重挫', '低於預期', '縮水', '跌破', '警告', '利空', '下滑', '疲弱', '裁員', '大跌', '慘', '賣壓', '修正', '暴跌', '逆風']
@@ -297,7 +308,6 @@ def auto_strategy_classifier(res_dict):
     if p >= r * 0.97 or (p > m20 and phase == "🔥 波段多頭主升段"): return "RIGHT_BREAKOUT", "🚀 右側交易：強勢突破型態"
     return "NEUTRAL_ZONE", "⚖️ 混沌常態：無極端共振型態"
 
-# 🌟 【三大板塊融合核心建議演算法】：100% 交叉比對大盤流動性、波動壓縮與籌碼力道
 def unified_institutional_brain(res_dict, df_hist, is_holding=False, entry_cost=0.0, sector_panic=False):
     st_type, st_name = auto_strategy_classifier(res_dict)
     p, r, m20, ma5 = res_dict["current_price"], res_dict["real_resistance"], res_dict["ma20_val"], res_dict["ma5_val"]
@@ -309,22 +319,21 @@ def unified_institutional_brain(res_dict, df_hist, is_holding=False, entry_cost=
     vol_spike = res_dict.get("vol_spike", False)
     short_trend = res_dict.get("stable_short_trend", "🟡 短期潛伏")
     
-    # 🌟 【精準解鎖神經元】：無條件將大盤總量健康度與壓縮門檻自字典中取出，徹底消滅 NameError
     market_vol_healthy = res_dict.get("market_vol_healthy", True)
     is_box_compressed = res_dict.get("is_box_compressed", False)
     
     chip_desc = f"籌碼面顯示投信處於【{sitc}】，融資呈現【{margin}】；"
     vol_desc = "價量結構高檔爆發特大法人換手斷層，動能強勁；" if vol_spike else "價量關係處於常態量縮換手洗盤階段；"
-    tech_desc = f"技術面定錨【{short_trend}】。"
+    text_qualifier = f"技術面定錨【{short_trend}】。"
     
     if is_holding and entry_cost > 0:
         if pnl_pct <= -7.0: 
             return {"strategy_name": "🚨 觸發自營部硬性資本停損", "color": "#FF4B4B", "action_now": "🛑 🔴 【核心風控：立刻全額清倉離場】", "signal": f"{chip_desc}技術面破位下殺", "blueprint": {"停損防守": "已擊穿防線", "移動停利": "無", "預期目標": "保全資金殘餘"}, "desc": f"您持股成本為 {entry_cost:.2f} 元。目前個股因量價破防，帳面虧損達 {pnl_pct:.1f}%。{chip_desc}大腦硬性判定勝率歸零，立刻清倉保全資本！"}
         if p < trailing_stop: 
-            return {"strategy_name": "⏳ 波段利潤動態追蹤終結", "color": "#EF4444", "action_now": "🛑 🔴 【波段獲利終結：全額市價落袋】", "signal": "實質跌破中線 ATR 生命線", "blueprint": {"停損防守": "全額清倉離場", "移動停利": "已觸發", "預期目標": "資金全額退場"}, "desc": f"您持股成本為 {entry_cost:.2f} 元。即時價已實質跌破大腦精算的波動死穴 ({trailing_stop:.2f} 元)。{chip_desc}{tech_desc}請將所有翻倍利潤全額獲利落袋，退場觀望！"}
+            return {"strategy_name": "⏳ 波段利潤動態追蹤終結", "color": "#EF4444", "action_now": "🛑 🔴 【波段獲利終結：全額市價落袋】", "signal": "實質跌破中線 ATR 生命線", "blueprint": {"停損防守": "全額清倉離場", "移動停利": "已觸發", "預期目標": "資金全額退場"}, "desc": f"您持股成本為 {entry_cost:.2f} 元。即時價已實質跌破大腦精算的波動死穴 ({trailing_stop:.2f} 元)。{chip_desc}{text_qualifier}請將所有翻倍利潤全額獲利落袋，退場觀望！"}
         return {
             "strategy_name": "🔥 多頭主升浪完美咬合續抱", "color": "#7D3CFF", "action_now": "🔮 🔮 【量價籌碼共振 : 全額持股鐵鎖續抱】", "signal": "短長雙速動能多頭共振運行中",
-            "desc": f"持股成本 {entry_cost:.2f} 元（帳面獲利：{pnl_pct:+.1f}%）。{chip_desc}{vol_desc}{tech_desc}目前運行結構完美，盤中暴震皆為老主力洗盤雜訊，現股全額咬死不賣，放飛利潤！",
+            "desc": f"持股成本 {entry_cost:.2f} 元（帳面獲利：{pnl_pct:+.1f}%）。{chip_desc}{vol_desc}{text_qualifier}目前運行結構完美，盤中暴震皆為老主力洗盤雜訊，現股全額咬死不賣，放飛利潤！",
             "blueprint": {"停損防守": f"守動態 ATR 防線 ({trailing_stop:.2f} 元)", "移動停利": "量價結構完好運行中（無減碼信號）", "預期目標": f"獲利對位目標 {res_dict['target_brk']:.2f} 元"}
         }
     else:
@@ -332,9 +341,9 @@ def unified_institutional_brain(res_dict, df_hist, is_holding=False, entry_cost=
             return {"strategy_name": "🚨 狼王位階風控：否決跟風開倉", "color": "#FF4B4B", "action_now": "🛑 🔴 【量價籌碼分化：全新開倉嚴禁開火】", "signal": "資金擁擠排斥效應發動", "blueprint": {"停損防守": "嚴禁進場", "移動停利": "無", "預期目標": "要買就去買真正最強的隊長"}, "desc": "個股型態雖跟風突破，但大腦精算顯示該股在產業中屬於落後跟屁蟲，主力金流正大舉撤離，一票否決開火指令！"}
         if st_type == "RIGHT_BREAKOUT":
             if not res_dict["macro_bull"] or not market_vol_healthy: 
-                return {"strategy_name": "🚨 大盤量能失血：假突破防禦機制", "color": "#F59E0B", "action_now": "⚠️ 🟡 【大盤總血量不足：強制削減60%防守型開火】", "signal": "市場流動性窒息枯竭警告", "blueprint": { "停損防守": f"戰術硬停損 {res_dict['stop_brk']:.2f} 元", "移動停利": "防守型控量", "預期目標": f"衝刺前高壓力牆 {r:.2f} 元即走"}, "desc": "個股籌碼雖然強勢，但此時大盤實質成交總血量窒息。在缺血市場中假突破率高達70%。大腦硬性閹割您的追高權，只允許削減 60% 開火份額！"}
+                return {"strategy_name": "🚨 大盤量能失血：假突破防禦機制", "color": "#F59E0B", "action_now": "⚠️ 🟡 【大盤總血量不足：強制削減60%防守型開火】", "signal": "市場流動性窒息枯竭警告", "blueprint": { "停損防守": f"戰術硬停損 {res_dict['stop_brk']:.2f} 元", "移動停利": "防守型控量", "預期目標": f"衝刺前高壓力牆 {r:.2f} 元即走"}, "desc": "在缺血市場中，假突破率高達 70%。大腦硬性閹割您的追高權，只允許削減 60% 開火份額！"}
             if is_box_compressed: 
-                return {"strategy_name": "🔮 波動極致壓縮：老主力大底爆發突破", "color": "#7D3CFF", "action_now": "🔮 🔮 【量價斷層突圍：特許放大1.5倍重倉爆發開火】", "signal": "30日大大底時間縱深完美共振", "blueprint": {"停損防守": f"收盤實質跌破 {r:.2f} 元箱頂", "移動停利": f"守 5MA 短線攻擊速線", "預期目標": f"中長線翻倍目標對位 {res_dict['target_brk']:.2f} 元"}, "desc": f"個股在過去30天內振幅驚人收斂在 {res_dict['box_width_pct']:.1f}% 內！籌碼高度集中。今日配合【{sitc}】與【{margin}】帶量突破，大腦特許放大1.5倍風控配額，重倉重拳開火！"}
+                return {"strategy_name": "🔮 波動極致壓縮：老主力大底爆發突破", "color": "#7D3CFF", "action_now": "🔮 🔮 【量價斷層突圍：特許放大1.5倍重倉爆發開火】", "signal": "30日大底時間縱深完美共振", "blueprint": {"停損防守": f"收盤實質跌破 {r:.2f} 元箱頂", "移動停利": f"守 5MA 短線攻擊速線", "預期目標": f"中長線翻倍目標對位 {res_dict['target_brk']:.2f} 元"}, "desc": f"個股在過去30天內振幅驚人收斂在 {res_dict['box_width_pct']:.1f}% 內！籌碼高度集中。今日配合【{sitc}】與【{margin}】帶量突破，大腦特許放大1.5倍風控配額，重倉重拳開火！"}
             return {
                 "strategy_name": st_name, "color": "#7D3CFF", "action_now": "🔮 🔮 【頂級信號共振：全新多頭建倉開火】", "signal": "多頭因果完美咬合：黃金主升飆股發動",
                 "desc": f"技術面向上突圍、{chip_desc}{vol_desc}上方無any怨魂套牢。大腦判定具備極高多頭期望值，立即執行全新開火建倉指令！",
@@ -470,6 +479,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     long_term_trend = "🔥 季線全面向上" if current_price >= ma60_val and (df["MA60"].iloc[-1] > df["MA60"].iloc[-5]) else "💤 季線橫向延伸"
     trend_phase = "🔥 波段多頭主升段" if current_price >= ma20_val and ma20_val >= ma60_val and (df["MA20"].iloc[-1] > df["MA20"].iloc[-5]) else "💤 潛伏築底期"
 
+    # 🌟 🌟 🌟 【核心時序鐵壁焊接】：將所有基礎物理量裝箱，完全置於大腦決策「之前」！ 🌟 🌟 🌟
     res_dict["stock_id"] = stock_id
     res_dict["stock_name"] = stock_name
     res_dict["industry"] = industry
@@ -478,6 +488,25 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     res_dict["market_vol_desc"] = market_vol_desc
     res_dict["wolf_rank_label"] = wolf_rank_label
     res_dict["wolf_rank_color"] = wolf_rank_color
+    res_dict["target_brk"] = target_brk
+    res_dict["stop_brk"] = stop_brk
+    res_dict["trailing_stop_line"] = stop_line_text
+    res_dict["current_price"] = current_price
+    res_dict["current_vol"] = current_vol
+    res_dict["ma5_val"] = ma5_val
+    res_dict["ma20_val"] = ma20_val
+    res_dict["ma60_val"] = ma60_val
+    res_dict["ma100_val"] = ma100_val
+    res_dict["real_resistance"] = real_resistance
+    res_dict["atr"] = atr
+    res_dict["stock_daily_pct"] = stock_daily_pct
+    res_dict["relative_strength"] = relative_strength
+    res_dict["is_rs_gold"] = is_rs_gold
+    res_dict["rt_source"] = rt_source
+    res_dict["m_desc"] = macro_text
+    res_dict["m_color"] = "red" if not macro_bull else "green"
+    res_dict["fin_df"] = fin_df
+    res_dict["spring_verdict"] = spring_verdict
     res_dict["stable_short_trend"] = stable_short_trend
     res_dict["stable_short_color"] = stable_short_color
     res_dict["stable_short_desc"] = stable_short_desc
@@ -497,15 +526,10 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     res_dict["broker_consensus"] = broker_consensus
     res_dict["margin_trend"] = margin_trend
     res_dict["box_width_pct"] = box_width_pct
-    res_dict["real_resistance"] = real_resistance
-    res_dict["ma20_val"] = ma20_val
-    res_dict["ma5_val"] = ma5_val
-    res_dict["atr"] = atr
-    
-    # 🌟 【大數據裝車追加】：將大盤流動性與壓縮門檻裝進變數車中送往頂層
     res_dict["market_vol_healthy"] = market_vol_healthy
     res_dict["is_box_compressed"] = is_box_compressed
 
+    # 🌟 🌟 🌟 基礎因子全量到位！此時才安全呼叫大腦模型，徹底超度 KeyError: 'current_price' 🌟 🌟 🌟
     res_dict["tactical_blueprint"] = unified_institutional_brain(res_dict, df.copy(), is_holding=is_holding, entry_cost=entry_cost, sector_panic=sector_panic)
     
     denom = current_price - stop_brk
@@ -603,6 +627,7 @@ if diag_trigger or stock_input:
         st.markdown("---")
         st.markdown("### 🧱 🔍 跨因子微觀底層因果深度解碼驗證區")
         
+        # 區塊 A：指標與籌碼大腦重點判詞完全曝光（前台不摺疊！）
         st.markdown("#### ⚡ 自營部決策判詞：三大法人籌碼與技術指標實戰重點")
         st.markdown(f"""
         <div style="background-color:#FFFFFF; padding:16px; border:2px solid #7D3CFF; border-left:8px solid #7D3CFF; border-radius:6px; margin-bottom:20px; box-shadow:0 1px 3px rgba(0,0,0,0.02);">
