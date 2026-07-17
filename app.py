@@ -9,7 +9,7 @@ from urllib3.util.retry import Retry
 from FinMind.data import DataLoader
 
 # ============ 1. Page Config ============
-st.set_page_config(page_title="SOP v49 台股多因子資訊與風險提示系統", layout="wide")
+st.set_page_config(page_title="SOP v50 台股多週期趨勢、價量與拉回決策系統", layout="wide")
 
 # ============ 2. Global Constants ============
 TZ = pytz.timezone("Asia/Taipei")
@@ -410,68 +410,209 @@ def get_realtime_news_list(stock_id: str, stock_name: str):
     return []
 
 def prepare_indicator_df(df: pd.DataFrame):
+    """建立日線技術、價量、趨勢強度與結構欄位。"""
     if df is None or df.empty: return None
     x = df.copy().sort_values("date").reset_index(drop=True)
+    for col in ["open", "high", "low", "close", "vol"]:
+        x[col] = pd.to_numeric(x[col], errors="coerce")
+    x = x.dropna(subset=["high", "low", "close", "vol"])
     c_prev = x["close"].shift(1)
     x["TR"] = np.maximum(x["high"] - x["low"], np.maximum((x["high"] - c_prev).abs(), (x["low"] - c_prev).abs()))
-    x["ATR14"] = x["TR"].ewm(com=13, adjust=False).mean()
-    x["MA5"], x["MA5_Vol"] = x["close"].rolling(5).mean(), x["vol"].rolling(5).mean()
-    x["MA20"], x["MA60"], x["MA100"], x["MA20_Vol"] = x["close"].rolling(20).mean(), x["close"].rolling(60).mean(), x["close"].rolling(100).mean(), x["vol"].rolling(20).mean()
-    x["Res_20D"], x["std20"] = x["high"].shift(1).rolling(20).max(), x["close"].rolling(20).std()
+    x["ATR14"] = x["TR"].ewm(alpha=1/14, adjust=False).mean()
+    for n in [5, 10, 20, 60, 120, 240]:
+        x[f"MA{n}"] = x["close"].rolling(n).mean()
+    x["MA5_Vol"], x["MA20_Vol"], x["MA60_Vol"] = x["vol"].rolling(5).mean(), x["vol"].rolling(20).mean(), x["vol"].rolling(60).mean()
+    x["Res_20D"] = x["high"].shift(1).rolling(20).max()
+    x["Res_60D"] = x["high"].shift(1).rolling(60).max()
+    x["Sup_20D"] = x["low"].shift(1).rolling(20).min()
+    x["Sup_60D"] = x["low"].shift(1).rolling(60).min()
+    x["std20"] = x["close"].rolling(20).std()
     delta = x["close"].diff()
-    x["RSI14"] = 100 - (100 / (1 + (delta.clip(lower=0).ewm(com=13, adjust=False).mean() / delta.clip(upper=0).ewm(com=13, adjust=False).mean().replace(0, -0.00001).abs())))
-    x["MACD_HIST"] = (x["close"].ewm(span=12, adjust=False).mean() - x["close"].ewm(span=26, adjust=False).mean()) - (x["close"].ewm(span=12, adjust=False).mean() - x["close"].ewm(span=26, adjust=False).mean()).ewm(span=9, adjust=False).mean()
+    gain = delta.clip(lower=0).ewm(alpha=1/14, adjust=False).mean()
+    loss = (-delta.clip(upper=0)).ewm(alpha=1/14, adjust=False).mean()
+    x["RSI14"] = 100 - 100 / (1 + gain / loss.replace(0, np.nan))
+    ema12, ema26 = x["close"].ewm(span=12, adjust=False).mean(), x["close"].ewm(span=26, adjust=False).mean()
+    x["MACD"], x["MACD_SIGNAL"] = ema12 - ema26, (ema12 - ema26).ewm(span=9, adjust=False).mean()
+    x["MACD_HIST"] = x["MACD"] - x["MACD_SIGNAL"]
     l_min, h_max = x["low"].rolling(9).min(), x["high"].rolling(9).max()
-    x["RSV"] = 100 * ((x["close"] - l_min) / (h_max - l_min).replace(0, 0.00001))
+    x["RSV"] = 100 * ((x["close"] - l_min) / (h_max - l_min).replace(0, np.nan))
     k_l, d_l, ck, cd = [], [], 50.0, 50.0
     for rsv in x["RSV"]:
         if pd.isna(rsv): k_l.append(np.nan); d_l.append(np.nan)
-        else: ck = (2/3)*ck + (1/3)*rsv; cd = (2/3)*cd + (1/3)*ck; k_l.append(ck); d_l.append(cd)
+        else:
+            ck = (2/3)*ck + (1/3)*rsv; cd = (2/3)*cd + (1/3)*ck
+            k_l.append(ck); d_l.append(cd)
     x["K9"], x["D9"] = k_l, d_l
-    return x.dropna(subset=["ATR14", "MA5", "MA20", "MA60", "Res_20D", "RSI14", "MACD_HIST", "K9", "D9"]).copy()
+
+    # ADX：判斷有沒有趨勢，而非只判斷方向。
+    up_move, down_move = x["high"].diff(), -x["low"].diff()
+    plus_dm = pd.Series(np.where((up_move > down_move) & (up_move > 0), up_move, 0.0), index=x.index)
+    minus_dm = pd.Series(np.where((down_move > up_move) & (down_move > 0), down_move, 0.0), index=x.index)
+    atr_wilder = x["TR"].ewm(alpha=1/14, adjust=False).mean().replace(0, np.nan)
+    x["PLUS_DI"] = 100 * plus_dm.ewm(alpha=1/14, adjust=False).mean() / atr_wilder
+    x["MINUS_DI"] = 100 * minus_dm.ewm(alpha=1/14, adjust=False).mean() / atr_wilder
+    dx = 100 * (x["PLUS_DI"] - x["MINUS_DI"]).abs() / (x["PLUS_DI"] + x["MINUS_DI"]).replace(0, np.nan)
+    x["ADX14"] = dx.ewm(alpha=1/14, adjust=False).mean()
+
+    # 價量：OBV、CMF、上漲日量/下跌日量、換手代理與量價背離。
+    direction = np.sign(x["close"].diff()).fillna(0)
+    x["OBV"] = (direction * x["vol"]).cumsum()
+    x["OBV_MA20"] = x["OBV"].rolling(20).mean()
+    mfm = ((x["close"] - x["low"]) - (x["high"] - x["close"])) / (x["high"] - x["low"]).replace(0, np.nan)
+    x["CMF20"] = (mfm.fillna(0) * x["vol"]).rolling(20).sum() / x["vol"].rolling(20).sum().replace(0, np.nan)
+    x["UP_VOL20"] = x["vol"].where(x["close"] > c_prev, 0).rolling(20).sum()
+    x["DOWN_VOL20"] = x["vol"].where(x["close"] < c_prev, 0).rolling(20).sum()
+    x["VOL_RATIO20"] = x["vol"] / x["MA20_Vol"].replace(0, np.nan)
+    x["RET_5D"] = x["close"].pct_change(5) * 100
+    x["RET_20D"] = x["close"].pct_change(20) * 100
+    for n in [20, 60, 120]:
+        x[f"MA{n}_SLOPE"] = (x[f"MA{n}"] / x[f"MA{n}"].shift(5) - 1) * 100
+    x["PRICE_HIGH_20"] = x["close"] >= x["close"].rolling(20).max().shift(1)
+    x["OBV_HIGH_20"] = x["OBV"] >= x["OBV"].rolling(20).max().shift(1)
+    x["BEARISH_VOL_DIVERGENCE"] = x["PRICE_HIGH_20"] & (~x["OBV_HIGH_20"])
+    return x.dropna(subset=["ATR14", "MA20", "MA60", "Res_20D", "RSI14", "K9", "D9", "ADX14"]).copy()
+
+def build_weekly_indicators(df_raw: pd.DataFrame):
+    """將日線轉為週線，降低單日雜訊。"""
+    if df_raw is None or df_raw.empty: return None
+    w = df_raw.copy()
+    w["date"] = pd.to_datetime(w["date"], errors="coerce")
+    w = w.dropna(subset=["date"]).set_index("date").sort_index()
+    weekly = w.resample("W-FRI").agg({"open":"first", "high":"max", "low":"min", "close":"last", "vol":"sum"}).dropna(subset=["close"]).reset_index()
+    if len(weekly) < 30: return None
+    weekly["MA10W"] = weekly["close"].rolling(10).mean()
+    weekly["MA20W"] = weekly["close"].rolling(20).mean()
+    weekly["MA40W"] = weekly["close"].rolling(40).mean()
+    weekly["MA20W_SLOPE"] = (weekly["MA20W"] / weekly["MA20W"].shift(3) - 1) * 100
+    return weekly
+
+def detect_swing_structure(df: pd.DataFrame, window: int = 3):
+    """以局部高低點辨識 HH/HL、LH/LL，避免只看均線。"""
+    if df is None or len(df) < 25:
+        return {"label":"資料不足", "higher_high":False, "higher_low":False, "last_swing_high":None, "last_swing_low":None}
+    highs, lows = [], []
+    for i in range(window, len(df)-window):
+        if df["high"].iloc[i] >= df["high"].iloc[i-window:i+window+1].max(): highs.append((i, float(df["high"].iloc[i])))
+        if df["low"].iloc[i] <= df["low"].iloc[i-window:i+window+1].min(): lows.append((i, float(df["low"].iloc[i])))
+    hh = len(highs)>=2 and highs[-1][1] > highs[-2][1]
+    hl = len(lows)>=2 and lows[-1][1] > lows[-2][1]
+    lh = len(highs)>=2 and highs[-1][1] < highs[-2][1]
+    ll = len(lows)>=2 and lows[-1][1] < lows[-2][1]
+    label = "高點墊高、低點墊高" if hh and hl else "高點降低、低點降低" if lh and ll else "結構整理中"
+    return {"label":label, "higher_high":hh, "higher_low":hl, "lower_high":lh, "lower_low":ll,
+            "last_swing_high":highs[-1][1] if highs else None, "last_swing_low":lows[-1][1] if lows else None}
+
+def classify_trend_and_models(df: pd.DataFrame, weekly: pd.DataFrame, current_price: float, current_vol_shares: float):
+    last = df.iloc[-1]
+    structure = detect_swing_structure(df.tail(150).reset_index(drop=True))
+    ma10, ma20, ma60 = map(float, [last.get("MA10", np.nan), last["MA20"], last["MA60"]])
+    ma120, ma240 = safe_float(last.get("MA120"), np.nan), safe_float(last.get("MA240"), np.nan)
+    slope20, slope60, slope120 = safe_float(last.get("MA20_SLOPE")), safe_float(last.get("MA60_SLOPE")), safe_float(last.get("MA120_SLOPE"))
+    adx, plus_di, minus_di = safe_float(last.get("ADX14")), safe_float(last.get("PLUS_DI")), safe_float(last.get("MINUS_DI"))
+    atr, vol_ma20 = safe_float(last.get("ATR14"),1), safe_float(last.get("MA20_Vol"),1)
+    peak60 = float(df["high"].tail(60).max())
+    drawdown = (current_price/peak60-1)*100 if peak60>0 else 0
+    volume_ratio = current_vol_shares/vol_ma20 if vol_ma20>0 else 0
+    pullback_volume_ratio = float(df["vol"].tail(5).mean()/vol_ma20) if vol_ma20>0 else 0
+    weekly_ok = False
+    weekly_desc = "週線資料不足"
+    if weekly is not None and not weekly.empty:
+        wl=weekly.iloc[-1]
+        weekly_ok = safe_float(wl["close"]) >= safe_float(wl["MA20W"]) and safe_float(wl["MA20W_SLOPE"]) > 0
+        weekly_desc = "週線維持多頭" if weekly_ok else "週線尚未確認多頭"
+    long_bull = weekly_ok and current_price >= ma60 and slope60>0 and (pd.isna(ma120) or ma60>=ma120 or slope120>=0)
+    long_bear = current_price < ma60 and slope60<0 and (structure.get("lower_low") or minus_di>plus_di)
+    long_label = "長期多頭" if long_bull else "長期空頭" if long_bear else "長期整理／轉折"
+    medium_bull = ma20>=ma60 and slope20>0 and current_price>=ma60
+    medium_label = "主升段" if medium_bull and current_price>=ma20 and adx>=25 and plus_di>minus_di else "多頭正常拉回" if long_bull and current_price<ma20 and current_price>=ma60 and drawdown>=-15 else "高檔整理" if long_bull and abs(slope20)<1 else "築底" if not long_bear and slope20>=0 and structure.get("higher_low") else "反彈" if current_price>=ma20 and not long_bull else "下跌段" if long_bear else "區間整理"
+    short_label = "短線轉強" if current_price>=ma10 and safe_float(last.get("K9"))>safe_float(last.get("D9")) else "短線拉回" if long_bull and current_price<ma10 else "短線偏弱"
+    trend_strength = "強趨勢" if adx>=25 else "趨勢形成中" if adx>=18 else "震盪為主"
+
+    real_res20, real_res60 = safe_float(last["Res_20D"]), safe_float(last["Res_60D"])
+    prior_breakout = float(df["close"].iloc[-21:-1].max()) >= float(df["Res_20D"].iloc[-21:-1].max()) if len(df)>25 else False
+    breakout = current_price>=real_res20 and volume_ratio>=1.3 and medium_bull
+    retest = prior_breakout and abs(current_price-real_res20)/max(real_res20,0.01)<=0.035 and pullback_volume_ratio<=0.9 and current_price>=ma20*0.98
+    pullback = long_bull and medium_bull and -15<=drawdown<=-3 and current_price>=ma60 and pullback_volume_ratio<=0.9 and not structure.get("lower_low")
+    base_turn = not long_bear and slope20>=0 and structure.get("higher_low") and current_price>=real_res20 and volume_ratio>=1.2
+    stop_candle = (float(last["close"])>float(last["open"]) and float(last["close"])>=float(last["low"])+0.6*(float(last["high"])-float(last["low"]))) or (safe_float(last.get("K9"))>safe_float(last.get("D9")) and safe_float(df["K9"].iloc[-2])<=safe_float(df["D9"].iloc[-2]))
+    model = "突破進場" if breakout else "突破後回測" if retest else "多頭拉回" if pullback else "築底轉強" if base_turn else "等待"
+    model_ready = breakout or (retest and stop_candle) or (pullback and stop_candle) or base_turn
+
+    upv, dnv = safe_float(last.get("UP_VOL20")), safe_float(last.get("DOWN_VOL20"))
+    cmf, obv = safe_float(last.get("CMF20")), safe_float(last.get("OBV")); obvma=safe_float(last.get("OBV_MA20"))
+    if current_price>=ma20 and volume_ratio>=1.3: price_volume="價漲量增，買盤積極"
+    elif current_price<ma20 and pullback_volume_ratio<=0.9 and long_bull: price_volume="價跌量縮，較像多頭拉回"
+    elif current_price<ma20 and volume_ratio>=1.3: price_volume="價跌量增，賣壓需警戒"
+    elif current_price>=ma20 and volume_ratio<0.8: price_volume="價漲量縮，追價力道不足"
+    else: price_volume="價量關係中性"
+    accumulation = "資金偏累積" if cmf>0.05 and obv>=obvma and upv>=dnv else "資金偏流出" if cmf<-0.05 and obv<obvma and dnv>upv else "資金平衡"
+    divergence = "出現價格創高但OBV未創高的量價背離" if bool(last.get("BEARISH_VOL_DIVERGENCE",False)) else "未見明顯空方量價背離"
+    return {"long_term":long_label, "medium_term":medium_label, "short_term":short_label, "weekly_desc":weekly_desc,
+            "trend_strength":trend_strength, "adx":adx, "structure":structure, "drawdown_pct":drawdown,
+            "volume_ratio":volume_ratio, "pullback_volume_ratio":pullback_volume_ratio, "price_volume":price_volume,
+            "accumulation":accumulation, "volume_divergence":divergence, "entry_model":model, "entry_ready":model_ready,
+            "breakout_model":breakout, "pullback_model":pullback, "retest_model":retest, "base_model":base_turn,
+            "stop_candle":stop_candle, "ma10":ma10, "ma120":ma120, "ma240":ma240,
+            "slope20":slope20, "slope60":slope60, "slope120":slope120}
+
+def resolve_trend_state(stock_id: str, analysis: dict, current_price: float, structure_stop: float, ma20: float, ma60: float, volume_ratio: float):
+    """狀態機有遲滯：單日跌破短均線不直接翻空。"""
+    key=f"trend_state_{stock_id}"
+    prev=st.session_state.get(key, {"state":"觀察", "weak_days":0, "break_days":0})
+    state=prev["state"]; weak_days=int(prev.get("weak_days",0)); break_days=int(prev.get("break_days",0))
+    structural_break = current_price < structure_stop and current_price < ma60
+    warning = current_price < ma20 and (analysis["slope20"]<0 or volume_ratio>=1.3)
+    if structural_break:
+        break_days += 1
+    else: break_days=0
+    if warning: weak_days+=1
+    else: weak_days=max(0,weak_days-1)
+    if analysis["long_term"]=="長期空頭": state="空頭"
+    elif break_days>=2 or (structural_break and volume_ratio>=1.5): state="趨勢破壞"
+    elif weak_days>=2: state="多頭轉弱警戒"
+    elif analysis["medium_term"]=="多頭正常拉回": state="多頭正常拉回"
+    elif analysis["entry_model"]=="突破進場" and analysis["entry_ready"]: state="突破確認"
+    elif analysis["medium_term"]=="主升段": state="多頭持有"
+    elif analysis["entry_model"]=="築底轉強": state="趨勢轉強"
+    elif analysis["medium_term"]=="築底": state="築底"
+    else: state="觀察"
+    reason = f"長期={analysis['long_term']}；中期={analysis['medium_term']}；短期={analysis['short_term']}；量比={volume_ratio:.2f}；結構停損={structure_stop:.2f}"
+    now={"state":state,"weak_days":weak_days,"break_days":break_days,"reason":reason}
+    if prev.get("state") != state:
+        log_key=f"trend_log_{stock_id}"
+        logs=st.session_state.get(log_key, [])
+        logs.append({"時間":datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S"), "原狀態":prev.get("state","觀察"), "新狀態":state, "原因":reason})
+        st.session_state[log_key]=logs[-30:]
+    st.session_state[key]=now
+    return now
 
 def unified_institutional_brain(res_dict, df_hist, is_holding=False, entry_cost=0.0, sector_panic=False):
-    p, resistance = res_dict["current_price"], res_dict["real_resistance"]
-    atr, pnl_pct = res_dict["atr"], res_dict["pnl_pct"]
-    trailing_stop = res_dict["trailing_stop_value"]
-    quality = res_dict.get("data_quality_score", 0)
-    macro_bull = res_dict.get("macro_bull")
-    market_vol_healthy = res_dict.get("market_vol_healthy")
-    confirmed_breakout = res_dict.get("confirmed_breakout", False)
-    attempted_breakout = res_dict.get("attempted_breakout", False)
-    chip_desc = f"投信：{res_dict.get('sitc_trend')}；融資：{res_dict.get('margin_trend')}。"
-
-    if quality < 60 or macro_bull is None:
-        return {"strategy_name": "⚪ 資料不足", "color": "#64748B", "action_now": "暫不產生方向",
-                "signal": "關鍵資料未完整", "blueprint": {"停損防守": "待資料恢復", "移動停利": "不適用", "預期目標": "不提供"},
-                "desc": f"本次資料完整度為 {quality:.0f}%。為避免誤導，系統只顯示已取得的資訊，不提供買賣方向。"}
+    p=res_dict["current_price"]; q=res_dict.get("data_quality_score",0); state=res_dict.get("trend_state","觀察")
+    ta=res_dict.get("trend_analysis",{}); chip=f"投信：{res_dict.get('sitc_trend')}；融資：{res_dict.get('margin_trend')}。"
+    structure_stop=res_dict.get("structure_stop",res_dict["stop_brk"])
+    if q<60 or res_dict.get("macro_bull") is None:
+        return {"strategy_name":"⚪ 資料不足","color":"#64748B","action_now":"只觀察，不產生方向","signal":"關鍵資料未完整","blueprint":{"停損防守":"待資料恢復","移動停利":"不適用","預期目標":"不提供"},"desc":f"資料完整度 {q:.0f}%，不足以形成可靠方向。"}
     if sector_panic:
-        return {"strategy_name": "🟠 族群風險升高", "color": "#F59E0B", "action_now": "暫停新增部位",
-                "signal": "同產業股票集體明顯下跌", "blueprint": {"停損防守": f"觀察 {res_dict['stop_brk']:.2f} 元", "移動停利": "已有部位宜縮小風險", "預期目標": "待族群止穩"},
-                "desc": "族群同步下跌時，個股技術訊號容易失效。建議先確認是否為產業性事件，再決定是否增加部位。"}
-    if is_holding and entry_cost > 0:
-        if p < trailing_stop:
-            return {"strategy_name": "🔴 跌破波動防守線", "color": "#EF4444", "action_now": "重新評估持股",
-                    "signal": "價格低於 ATR 移動防守線", "blueprint": {"停損防守": f"參考 {trailing_stop:.2f} 元", "移動停利": "防守條件已觸發", "預期目標": "先控制風險"},
-                    "desc": f"目前損益約 {pnl_pct:+.1f}%。這不代表一定要全部賣出，但原先的波段條件已轉弱，應依部位大小與個人承受度決定減碼或退出。"}
-        return {"strategy_name": "🟢 趨勢尚未破壞", "color": "#10B981", "action_now": "續抱並設定防守",
-                "signal": "價格仍在移動防守線之上", "blueprint": {"停損防守": f"參考 {trailing_stop:.2f} 元", "移動停利": "隨價格上移", "預期目標": f"情境價 {res_dict['target_brk']:.2f} 元"},
-                "desc": f"目前損益約 {pnl_pct:+.1f}%。{chip_desc}技術趨勢尚未明顯轉弱，但盤中訊號仍可能改變，宜保留風險空間。"}
-    if confirmed_breakout:
-        if not macro_bull or not market_vol_healthy:
-            return {"strategy_name": "🟠 突破但環境不佳", "color": "#F59E0B", "action_now": "等待或小額分批",
-                    "signal": "個股突破，惟大盤或量能未配合", "blueprint": {"停損防守": f"參考 {res_dict['stop_brk']:.2f} 元", "移動停利": "站穩後再上移", "預期目標": f"情境價 {res_dict['target_brk']:.2f} 元"},
-                    "desc": "個股已越過前20日壓力，但市場環境未完全配合，假突破風險較高。這是觀察情境，不是保證上漲。"}
-        return {"strategy_name": "🟢 收盤突破觀察", "color": "#10B981", "action_now": "可評估小額分批",
-                "signal": "價格與量能越過前20日壓力", "blueprint": {"停損防守": f"參考 {res_dict['stop_brk']:.2f} 元", "移動停利": "依 ATR 上移", "預期目標": f"情境價 {res_dict['target_brk']:.2f} 元"},
-                "desc": f"突破條件成立，{chip_desc}仍應依自身資金與風險承受度分批處理，避免一次押注。"}
-    if attempted_breakout:
-        return {"strategy_name": "🟡 接近前高", "color": "#F59E0B", "action_now": "等待收盤確認",
-                "signal": "盤中接近或越過壓力，但尚未確認", "blueprint": {"停損防守": f"參考 {res_dict['stop_brk']:.2f} 元", "移動停利": "尚未建立", "預期目標": "先確認突破"},
-                "desc": "目前只是嘗試突破，盤中價格可能回落。對新手而言，等待收盤與成交量確認通常比追價更容易控制風險。"}
-    return {"strategy_name": "⚪ 區間觀察", "color": "#64748B", "action_now": "暫不急著進場",
-            "signal": "尚未形成明確突破", "blueprint": {"停損防守": "未進場不需設定", "移動停利": "不適用", "預期目標": "等待條件明確"},
-            "desc": f"目前技術、量能與籌碼訊號尚未一致。{chip_desc}可先觀察，而不是把單一指標當成買賣命令。"}
+        return {"strategy_name":"🟠 族群風險升高","color":"#F59E0B","action_now":"暫停新增部位","signal":"同產業集體轉弱","blueprint":{"停損防守":f"結構線 {structure_stop:.2f} 元","移動停利":"縮小風險","預期目標":"待族群止穩"},"desc":"族群同步下跌時，個股拉回較可能演變成趨勢破壞。"}
+    if is_holding and entry_cost>0:
+        if state in ["趨勢破壞","空頭"]:
+            return {"strategy_name":"🔴 波段結構已破壞","color":"#EF4444","action_now":"依計畫減碼或退出","signal":"結構低點與中期趨勢同時失守","blueprint":{"停損防守":f"結構線 {structure_stop:.2f} 元","移動停利":"已觸發","預期目標":"先控制風險"},"desc":"不是因為單日跌破5日線，而是波段低點、60日線或放量賣壓已共同惡化。"}
+        if state=="多頭轉弱警戒":
+            return {"strategy_name":"🟠 多頭轉弱警戒","color":"#F59E0B","action_now":"續抱觀察，必要時分批減碼","signal":"連續出現中期弱化條件","blueprint":{"停損防守":f"結構線 {structure_stop:.2f} 元","移動停利":f"ATR線 {res_dict['trailing_stop_value']:.2f} 元","預期目標":"等待重新站回MA20"},"desc":"尚未直接判定空頭，但弱化已非單日雜訊。"}
+        if state=="多頭正常拉回":
+            return {"strategy_name":"🟢 多頭趨勢正常拉回","color":"#10B981","action_now":"續抱，不因短線跌破而殺出","signal":"週線與中長期結構仍完整，拉回量縮","blueprint":{"停損防守":f"結構線 {structure_stop:.2f} 元","移動停利":f"ATR線 {res_dict['trailing_stop_value']:.2f} 元","預期目標":f"前高 {res_dict['real_resistance']:.2f} 元"},"desc":f"目前損益 {res_dict['pnl_pct']:+.1f}%。短線降溫不等於趨勢反轉；{chip}"}
+        return {"strategy_name":"🟢 趨勢持有","color":"#10B981","action_now":"續抱並上移防守","signal":f"狀態：{state}","blueprint":{"停損防守":f"結構線 {structure_stop:.2f} 元","移動停利":f"ATR線 {res_dict['trailing_stop_value']:.2f} 元","預期目標":f"情境價 {res_dict['target_brk']:.2f} 元"},"desc":f"趨勢尚未被結構性破壞。{chip}"}
+    model=ta.get("entry_model","等待")
+    if model=="多頭拉回":
+        action="可小額分批" if ta.get("entry_ready") else "等待止跌確認"
+        return {"strategy_name":"🟢 多頭拉回機會","color":"#10B981","action_now":action,"signal":"長中期多頭、回檔量縮且未破前低","blueprint":{"停損防守":f"結構線 {structure_stop:.2f} 元","移動停利":"站回MA20後再上移","預期目標":f"前高 {res_dict['real_resistance']:.2f} 元"},"desc":"這是低價拉回模型，不必等到再創新高才追價；仍建議分批，而非一次買滿。"}
+    if model=="突破後回測":
+        return {"strategy_name":"🟢 突破後回測","color":"#10B981","action_now":"確認止跌後分批","signal":"原壓力轉支撐且回測量縮","blueprint":{"停損防守":f"突破失效線 {structure_stop:.2f} 元","移動停利":"續強後上移","預期目標":f"情境價 {res_dict['target_brk']:.2f} 元"},"desc":"通常比直接追突破有較好的風險報酬。"}
+    if model=="突破進場":
+        return {"strategy_name":"🟢 放量突破","color":"#10B981","action_now":"小額分批，不追過度乖離","signal":"價格與量能越過壓力","blueprint":{"停損防守":f"突破失效線 {structure_stop:.2f} 元","移動停利":"依結構與ATR上移","預期目標":f"情境價 {res_dict['target_brk']:.2f} 元"},"desc":"突破成立，但若距MA20過遠，應等待回測而不是追高。"}
+    if model=="築底轉強":
+        return {"strategy_name":"🟡 築底轉強","color":"#F59E0B","action_now":"僅適合小部位試單","signal":"低點墊高、均線走平後突破","blueprint":{"停損防守":f"底部結構線 {structure_stop:.2f} 元","移動停利":"待趨勢形成","預期目標":f"前壓 {res_dict['real_resistance']:.2f} 元"},"desc":"這是較積極的轉折模型，可靠度低於成熟多頭拉回。"}
+    return {"strategy_name":"⚪ 等待更好位置","color":"#64748B","action_now":"不追價，等待拉回或確認","signal":"尚未符合四種進場模型","blueprint":{"停損防守":"未進場不設定","移動停利":"不適用","預期目標":"等待條件"},"desc":f"目前不必勉強交易。{chip}"}
 
 # ============ 9. Main Core Executor ============
 def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, slip_ticks: int, is_holding=False, entry_cost=0.0, sector_panic=False):
@@ -528,6 +669,12 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     vol_ma20_val, real_resistance = float(hist_last["MA20_Vol"]), float(hist_last["Res_20D"])
     rsi_now, macd_hist, atr = safe_float(hist_last.get("RSI14", 50.0)), safe_float(hist_last.get("MACD_HIST", 0.0)), safe_float(hist_last.get("ATR14", 1.0))
     k9_now, d9_now = safe_float(hist_last.get("K9", 50.0)), safe_float(hist_last.get("D9", 50.0))
+    weekly_df = build_weekly_indicators(df_for_indicators)
+    trend_analysis = classify_trend_and_models(df, weekly_df, current_price, current_vol * 1000.0)
+    swing = trend_analysis["structure"]
+    structure_stop_raw = swing.get("last_swing_low") or float(hist_last.get("Sup_20D", current_price - 2*atr))
+    structure_stop = floor_to_tick(min(structure_stop_raw, ma20_val - 0.5*atr) if trend_analysis["long_term"]=="長期多頭" else structure_stop_raw, t)
+    trend_state_data = resolve_trend_state(stock_id, trend_analysis, current_price, structure_stop, ma20_val, ma60_val, trend_analysis["volume_ratio"])
     
     kd_status = "黃金交叉" if k9_now > d9_now else "死亡交叉"
     stock_daily_pct = ((current_price - previous_close) / previous_close) * 100 if previous_close > 0 else 0.0
@@ -566,7 +713,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     elif k9_now > 70: kd_timing = "隨機指標在 70 以上高檔鈍化（超買強勢）。"
     else: kd_timing = f"KD 指標目前在 20~70 之間常態區洗盤 (K={k9_now:.1f} / D={d9_now:.1f})。"
     bb_stage = "多頭主導（MACD 柱狀體在零軸上方安全區）。" if macd_hist >= 0 else "空頭修正（MACD 柱狀體在零軸下方收縮）。"
-    volume_verdict = f"實時 14 日 RSI 相對強度落在 {rsi_now:.1f}。"
+    volume_verdict = f"{trend_analysis['price_volume']}；{trend_analysis['accumulation']}；{trend_analysis['volume_divergence']}。RSI14={rsi_now:.1f}，量比={trend_analysis['volume_ratio']:.2f}。"
 
     rev_df = get_rev_df(stock_id, days=730)
     if rev_df is not None and not rev_df.empty:
@@ -590,7 +737,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
         for r_idx, row in df.iloc[-10:].iterrows():
             if row["low"] < low_cand and df["close"].iloc[-1] > low_cand:
                 spring_triggered = True; detected_prior_low = low_cand; break
-    if spring_triggered: spring_verdict = f"🟢 成功收復前波低點 {detected_prior_low:.2f} 元，主力洗盤完成，破底翻型態確立！"
+    if spring_triggered: spring_verdict = f"🟢 成功收復前波低點 {detected_prior_low:.2f} 元，形成破底後收復型態；仍需後續量價確認。"
 
     fin_df_raw = get_financial_statement_df(stock_id, years=2)
     if not fin_df_raw.empty and "Revenue" in fin_df_raw.columns:
@@ -618,10 +765,9 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
 
     pnl_pct = ((current_price - entry_cost) / entry_cost * 100) if (is_holding and entry_cost > 0) else 0.0
     
-    # 🌟 🌟 🌟 [100% 完整接回原創趨勢線分析算法] 🌟 🌟 🌟
-    short_term_trend = f"🚀 股價成功站上5日線，短線強勢攻擊中 (KD狀態: {kd_status})" if current_price >= ma5_val and ma5_val >= ma20_val else f"📉 均線全面蓋頭下壓，短線格局偏弱 (KD狀態: {kd_status})"
-    long_term_trend = "🔥 季線全面翻揚向上，中長線多頭基底非常扎實" if current_price >= ma60_val and (df["MA60"].iloc[-1] > df["MA60"].iloc[-5]) else "💤 季線橫向橫躺，屬於中線沉澱整理格局"
-    trend_phase = "🔥 均線結構完美咬合，正運行多頭波段主升段" if current_price >= ma20_val and ma20_val >= ma60_val and (df["MA20"].iloc[-1] > df["MA20"].iloc[-5]) else "💤 處於區間震盪洗盤或潛伏築底期"
+    short_term_trend = f"{trend_analysis['short_term']}（KD：{kd_status}）"
+    long_term_trend = f"{trend_analysis['long_term']}；{trend_analysis['weekly_desc']}；MA60五日斜率 {trend_analysis['slope60']:+.2f}%"
+    trend_phase = f"{trend_analysis['medium_term']}｜{trend_analysis['trend_strength']}｜波段結構：{trend_analysis['structure']['label']}"
 
     # 打包
     res_dict["stock_id"] = stock_id
@@ -685,6 +831,14 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     res_dict["peer_count"] = peer_count
     res_dict["pb_ratio"] = pb_ratio
     res_dict["bvps"] = bvps
+    res_dict["trend_analysis"] = trend_analysis
+    res_dict["trend_state"] = trend_state_data["state"]
+    res_dict["trend_state_detail"] = trend_state_data
+    res_dict["structure_stop"] = structure_stop
+    res_dict["weekly_df"] = weekly_df
+    res_dict["ma10_val"] = trend_analysis["ma10"]
+    res_dict["ma120_val"] = trend_analysis["ma120"]
+    res_dict["ma240_val"] = trend_analysis["ma240"]
 
     quality_flags = {
         "價格": current_price > 0, "成交量": current_vol >= 0, "大盤": macro_bull is not None,
@@ -701,7 +855,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     
     slippage = slip_ticks * t
     estimated_entry = ceil_to_tick(current_price + slippage, t)
-    estimated_stop_fill = floor_to_tick(stop_brk - slippage, t)
+    estimated_stop_fill = floor_to_tick(structure_stop - slippage, t)
     # 粗估雙邊手續費與賣出證交稅；實際折扣及商品稅率仍依券商/商品而異。
     estimated_cost_per_share = estimated_entry * (0.001425 * 2 + 0.003)
     risk_per_share = max(estimated_entry - estimated_stop_fill + estimated_cost_per_share, 0)
@@ -727,7 +881,7 @@ with st.sidebar:
     sector_panic_toggle = st.checkbox("🔥 同族群其他龍頭股「集體下殺破5%」", value=False)
     auto_refresh = st.checkbox("🔄 開啟盤中每 15 秒更新報價", value=False)
 
-st.markdown("## 📡 台股多因子資訊與風險提示系統（v49 新手安全版）")
+st.markdown("## 📡 台股多週期趨勢、價量與拉回決策系統（v50）")
 st.caption("本工具整理公開資訊與技術指標，不保證獲利，也不取代個人投資判斷。盤中訊號需等待收盤確認。")
 stock_input = st.text_input("請輸入核心目標個股代碼：", value="3037")
 
@@ -766,11 +920,35 @@ if stock_input:
         </div>
         """, unsafe_allow_html=True)
 
-        # 🌟 🌟 🌟 2. [成功救回] 趨勢診斷分析面板 🌟 🌟 🌟
-        st.markdown("### ⏱️ K線與均線技術趨勢診斷報告 [數據依據：歷史 K 線排列型態解算]")
-        st.info(f"**【短期攻擊動能】**：{res['short_term_trend']}\n\n"
-                f"**【長期趨勢方向】**：{res['long_term_trend']}\n\n"
-                f"**【波動階段定位】**：{res['trend_phase']}")
+        # 2. 多週期趨勢、線型與價量診斷
+        st.markdown("### ⏱️ 多週期趨勢與線型診斷")
+        st.info(f"**【短期趨勢】**：{res['short_term_trend']}\n\n"
+                f"**【長期趨勢】**：{res['long_term_trend']}\n\n"
+                f"**【中期波段階段】**：{res['trend_phase']}\n\n"
+                f"**【狀態機】**：{res['trend_state']}（弱化確認 {res['trend_state_detail']['weak_days']} 日／結構跌破確認 {res['trend_state_detail']['break_days']} 日）")
+        ta = res['trend_analysis']
+        tc1, tc2, tc3, tc4 = st.columns(4)
+        with tc1: st.markdown(custom_hud_box("週線與長期方向", f"{ta['weekly_desc']}<br>{ta['long_term']}"), unsafe_allow_html=True)
+        with tc2: st.markdown(custom_hud_box("波段線型", f"{ta['structure']['label']}<br>結構防守：{res['structure_stop']:.2f} 元"), unsafe_allow_html=True)
+        with tc3: st.markdown(custom_hud_box("趨勢強度", f"{ta['trend_strength']}<br>ADX14：{ta['adx']:.1f}"), unsafe_allow_html=True)
+        with tc4: st.markdown(custom_hud_box("價量狀態", f"{ta['price_volume']}<br>{ta['accumulation']}"), unsafe_allow_html=True)
+        st.markdown(f"""
+        <div style="background:#F8FAFC;border:1px solid #CBD5E1;border-left:6px solid #2563EB;padding:14px;border-radius:6px;margin-bottom:14px;line-height:1.7;">
+        <b>目前進場模型：</b>{ta['entry_model']}｜<b>模型確認：</b>{'是' if ta['entry_ready'] else '尚未'}｜<b>近60日高點回檔：</b>{ta['drawdown_pct']:.1f}%<br>
+        <b>近5日拉回量：</b>20日均量的 {ta['pullback_volume_ratio']:.2f} 倍｜<b>當日量比：</b>{ta['volume_ratio']:.2f} 倍｜<b>量價背離：</b>{ta['volume_divergence']}
+        </div>
+        """, unsafe_allow_html=True)
+        with st.expander("查看四種進場模型與訊號變更紀錄", expanded=False):
+            model_df = pd.DataFrame([
+                {"模型":"突破進場", "成立":ta['breakout_model'], "說明":"放量越過20日壓力；避免乖離過大時追價"},
+                {"模型":"多頭拉回", "成立":ta['pullback_model'], "說明":"長中期向上、回檔量縮且未破波段低點"},
+                {"模型":"突破後回測", "成立":ta['retest_model'], "說明":"原壓力轉支撐，回測量縮並等待止跌"},
+                {"模型":"築底轉強", "成立":ta['base_model'], "說明":"低點墊高、均線走平後突破，風險較高"},
+            ])
+            st.dataframe(model_df, use_container_width=True, hide_index=True)
+            state_logs=st.session_state.get(f"trend_log_{res['stock_id']}", [])
+            if state_logs: st.dataframe(pd.DataFrame(state_logs), use_container_width=True, hide_index=True)
+            else: st.caption("本次工作階段尚無狀態變更紀錄。")
 
         if res['large_holder_trend'] is not None and res['large_holder_diff'] < -0.3:
             st.warning(f"⚠️ 【大摩籌碼預警】千張以上持股級距占比近期下降 (變動: {res['large_holder_diff']:+.2f}%)。數據來源：台灣集中保管結算所股權分散表。")
@@ -879,7 +1057,7 @@ if stock_input:
         st.markdown("### 🛡/⚔️ 風控指揮中心：量化核心配額開火劇本")
         bx1, bx2, bx3 = st.columns(3)
         with bx1: st.metric("風險預算可容納部位（含粗估成本與滑價）", f"{res['suggested_lots']} 張 + {res['suggested_odd_lot']} 股")
-        with bx2: st.metric("估計停損成交價（含滑價）", f"{res['expected_stop_price']:.2f} 元")
+        with bx2: st.metric("結構停損估計成交價（含滑價）", f"{res['expected_stop_price']:.2f} 元")
         with bx3: st.metric("大波段移動停利線 (ATR)", res["trailing_stop_line"])
 
 if auto_refresh:
