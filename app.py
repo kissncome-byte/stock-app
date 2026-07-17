@@ -9,7 +9,7 @@ from urllib3.util.retry import Retry
 from FinMind.data import DataLoader
 
 # ============ 1. Page Config ============
-st.set_page_config(page_title="SOP v51 免費資料法人流向、多週期趨勢與價量決策系統", layout="wide")
+st.set_page_config(page_title="SOP v52 白話解讀、數據依據與多週期趨勢決策系統", layout="wide")
 
 # ============ 2. Global Constants ============
 TZ = pytz.timezone("Asia/Taipei")
@@ -63,6 +63,48 @@ def render_panel_html(title, heading, desc, top_border_color):
         <p style="margin:6px 0 0 0; font-size:11.5px; color:#1E293B; font-weight:600; line-height:1.55;">{desc}</p>
     </div>
     """
+
+def plain_structure_explanation(structure: dict) -> dict:
+    if not structure or structure.get("label") == "資料不足":
+        return {"title":"⚪ 波段資料不足", "meaning":"目前可辨識的轉折點不足，暫時不能可靠判斷波段方向。", "impact":"先觀察，不單靠這一項做買賣決定。", "action":"等待更多日線資料或下一個明確轉折。"}
+    if structure.get("higher_high") and structure.get("higher_low"):
+        return {"title":"🟢 波段趨勢健康向上", "meaning":"最近上漲能創更高價格，拉回也守在前一次低點之上，代表買方仍掌握波段。", "impact":"短線回檔較可能是整理，而不是立即反轉。", "action":"未持有者等量縮拉回；已持有者可續抱並守前波低點。"}
+    if structure.get("lower_high") and structure.get("lower_low"):
+        return {"title":"🔴 波段趨勢持續轉弱", "meaning":"最近每次反彈都低於前高，而且每次下跌又創更低點，代表空方仍占優勢。", "impact":"現在低價不一定等於便宜，仍可能繼續下跌。", "action":"未持有者先不要急著接；已持有者觀察趨勢失效價與放量跌破。"}
+    if structure.get("lower_high") and structure.get("higher_low"):
+        return {"title":"🟡 波段收斂整理", "meaning":"高點下降、低點抬高，價格波動範圍正在縮小，市場等待新方向。", "impact":"容易來回震盪，突破前不適合追價。", "action":"等待突破壓力或跌破支撐後再判斷。"}
+    if structure.get("higher_high") and structure.get("lower_low"):
+        return {"title":"🟠 波動擴大、方向不穩", "meaning":"高點創高但低點也破低，代表多空拉扯劇烈。", "impact":"上下洗盤風險高，停損距離會變大。", "action":"降低部位，等待波動收斂或方向確認。"}
+    return {"title":"🟡 波段方向尚未明朗", "meaning":"目前高低點沒有形成一致的上升或下降規律。", "impact":"單一轉折容易是假訊號。", "action":"搭配均線斜率、量價與法人連續性一起判斷。"}
+
+def plain_trend_strength(adx: float) -> dict:
+    if adx >= 25:
+        return {"title":"趨勢力道明確", "meaning":f"ADX14 為 {adx:.1f}，代表行情較可能沿主要方向延續。", "action":"順勢操作比逆勢猜底更合適。"}
+    if adx >= 18:
+        return {"title":"趨勢正在形成", "meaning":f"ADX14 為 {adx:.1f}，方向開始出現，但仍可能反覆。", "action":"等價格、均線與成交量再確認，不宜一次重押。"}
+    return {"title":"目前以震盪為主", "meaning":f"ADX14 為 {adx:.1f}，代表趨勢不強，容易上下來回。", "action":"不宜追突破，較適合等靠近支撐再觀察。"}
+
+def plain_price_volume(ta: dict) -> dict:
+    pv = ta.get("price_volume", "價量關係中性")
+    if "價跌量縮" in pv:
+        return {"title":"🟢 下跌但賣壓不重", "meaning":"股價回落時成交量同步縮小，代表急著賣出的人沒有明顯增加。", "impact":"若中長期趨勢仍向上，較像正常拉回。", "action":"等待支撐附近止跌，可分批而不是追高。"}
+    if "價跌量增" in pv:
+        return {"title":"🔴 下跌且賣壓增加", "meaning":"股價下跌時成交量放大，代表賣方正在加速出場。", "impact":"正常拉回演變成趨勢轉弱的風險提高。", "action":"先控制部位，觀察是否跌破前波低點或MA60。"}
+    if "價漲量增" in pv:
+        return {"title":"🟢 上漲獲得量能支持", "meaning":"股價上漲時成交量同步增加，代表買盤願意追價。", "impact":"突破的可信度提高，但乖離過大仍可能拉回。", "action":"已有部位可續抱；未持有避免在過度乖離時追高。"}
+    if "價漲量縮" in pv:
+        return {"title":"🟡 上漲但追價力道不足", "meaning":"股價上漲時成交量沒有跟上，代表買盤並不積極。", "impact":"容易在壓力附近停頓或形成假突破。", "action":"等待放量確認或回測支撐。"}
+    return {"title":"⚪ 價量暫無明確方向", "meaning":"價格與成交量目前沒有形成一致的多空訊號。", "impact":"這一項不能單獨支持買進或賣出。", "action":"搭配趨勢、線型與法人資料。"}
+
+def render_plain_card(title: str, meaning: str, impact: str, action: str, color: str = "#2563EB") -> str:
+    return (
+        f'<div style="background:#FFFFFF;border:1px solid #E2E8F0;border-left:6px solid {color};padding:15px;border-radius:7px;margin-bottom:12px;line-height:1.7;">'
+        f'<div style="font-size:17px;font-weight:900;color:#0F172A;margin-bottom:7px;">{title}</div>'
+        f'<div><b>這代表什麼：</b>{meaning}</div>'
+        f'<div><b>所以呢：</b>{impact}</div>'
+        f'<div><b>接下來可以怎麼做：</b>{action}</div>'
+        '</div>'
+    )
 
 def get_market_status_label(rt_success: bool, last_trade_date_str: str):
     now = datetime.now(TZ)
@@ -916,8 +958,9 @@ with st.sidebar:
     slip_input = st.slider("預估防守技術滑價 (Ticks)", 0, 5, 1)
     sector_panic_toggle = st.checkbox("🔥 同族群其他龍頭股「集體下殺破5%」", value=False)
     auto_refresh = st.checkbox("🔄 開啟盤中每 15 秒更新報價", value=False)
+    show_evidence_default = st.checkbox("🔎 預設展開各項數據依據", value=False)
 
-st.markdown("## 📡 台股多週期趨勢、價量與拉回決策系統（v51）")
+st.markdown("## 📡 台股白話解讀、數據依據與多週期趨勢決策系統（v52）")
 st.caption("本工具整理公開資訊與技術指標，不保證獲利，也不取代個人投資判斷。盤中訊號需等待收盤確認。")
 stock_input = st.text_input("請輸入核心目標個股代碼：", value="3037")
 
@@ -943,35 +986,67 @@ if stock_input:
             </div>
             <h3 style="margin: 5px 0; color: {bp_data['color']}; font-size: 23px; font-weight: 900;">即時策略防線：{bp_data['signal']}</h3>
             <div style="margin: 12px 0 18px 0; color: #0F172A; font-size: 15.5px; line-height: 1.65; text-align: justify; font-weight: 700; background-color: #FFFFFF; padding: 14px; border-radius: 6px; border: 2px solid #E2E8F0;">
-                <span style="color: #0F172A; font-weight: 900;">⚡ 狼王核心實戰研判令：</span>{bp_data['desc']}
+                <span style="color: #0F172A; font-weight: 900;">📌 白話總結：</span>{bp_data['desc']}
             </div>
             <div style="background-color: white; border: 1px solid #E2E8F0; padding: 15px; border-radius: 6px; margin-top: 10px;">
-                <span style="color: #475569; font-size: 13px; font-weight: 800; display: block; margin-bottom: 8px;">🎯 技術出場計畫藍圖 [解算依據: 本地 K 線歷史波動率分布]</span>
+                <span style="color: #475569; font-size: 13px; font-weight: 800; display: block; margin-bottom: 8px;">🎯 價格計畫與風險界線 [詳細數據可於下方展開]</span>
                 <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 15px;">
-                    <div style="background-color: #FFF5F5; padding: 10px; border-radius: 4px; border-left: 3px solid #EF4444;"><small style="color: #DC2626; font-weight: 800;">🛑 1. 核心停損防線</small><p style="margin:3px 0 0 0; font-size:13px; font-weight:bold; color:#1E293B;">{bp['停損防守']}</p></div>
-                    <div style="background-color: #FFFBEB; padding: 10px; border-radius: 4px; border-left: 3px solid #F59E0B;"><small style="color: #D97706; font-weight: 800;">⚠️ 2. 移動鎖利基準</small><p style="margin:3px 0 0 0; font-size:13px; font-weight:bold; color:#1E293B;">{bp['移動停利']}</p></div>
-                    <div style="background-color: #F0FDF4; padding: 10px; border-radius: 4px; border-left: 3px solid #10B981;"><small style="color: #16A34A; font-weight: 800;">🚀 3. 波段預期目標</small><p style="margin:3px 0 0 0; font-size:13px; font-weight:bold; color:#1E293B;">{bp['預期目標']}</p></div>
+                    <div style="background-color: #FFF5F5; padding: 10px; border-radius: 4px; border-left: 3px solid #EF4444;"><small style="color: #DC2626; font-weight: 800;">🛑 1. 趨勢失效參考</small><p style="margin:3px 0 0 0; font-size:13px; font-weight:bold; color:#1E293B;">{bp['停損防守']}</p></div>
+                    <div style="background-color: #FFFBEB; padding: 10px; border-radius: 4px; border-left: 3px solid #F59E0B;"><small style="color: #D97706; font-weight: 800;">⚠️ 2. 移動保護參考</small><p style="margin:3px 0 0 0; font-size:13px; font-weight:bold; color:#1E293B;">{bp['移動停利']}</p></div>
+                    <div style="background-color: #F0FDF4; padding: 10px; border-radius: 4px; border-left: 3px solid #10B981;"><small style="color: #16A34A; font-weight: 800;">🚀 3. 情境目標參考</small><p style="margin:3px 0 0 0; font-size:13px; font-weight:bold; color:#1E293B;">{bp['預期目標']}</p></div>
                 </div>
             </div>
         </div>
         """, unsafe_allow_html=True)
 
-        # 2. 多週期趨勢、線型與價量診斷
-        st.markdown("### ⏱️ 多週期趨勢與線型診斷")
-        st.info(f"**【短期趨勢】**：{res['short_term_trend']}\n\n"
-                f"**【長期趨勢】**：{res['long_term_trend']}\n\n"
-                f"**【中期波段階段】**：{res['trend_phase']}\n\n"
-                f"**【狀態機】**：{res['trend_state']}（弱化確認 {res['trend_state_detail']['weak_days']} 日／結構跌破確認 {res['trend_state_detail']['break_days']} 日）")
+        # 2. 多週期趨勢、線型與價量診斷：先白話，再看數據
+        st.markdown("### ⏱️ 趨勢、波段線型與價量判斷")
         ta = res['trend_analysis']
-        tc1, tc2, tc3, tc4 = st.columns(4)
-        with tc1: st.markdown(custom_hud_box("週線與長期方向", f"{ta['weekly_desc']}<br>{ta['long_term']}"), unsafe_allow_html=True)
-        with tc2: st.markdown(custom_hud_box("波段線型", f"{ta['structure']['label']}<br>結構防守：{res['structure_stop']:.2f} 元"), unsafe_allow_html=True)
-        with tc3: st.markdown(custom_hud_box("趨勢強度", f"{ta['trend_strength']}<br>ADX14：{ta['adx']:.1f}"), unsafe_allow_html=True)
-        with tc4: st.markdown(custom_hud_box("價量狀態", f"{ta['price_volume']}<br>{ta['accumulation']}"), unsafe_allow_html=True)
+        structure_plain = plain_structure_explanation(ta['structure'])
+        strength_plain = plain_trend_strength(ta['adx'])
+        pv_plain = plain_price_volume(ta)
+
+        st.markdown(render_plain_card(
+            "📌 整體趨勢怎麼看",
+            f"週線為『{ta['weekly_desc']}』，長期為『{ta['long_term']}』，中期處於『{ta['medium_term']}』，短期為『{ta['short_term']}』。",
+            "短期轉弱不等於長期翻空；只有波段低點、重要均線與賣壓同時惡化，才會升級為趨勢破壞。",
+            f"目前狀態為『{res['trend_state']}』。{'已持有者以續抱與防守為主。' if user_holding else '未持有者依進場模型等待合適位置。'}",
+            "#2563EB"), unsafe_allow_html=True)
+
+        c_plain1, c_plain2, c_plain3 = st.columns(3)
+        with c_plain1:
+            structure_color = "#EF4444" if "🔴" in structure_plain['title'] else "#10B981" if "🟢" in structure_plain['title'] else "#F59E0B"
+            st.markdown(render_plain_card(structure_plain['title'], structure_plain['meaning'], structure_plain['impact'], structure_plain['action'], structure_color), unsafe_allow_html=True)
+        with c_plain2:
+            st.markdown(render_plain_card("📈 "+strength_plain['title'], strength_plain['meaning'], "趨勢越明確，順著主要方向操作的參考價值越高；趨勢弱時則容易反覆。", strength_plain['action'], "#7C3AED"), unsafe_allow_html=True)
+        with c_plain3:
+            pv_color = "#10B981" if "🟢" in pv_plain['title'] else "#EF4444" if "🔴" in pv_plain['title'] else "#F59E0B"
+            st.markdown(render_plain_card(pv_plain['title'], pv_plain['meaning'], pv_plain['impact'], pv_plain['action'], pv_color), unsafe_allow_html=True)
+
+        with st.expander("🔎 查看趨勢、線型與價量的數據依據", expanded=show_evidence_default):
+            swing_high = ta['structure'].get('last_swing_high')
+            swing_low = ta['structure'].get('last_swing_low')
+            evidence_df = pd.DataFrame([
+                {"項目":"現價", "數值":f"{res['current_price']:.2f} 元", "判斷用途":"與均線、支撐及壓力比較"},
+                {"項目":"MA10 / MA20 / MA60", "數值":f"{ta['ma10']:.2f} / {res['ma20_val']:.2f} / {res['ma60_val']:.2f}", "判斷用途":"短、中期趨勢位置"},
+                {"項目":"MA20 / MA60 斜率", "數值":f"{ta['slope20']:+.2f}% / {ta['slope60']:+.2f}%", "判斷用途":"均線是否仍向上，而非只看交叉"},
+                {"項目":"最近波段高點", "數值":f"{swing_high:.2f} 元" if swing_high else "資料不足", "判斷用途":"前方壓力與高點是否墊高"},
+                {"項目":"最近波段低點", "數值":f"{swing_low:.2f} 元" if swing_low else "資料不足", "判斷用途":"趨勢失效與低點是否墊高"},
+                {"項目":"趨勢失效參考價", "數值":f"{res['structure_stop']:.2f} 元", "判斷用途":"跌破不等於立刻賣出，需搭配收盤、量能與連續天數確認"},
+                {"項目":"ADX14", "數值":f"{ta['adx']:.1f}", "判斷用途":"低於18偏震盪；18至25趨勢形成；25以上趨勢較明確"},
+                {"項目":"當日量比", "數值":f"{ta['volume_ratio']:.2f} 倍", "判斷用途":"相對20日均量；1.3倍以上視為明顯放量參考"},
+                {"項目":"近5日拉回量比", "數值":f"{ta['pullback_volume_ratio']:.2f} 倍", "判斷用途":"0.9倍以下視為拉回量縮參考"},
+                {"項目":"距60日高點回檔", "數值":f"{ta['drawdown_pct']:.1f}%", "判斷用途":"辨識追高、正常拉回或深度修正"},
+                {"項目":"量價背離", "數值":ta['volume_divergence'], "判斷用途":"價格創高時資金是否同步"},
+                {"項目":"狀態確認天數", "數值":f"弱化 {res['trend_state_detail']['weak_days']} 日；結構跌破 {res['trend_state_detail']['break_days']} 日", "判斷用途":"避免一天訊號就翻多翻空"},
+            ])
+            st.dataframe(evidence_df, use_container_width=True, hide_index=True)
+            st.caption("判斷門檻是規則化參考，不代表固定勝率；正式使用前仍應用不同產業與市場階段回測。")
+
         st.markdown(f"""
         <div style="background:#F8FAFC;border:1px solid #CBD5E1;border-left:6px solid #2563EB;padding:14px;border-radius:6px;margin-bottom:14px;line-height:1.7;">
-        <b>目前進場模型：</b>{ta['entry_model']}｜<b>模型確認：</b>{'是' if ta['entry_ready'] else '尚未'}｜<b>近60日高點回檔：</b>{ta['drawdown_pct']:.1f}%<br>
-        <b>近5日拉回量：</b>20日均量的 {ta['pullback_volume_ratio']:.2f} 倍｜<b>當日量比：</b>{ta['volume_ratio']:.2f} 倍｜<b>量價背離：</b>{ta['volume_divergence']}
+        <b>目前進場方式：</b>{ta['entry_model']}｜<b>條件是否完整：</b>{'已確認' if ta['entry_ready'] else '尚未確認'}<br>
+        <b>白話解讀：</b>{'目前已符合此進場方式的主要條件，但仍建議分批。' if ta['entry_ready'] else '目前只有部分條件成立，先等待止跌、放量或突破確認。'}
         </div>
         """, unsafe_allow_html=True)
         with st.expander("查看四種進場模型與訊號變更紀錄", expanded=False):
@@ -1003,12 +1078,12 @@ if stock_input:
         # 4. 即時報價 HUD 箱
         c1, c2, c3, c4 = st.columns(4)
         with c1: st.markdown(custom_hud_box("💡 當前即市價 [來源: 富果/證交所快流]", f"<span style='font-size:20px; color:#0F172A;'>{res['current_price']:.2f} 元</span><br><small style='color:#64748B;'>今日成交: {res['current_vol']:.0f} 張</small>"), unsafe_allow_html=True)
-        with c2: st.markdown(custom_hud_box("⏱️ 5日主力均線 [來源: 歷史K線滾動計算]", f"<span style='font-size:16px; color:#1E293B;'>{res['ma5_val']:.2f} 元</span><br><small style='color:#64748B;'>今日漲跌幅: {res['stock_daily_pct']:+.2f}%</small>"), unsafe_allow_html=True)
-        with c3: st.markdown(custom_hud_box("⏳ 移動防禦線 [來源: ATR波動率公式]", f"<span style='font-size:16px; color:#7C3AED;'>{res['trailing_stop_line']}</span><br><small style='color:#64748B;'>當前 ATR14: {res['atr']:.2f}</small>"), unsafe_allow_html=True)
+        with c2: st.markdown(custom_hud_box("⏱️ 5日平均成本線 [來源: 歷史K線滾動計算]", f"<span style='font-size:16px; color:#1E293B;'>{res['ma5_val']:.2f} 元</span><br><small style='color:#64748B;'>今日漲跌幅: {res['stock_daily_pct']:+.2f}%</small>"), unsafe_allow_html=True)
+        with c3: st.markdown(custom_hud_box("⏳ 波動保護線 [來源: ATR波動率公式]", f"<span style='font-size:16px; color:#7C3AED;'>{res['trailing_stop_line']}</span><br><small style='color:#64748B;'>當前 ATR14: {res['atr']:.2f}</small>"), unsafe_allow_html=True)
         with c4: st.markdown(custom_hud_box("📊 超額強度 [來源: 個股與大盤漲跌幅差值]", f"<span style='font-size:16px; color:#10B981;'>超額 {res['relative_strength']:+.2f}%</span><br><small style='color:#64748B;'>大盤共振: {'🔥 成立' if res['is_rs_gold'] else '⚪ 整理中'}</small>"), unsafe_allow_html=True)
 
         # 多因子曝光面板
-        st.markdown("### 🧬 多因子資訊面板")
+        st.markdown("### 🧭 其他重要因素：白話結論與數據依據")
         ib_col1, ib_col2, ib_col3 = st.columns(3)
         with ib_col1:
             macro_detail_desc = f"數據來源：加權指數日成交金額。市場量能不足時，突破訊號通常較不穩定，但實際結果仍需回測驗證。"
@@ -1020,9 +1095,26 @@ if stock_input:
         with ib_col3:
             st.markdown(render_panel_html("3. [板塊動能] 產業群聚共振定位", "追蹤同業有沒有集體進攻", res['peer_resonance_text'], "#7C3AED"), unsafe_allow_html=True)
 
+        with st.expander("🔎 查看多因子面板的原始數據與來源", expanded=show_evidence_default):
+            ins_table = res["institutional_summary"]["table"]
+            st.markdown("**三大法人20日統計**")
+            if not ins_table.empty:
+                st.dataframe(ins_table, use_container_width=True, hide_index=True)
+            else:
+                st.caption("法人資料不足。")
+            factor_df = pd.DataFrame([
+                {"因素":"大盤狀態", "原始數據／狀態":res['m_desc'], "系統如何使用":"大盤偏弱時降低個股訊號信心，不直接替個股判死刑"},
+                {"因素":"大盤量能", "原始數據／狀態":res['market_vol_desc'], "系統如何使用":"量能不足時降低突破可信度"},
+                {"因素":"產業同業", "原始數據／狀態":f"比較 {res['peer_count']} 檔；相關性 {res['peer_corr_val']:.2f}" if res['peer_corr_val'] is not None else "資料不足", "系統如何使用":"判斷個股是否獨強或與產業同步"},
+                {"因素":"融資", "原始數據／狀態":res['margin_trend'], "系統如何使用":"融資快速增加但價格不強時提高追高警戒"},
+                {"因素":"估值", "原始數據／狀態":f"PB {res['pb_ratio']:.2f} 倍；BVPS {res['bvps']:.2f} 元" if res['pb_ratio'] is not None and res['bvps'] else "資料不足", "系統如何使用":"只作產業內估值參考，不跨產業硬比"},
+                {"因素":"資料完整度", "原始數據／狀態":f"{res['data_quality_score']:.0f}%", "系統如何使用":"低於60%時不產生明確方向"},
+            ])
+            st.dataframe(factor_df, use_container_width=True, hide_index=True)
+
         # 7. 底層因果深度解碼驗證區
         st.markdown("---")
-        st.markdown("### 🧱 🔍 跨因子微觀底層因果深度解碼驗證區")
+        st.markdown("### 🔍 詳細數據與判斷依據")
         
         # 口語化籌碼與估值說明
         pb_text = f"{res['pb_ratio']:.2f} 倍" if res['pb_ratio'] is not None and res['bvps'] else "資料不足"
@@ -1031,15 +1123,15 @@ if stock_input:
         st.markdown(f"""
         <div style="background-color:#FFFFFF; padding:16px; border:2px solid #7D3CFF; border-left:8px solid #7D3CFF; border-radius:6px; margin-bottom:20px; box-shadow:0 1px 3px rgba(0,0,0,0.02);">
             <p style="margin:0 0 12px 0; color:#0F172A; font-size:14.5px; font-weight:700; line-height:1.65;">
-                <span style="color:#7D3CFF; font-weight:900; font-size:15px;">📊 【估值與買賣大戶老實說】➔ </span>
+                <span style="color:#7D3CFF; font-weight:900; font-size:15px;">📊 【估值與法人狀況】➔ </span>
                 目前這檔股票的最新股價，股價淨值比參考為 <b>{pb_text}</b>（每股淨值參考：{bvps_text}）。不同產業不宜只用同一估值指標判斷。
                 三大法人20日一致性為【<b>{res['institutional_summary']['consensus_label']}</b>】；其中外資：{res['institutional_summary']['foreign_text']}。投信：{res['institutional_summary']['trust_text']}。融資熱度為【<b>{res['margin_trend']}</b>】。
             </p>
             <p style="margin:0; color:#0F172A; font-size:14.5px; font-weight:700; line-height:1.65;">
                 <span style="color:#2563EB; font-weight:900; font-size:15px;">⏱️ 【技術指標動能解讀】➔ </span>
                 <b>1. 隨機指標(KD)：</b>{res['kd_timing']}<br>
-                <b>2. 主力多空力道(MACD)：</b>{res['bb_stage']}<br>
-                <b>3. 買賣雙方力道(RSI)：</b>{res['volume_verdict']}
+                <b>2. 中短期動能(MACD)：</b>{res['bb_stage']}<br>
+                <b>3. 漲跌速度與過熱程度(RSI)：</b>{res['volume_verdict']}
             </p>
         </div>
         """, unsafe_allow_html=True)
