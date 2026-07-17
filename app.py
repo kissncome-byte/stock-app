@@ -9,7 +9,7 @@ from urllib3.util.retry import Retry
 from FinMind.data import DataLoader
 
 # ============ 1. Page Config ============
-st.set_page_config(page_title="SOP v52 白話解讀、數據依據與多週期趨勢決策系統", layout="wide")
+st.set_page_config(page_title="Project Compass v52.1｜AI 股票決策助手", layout="wide")
 
 # ============ 2. Global Constants ============
 TZ = pytz.timezone("Asia/Taipei")
@@ -950,6 +950,65 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
                      "estimated_cost_per_share": estimated_cost_per_share})
     return res_dict
 
+
+
+def build_compass_home_summary(res: dict, is_holding: bool) -> dict:
+    """將既有分析結果整理成首頁用的 AI 決策摘要，不改動底層評分邏輯。"""
+    bp = res.get("tactical_blueprint", {})
+    ta = res.get("trend_analysis", {})
+    action = str(bp.get("action_now", "先觀察"))
+    strategy = str(bp.get("strategy_name", "⚪ 資料不足"))
+    quality = float(res.get("data_quality_score", 0) or 0)
+    confidence = max(0, min(100, round(quality * 0.75 + (10 if res.get("trend_state") not in ["觀察", "資料不足"] else 0))))
+    if quality < 60:
+        confidence = min(confidence, 55)
+
+    price = float(res.get("current_price", 0) or 0)
+    entry = float(res.get("expected_entry_price", price) or price)
+    stop = float(res.get("structure_stop", res.get("expected_stop_price", 0)) or 0)
+    target1 = float(res.get("real_resistance", res.get("expected_target_price", 0)) or 0)
+    target2 = float(res.get("expected_target_price", target1) or target1)
+    risk = max(entry - stop, 0)
+    reward = max(target1 - entry, 0)
+    rr = reward / risk if risk > 0 else None
+
+    if quality < 60:
+        decision = "等待"
+    elif any(k in action for k in ["退出", "減碼"]):
+        decision = "減碼／退出"
+    elif any(k in action for k in ["續抱", "持有"]):
+        decision = "續抱"
+    elif any(k in action for k in ["新增", "買", "進場"]):
+        decision = "分批評估"
+    else:
+        decision = "等待"
+
+    today = f"目前屬於「{res.get('trend_state', '觀察')}」，{bp.get('desc', '先等待更多資料確認。')}"
+    pros = []
+    cons = []
+    if "多頭" in str(ta.get("long_term", "")) or "多頭" in str(res.get("trend_state", "")):
+        pros.append("中長期趨勢仍有支撐")
+    if float(ta.get("volume_ratio", 0) or 0) >= 1.3:
+        pros.append("成交量明顯放大")
+    if res.get("institutional_summary", {}).get("consensus_score", 0) > 0:
+        pros.append("法人一致性偏多")
+    if res.get("missing_data"):
+        cons.append("部分資料缺漏，信心需下修")
+    if "警戒" in str(res.get("trend_state", "")) or "破壞" in str(res.get("trend_state", "")):
+        cons.append("趨勢已有弱化或破壞跡象")
+    if float(ta.get("volume_ratio", 0) or 0) < 0.8:
+        cons.append("量能不足，訊號可信度有限")
+    if not pros:
+        pros.append("目前沒有足夠強的正向證據")
+    if not cons:
+        cons.append("市場仍可能受突發消息與大盤波動影響")
+
+    return {
+        "decision": decision, "strategy": strategy, "action": action, "confidence": confidence,
+        "today": today, "entry": entry, "stop": stop, "target1": target1, "target2": target2,
+        "rr": rr, "pros": pros[:3], "cons": cons[:3],
+    }
+
 # ============ 10. UI Presentation Layer ============
 with st.sidebar:
     st.header("🛡️ 全球資金池風控參數")
@@ -960,8 +1019,8 @@ with st.sidebar:
     auto_refresh = st.checkbox("🔄 開啟盤中每 15 秒更新報價", value=False)
     show_evidence_default = st.checkbox("🔎 預設展開各項數據依據", value=False)
 
-st.markdown("## 📡 台股白話解讀、數據依據與多週期趨勢決策系統（v52）")
-st.caption("本工具整理公開資訊與技術指標，不保證獲利，也不取代個人投資判斷。盤中訊號需等待收盤確認。")
+st.markdown("## 🧭 Project Compass｜AI 股票決策助手（v52.1）")
+st.caption("先給決策，再看證據。所有建議都會顯示資料依據、信心與可能失準的原因。")
 stock_input = st.text_input("請輸入核心目標個股代碼：", value="3037")
 
 u_col1, u_col2 = st.columns(2)
@@ -976,7 +1035,33 @@ if stock_input:
         bp = bp_data["blueprint"]
         missing_text = "、".join(res["missing_data"]) if res["missing_data"] else "無"
         st.info(f"資料完整度：{res['data_quality_score']:.0f}%｜缺少：{missing_text}。資料不足的項目不納入方向判斷。")
-        
+
+        # 0. Project Compass 首頁：先回答該怎麼做，再展開證據
+        compass = build_compass_home_summary(res, user_holding)
+        decision_color = "#16A34A" if compass["decision"] in ["續抱", "分批評估"] else "#DC2626" if "減碼" in compass["decision"] else "#D97706"
+        st.markdown(f"""
+        <div style="background:#0F172A;padding:22px;border-radius:12px;margin:8px 0 18px 0;color:white;">
+          <div style="font-size:13px;color:#94A3B8;font-weight:800;letter-spacing:.08em;">COMPASS DECISION</div>
+          <div style="display:flex;justify-content:space-between;align-items:flex-end;gap:12px;flex-wrap:wrap;">
+            <div><div style="font-size:34px;font-weight:900;color:{decision_color};">{compass['decision']}</div><div style="font-size:15px;color:#E2E8F0;">{compass['strategy']}｜{compass['action']}</div></div>
+            <div style="text-align:right;"><div style="font-size:12px;color:#94A3B8;">AI 信心</div><div style="font-size:30px;font-weight:900;">{compass['confidence']}%</div></div>
+          </div>
+          <div style="margin-top:16px;background:#1E293B;padding:14px;border-radius:8px;line-height:1.7;"><b>今日最重要的一句話：</b>{compass['today']}</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        hc1, hc2, hc3, hc4 = st.columns(4)
+        with hc1: st.metric("建議評估價", f"{compass['entry']:.2f} 元")
+        with hc2: st.metric("趨勢失效價", f"{compass['stop']:.2f} 元")
+        with hc3: st.metric("第一目標區", f"{compass['target1']:.2f} 元")
+        with hc4: st.metric("風險報酬比", f"{compass['rr']:.2f}" if compass['rr'] is not None else "資料不足")
+
+        pcol, ccol = st.columns(2)
+        with pcol:
+            st.success("支持這個判斷的證據\n\n" + "\n".join(f"• {x}" for x in compass["pros"]))
+        with ccol:
+            st.warning("AI 自我檢查：可能失準的原因\n\n" + "\n".join(f"• {x}" for x in compass["cons"]))
+
         # 1. 綜合結論卡片
         st.markdown(f"""
         <div style="background-color: {bp_data['color']}10; border: 2px solid {bp_data['color']}; padding: 22px; border-radius: 8px; margin-bottom: 25px;">
