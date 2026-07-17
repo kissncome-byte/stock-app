@@ -9,7 +9,7 @@ from urllib3.util.retry import Retry
 from FinMind.data import DataLoader
 
 # ============ 1. Page Config ============
-st.set_page_config(page_title="SOP v50 台股多週期趨勢、價量與拉回決策系統", layout="wide")
+st.set_page_config(page_title="SOP v51 免費資料法人流向、多週期趨勢與價量決策系統", layout="wide")
 
 # ============ 2. Global Constants ============
 TZ = pytz.timezone("Asia/Taipei")
@@ -210,23 +210,6 @@ def get_market_macro_status():
         log_error("market macro", exc)
     return None, "⚪ 大盤資料取得失敗", None, None, None, "⚪ 大盤量能資料不足"
 
-# 🌟 誠實分流修正：抓不到就直接回報 None，絕不用 0.00% 呼弄交易員 🌟
-@st.cache_data(ttl=43200)
-def get_weekly_large_holders(stock_id: str):
-    try:
-        start_date = (datetime.now(TZ) - timedelta(days=90)).strftime("%Y-%m-%d")
-        df_holder = get_api().taiwan_stock_holding_shares_per(stock_id=stock_id, start_date=start_date)
-        if df_holder is not None and not df_holder.empty:
-            df_1000 = df_holder[df_holder["Difference"] == "1,000,000以上"].sort_values("date")
-            if len(df_1000) >= 2:
-                latest_pct = safe_float(df_1000.iloc[-1]["Percent"])
-                prev_pct = safe_float(df_1000.iloc[-2]["Percent"])
-                diff_pct = latest_pct - prev_pct
-                trend = "📈 千張以上持股級距占比增加" if diff_pct > 0.2 else "📉 千張以上持股級距占比下降" if diff_pct < -0.2 else "⚖️ 千張以上持股級距占比變化不大"
-                return trend, diff_pct, latest_pct
-    except Exception: pass
-    return None, None, None
-
 @st.cache_data(ttl=900)
 def get_taiwan_enhanced_chips(stock_id: str, avg_daily_volume_shares: float, days: int = 30):
     s_trend, m_trend, s_3d, m_diff = "⚪ 資料不足", "⚪ 資料不足", 0.0, 0.0
@@ -273,6 +256,64 @@ def get_institutional_trading_df(stock_id: str, days: int = 30):
     except Exception: pass
     return pd.DataFrame()
 
+def summarize_institutional_flow(institutional_df: pd.DataFrame, price_df: pd.DataFrame):
+    """以免費三大法人日報整理連續性、20日累計與淨買超日參考成本。
+    參考成本只使用法人淨買超日的收盤價加權，不代表法人真實庫存成本。
+    """
+    empty = {
+        "summary_text": "⚪ 三大法人資料不足，暫不判斷。",
+        "consensus_label": "資料不足", "consensus_score": 0,
+        "table": pd.DataFrame(), "foreign_text": "資料不足",
+        "trust_text": "資料不足", "dealer_text": "資料不足"
+    }
+    if institutional_df is None or institutional_df.empty:
+        return empty
+    try:
+        x = institutional_df.copy().sort_values("date")
+        prices = price_df[["date", "close", "vol"]].copy()
+        prices["date"] = prices["date"].astype(str)
+        x["date"] = x["date"].astype(str)
+        x = x.merge(prices, on="date", how="left")
+        avg_vol_lots = max(float(pd.to_numeric(prices["vol"], errors="coerce").tail(20).mean()) / 1000.0, 1.0)
+        rows, texts, score = [], {}, 0
+        mapping = [("外資(張)", "外資"), ("投信(張)", "投信"), ("自營商總計(張)", "自營商")]
+        for col, label in mapping:
+            if col not in x.columns:
+                continue
+            net = pd.to_numeric(x[col], errors="coerce").fillna(0).tail(20)
+            sub = x.tail(20).copy()
+            sub[col] = pd.to_numeric(sub[col], errors="coerce").fillna(0)
+            total20 = float(net.sum())
+            buy_days = int((net > 0).sum())
+            sell_days = int((net < 0).sum())
+            last5 = float(net.tail(5).sum())
+            intensity = total20 / avg_vol_lots
+            pos = sub[sub[col] > 0].dropna(subset=["close"])
+            proxy_cost = None
+            if not pos.empty and float(pos[col].sum()) > 0:
+                proxy_cost = float((pos["close"] * pos[col]).sum() / pos[col].sum())
+            if buy_days >= 13 and total20 > 0:
+                stance, pts = "🟢 持續偏買", 2
+            elif buy_days >= 11 and total20 > 0:
+                stance, pts = "🟢 溫和偏買", 1
+            elif sell_days >= 13 and total20 < 0:
+                stance, pts = "🔴 持續偏賣", -2
+            elif sell_days >= 11 and total20 < 0:
+                stance, pts = "🔴 溫和偏賣", -1
+            else:
+                stance, pts = "🟡 多空交錯", 0
+            score += pts
+            cost_text = f"{proxy_cost:.2f} 元" if proxy_cost else "無法估算"
+            texts[label] = f"{stance}｜20日 {total20:+,.0f} 張｜買 {buy_days} 天／賣 {sell_days} 天｜近5日 {last5:+,.0f} 張"
+            rows.append({"法人": label, "20日累計(張)": total20, "買超天數": buy_days, "賣超天數": sell_days, "近5日(張)": last5, "相對20日均量": intensity, "淨買超日參考價": cost_text, "判讀": stance})
+        consensus = "偏多" if score >= 3 else "稍偏多" if score >= 1 else "偏空" if score <= -3 else "稍偏空" if score <= -1 else "分歧"
+        summary = f"三大法人20日一致性：{consensus}。外資、投信、自營商分開判讀，避免只看單日張數。"
+        return {"summary_text": summary, "consensus_label": consensus, "consensus_score": score, "table": pd.DataFrame(rows),
+                "foreign_text": texts.get("外資", "資料不足"), "trust_text": texts.get("投信", "資料不足"), "dealer_text": texts.get("自營商", "資料不足")}
+    except Exception as exc:
+        log_error("institutional summary", exc)
+        return empty
+
 @st.cache_data(ttl=3600)
 def get_industry_peer_candidates(stock_id: str, industry_category: str, max_peers: int = 8):
     """由完整上市櫃清單動態建立同業池，適用所有有產業分類的股票。"""
@@ -318,7 +359,7 @@ def analyze_peer_resonance(stock_id: str, industry_category: str):
         log_error("peer correlation", exc)
         return "⚪ 同業相關性計算失敗，暫不判斷。", None, len(returns)
 
-# 🌟 實時分析師登記數據聯網模組 🌟
+# 免費公開分析師共識彙整：僅顯示 Yahoo 可取得的整體統計，並非逐家券商研究報告。
 @st.cache_data(ttl=1800)
 def get_broker_consensus_data(stock_id: str, current_price: float):
     session = get_requests_session()
@@ -327,7 +368,7 @@ def get_broker_consensus_data(stock_id: str, current_price: float):
     
     # 🌟 查無資料時的鋼鐵留白：前台直接反映無外資報告 Facts 🌟
     res_not_found = {
-        "mean": None, "high": None, "low": None, "is_real": False,
+        "mean": None, "high": None, "low": None, "is_real": False, "source": "Yahoo Finance 公開彙整", "coverage_count": None,
         "list": []
     }
     
@@ -348,11 +389,8 @@ def get_broker_consensus_data(stock_id: str, current_price: float):
                     final_rating = rating_map.get(rec_key, "🟢 買進/加碼")
                     return {
                         "mean": t_mean, "high": t_high if t_high > 0 else t_mean, "low": t_low if t_low > 0 else t_mean, "is_real": True,
-                        "list": [
-                            {"firm": "Yahoo Finance 彙整分析師平均目標價", "rating": final_rating, "target": t_mean, "date": "資料彙整值"},
-                            {"firm": "Yahoo Finance 彙整最高目標價", "rating": "🚀 多頭擴張", "target": t_high if t_high > 0 else t_mean, "date": "資料彙整值"},
-                            {"firm": "Yahoo Finance 彙整最低目標價", "rating": "🛡️ 價值定錨", "target": t_low if t_low > 0 else t_mean, "date": "資料彙整值"}
-                        ]
+                        "source": "Yahoo Finance financialData 公開彙整", "coverage_count": safe_float(fin_data.get("numberOfAnalystOpinions", {}).get("raw"), None),
+                        "rating": final_rating, "list": []
                     }
     except Exception: pass
     return res_not_found
@@ -625,7 +663,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     news_analysis_report = "⚖️ 新聞文字傾向僅供參考"
     fin_conclusion = "⚪ 財報資料不足，暫不判斷"
     pe_val, pb_ratio, bvps = None, None, None
-    broker_consensus = {"mean": None, "high": None, "low": None, "is_real": False, "list": [], "error": None}
+    broker_consensus = {"mean": None, "high": None, "low": None, "is_real": False, "source": "Yahoo Finance 公開彙整", "coverage_count": None, "rating": None, "list": [], "error": None}
     
     sitc_trend, margin_trend, sitc_3d_sum, margin_diff = "🟡 中性", "🟡 平穩", 0.0, 0.0
     wolf_rank_label, wolf_rank_color = "⚖️ 族群常態輪動成員", "#64748B"
@@ -681,13 +719,13 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     relative_strength = stock_daily_pct - wtx_change
     is_rs_gold = (wtx_change <= -1.0) and (relative_strength >= 3.0)
 
-    large_holder_trend, large_holder_diff, large_holder_pct = get_weekly_large_holders(stock_id)
     peer_resonance_text, peer_corr_val, peer_count = analyze_peer_resonance(stock_id, industry)
     avg_daily_volume_shares = float(df["vol"].tail(20).mean())
     sitc_trend, margin_trend, sitc_3d_sum, margin_diff = get_taiwan_enhanced_chips(stock_id, avg_daily_volume_shares)
     
     try: institutional_df = get_institutional_trading_df(stock_id, days=30)
     except Exception: pass
+    institutional_summary = summarize_institutional_flow(institutional_df, df)
     try:
         broker_consensus = get_broker_consensus_data(stock_id, current_price)
     except Exception as exc:
@@ -823,9 +861,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     res_dict["confirmed_breakout"] = confirmed_breakout
     res_dict["trailing_stop_value"] = trailing_stop_value
     
-    res_dict["large_holder_trend"] = large_holder_trend
-    res_dict["large_holder_diff"] = large_holder_diff
-    res_dict["large_holder_pct"] = large_holder_pct
+    res_dict["institutional_summary"] = institutional_summary
     res_dict["peer_resonance_text"] = peer_resonance_text
     res_dict["peer_corr_val"] = peer_corr_val
     res_dict["peer_count"] = peer_count
@@ -842,10 +878,10 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
 
     quality_flags = {
         "價格": current_price > 0, "成交量": current_vol >= 0, "大盤": macro_bull is not None,
-        "財報": not fin_df.empty, "法人": not institutional_df.empty, "大戶級距": large_holder_trend is not None,
+        "財報": not fin_df.empty, "法人": not institutional_df.empty,
         "同業": peer_corr_val is not None, "新聞": bool(raw_news_list)
     }
-    quality_weights = {"價格": 25, "成交量": 10, "大盤": 15, "財報": 15, "法人": 10, "大戶級距": 5, "同業": 10, "新聞": 10}
+    quality_weights = {"價格": 25, "成交量": 10, "大盤": 15, "財報": 15, "法人": 15, "同業": 10, "新聞": 10}
     quality_score = sum(quality_weights[k] for k, ok in quality_flags.items() if ok)
     missing_data = [k for k, ok in quality_flags.items() if not ok]
     res_dict["data_quality_score"] = quality_score
@@ -881,7 +917,7 @@ with st.sidebar:
     sector_panic_toggle = st.checkbox("🔥 同族群其他龍頭股「集體下殺破5%」", value=False)
     auto_refresh = st.checkbox("🔄 開啟盤中每 15 秒更新報價", value=False)
 
-st.markdown("## 📡 台股多週期趨勢、價量與拉回決策系統（v50）")
+st.markdown("## 📡 台股多週期趨勢、價量與拉回決策系統（v51）")
 st.caption("本工具整理公開資訊與技術指標，不保證獲利，也不取代個人投資判斷。盤中訊號需等待收盤確認。")
 stock_input = st.text_input("請輸入核心目標個股代碼：", value="3037")
 
@@ -950,8 +986,6 @@ if stock_input:
             if state_logs: st.dataframe(pd.DataFrame(state_logs), use_container_width=True, hide_index=True)
             else: st.caption("本次工作階段尚無狀態變更紀錄。")
 
-        if res['large_holder_trend'] is not None and res['large_holder_diff'] < -0.3:
-            st.warning(f"⚠️ 【大摩籌碼預警】千張以上持股級距占比近期下降 (變動: {res['large_holder_diff']:+.2f}%)。數據來源：台灣集中保管結算所股權分散表。")
         if res['peer_corr_val'] is not None and res['peer_corr_val'] < 0.3:
             st.info(f"⚠️ 【大摩共振預警】當前個股與同業龍頭相關性極低 ({res['peer_corr_val']:.2f})。數據來源：同產業股票近60日報酬率 Pearson 相關係數。")
 
@@ -980,12 +1014,9 @@ if stock_input:
             macro_detail_desc = f"數據來源：加權指數日成交金額。市場量能不足時，突破訊號通常較不穩定，但實際結果仍需回測驗證。"
             st.markdown(render_panel_html("1. 總體流動性安全閥 [來源: 證交所TAIEX日報]", res['market_vol_desc'], macro_detail_desc, "#3B82F6"), unsafe_allow_html=True)
         with ib_col2:
-            # 🌟 誠實數據判斷：抓不到就直接回報無法查詢，不瞎猜 🌟
-            if res['large_holder_trend'] is not None:
-                holder_desc = f"最新千張持股比率: <b>{res['large_holder_pct']:.2f}%</b><br>持股級距週增減變動: <b>{res['large_holder_diff']:+.2f}%</b>"
-                st.markdown(render_panel_html("2. 千張以上持股級距變化", res['large_holder_trend'], holder_desc, "#10B981"), unsafe_allow_html=True)
-            else:
-                st.markdown(render_panel_html("2. 千張以上持股級距變化", "❌ 該個股目前集體保管交易所查無最新分散表", "FinMind 聯網超時或該股歷史週資料未開放，系統拒絕假造與通膨數字。", "#64748B"), unsafe_allow_html=True)
+            ins = res["institutional_summary"]
+            ins_desc = f"外資：{ins['foreign_text']}<br>投信：{ins['trust_text']}<br>自營商：{ins['dealer_text']}"
+            st.markdown(render_panel_html("2. 三大法人20日一致性 [免費公開日報]", f"法人共識：{ins['consensus_label']}", ins_desc, "#10B981"), unsafe_allow_html=True)
         with ib_col3:
             st.markdown(render_panel_html("3. [板塊動能] 產業群聚共振定位", "追蹤同業有沒有集體進攻", res['peer_resonance_text'], "#7C3AED"), unsafe_allow_html=True)
 
@@ -1002,7 +1033,7 @@ if stock_input:
             <p style="margin:0 0 12px 0; color:#0F172A; font-size:14.5px; font-weight:700; line-height:1.65;">
                 <span style="color:#7D3CFF; font-weight:900; font-size:15px;">📊 【估值與買賣大戶老實說】➔ </span>
                 目前這檔股票的最新股價，股價淨值比參考為 <b>{pb_text}</b>（每股淨值參考：{bvps_text}）。不同產業不宜只用同一估值指標判斷。
-                最近一個月，投信的態度是【<b>{res['sitc_trend']}</b>】，一般散戶的融資熱度則是【<b>{res['margin_trend']}</b>】。
+                三大法人20日一致性為【<b>{res['institutional_summary']['consensus_label']}</b>】；其中外資：{res['institutional_summary']['foreign_text']}。投信：{res['institutional_summary']['trust_text']}。融資熱度為【<b>{res['margin_trend']}</b>】。
             </p>
             <p style="margin:0; color:#0F172A; font-size:14.5px; font-weight:700; line-height:1.65;">
                 <span style="color:#2563EB; font-weight:900; font-size:15px;">⏱️ 【技術指標動能解讀】➔ </span>
@@ -1015,21 +1046,23 @@ if stock_input:
 
         # 區塊 B：三大法人明細大表
         with st.expander("🦅 三大法人每日實時進出買賣超佈局明細大表 (近30日現況) ─ 點擊展開明細 [數據來源: 證交所三大法人日報]", expanded=False):
+            if not res["institutional_summary"]["table"].empty:
+                st.markdown("**20日法人一致性摘要**")
+                st.dataframe(res["institutional_summary"]["table"], use_container_width=True, hide_index=True)
             if not res["institutional_df"].empty:
+                st.markdown("**每日買賣超明細**")
                 st.dataframe(res["institutional_df"].style.format({"外資(張)": "{:+,.1f}", "投信(張)": "{:+,.1f}", "自營商總計(張)": "{:+,.1f}"}), use_container_width=True)
+            else:
+                st.caption("目前無法取得三大法人日報資料。")
 
-        # 區塊 C：外資與本土投顧目標價矩陣
-        st.markdown("### 🏛️ 🧮 頂級外資券商與本土投顧最新的研究報告目標價矩陣")
+        # 區塊 C：免費公開分析師共識（有資料才顯示）
         bc = res["broker_consensus"]
-        
-        # 🌟 🌟 🌟 誠實留白分流印出：查不到就直接說查不到，拒絕假裝 🌟 🌟 🌟
-        if bc.get("is_real", True):
-            st.markdown(f"""<div style="background-color:#F5F3FF; padding:12px; border-left:4px solid #7C3AED; border-radius:4px; margin-bottom:12px; font-size:14px; color:#5B21B6; font-weight:700;">🎯 法人共識平均目標價：{bc['mean']:.2f} 元 ｜ 機構最高看好價：{bc['high']:.2f} 元 ｜ 最低防守估值：{bc['low']:.2f} 元<br><small style='color:#6D28D9; font-weight:600;'>[資料來源：Yahoo Finance financialData 彙整欄位；非逐份券商報告]</small></div>""", unsafe_allow_html=True)
-            if bc["list"]:
-                for b in bc["list"]:
-                    st.markdown(f"* **[{b['date']}]** <span style='color:#7C3AED; font-weight:800;'>{b['firm']}</span> 給予 ➔ **【{b['rating']}】** 評等 ｜ 預估溢價目標：<span style='color:#0F172A; font-weight:900; font-size:15px;'>{b['target']:.2f} 元</span>", unsafe_allow_html=True)
+        if bc.get("is_real", False):
+            st.markdown("### 🎯 免費公開分析師目標價共識")
+            coverage = f"｜涵蓋分析師數：{int(bc['coverage_count'])}" if bc.get("coverage_count") else ""
+            st.markdown(f"""<div style="background-color:#F5F3FF; padding:12px; border-left:4px solid #7C3AED; border-radius:4px; margin-bottom:12px; font-size:14px; color:#5B21B6; font-weight:700;">平均目標價：{bc['mean']:.2f} 元｜最高：{bc['high']:.2f} 元｜最低：{bc['low']:.2f} 元｜公開彙整評等：{bc.get('rating') or '未提供'}{coverage}<br><small style='color:#6D28D9; font-weight:600;'>資料來源：{bc.get('source')}。這不是逐家外資或本土投顧報告，無法驗證各券商名稱、報告日期與完整論點，因此只作市場共識參考。</small></div>""", unsafe_allow_html=True)
         else:
-            st.markdown(f"""<div style="background-color:#F1F5F9; padding:12px; border-left:4px solid #64748B; border-radius:4px; margin-bottom:12px; font-size:14px; color:#334155; font-weight:700;">❌ 【資料不足，該股目前未獲得國際外資公開報告覆蓋】<br><small style='color:#475569; font-weight:600;'>[資料來源：Yahoo Finance financialData；查無資料時不推估]</small></div>""", unsafe_allow_html=True)
+            st.caption("🎯 免費公開來源查無可靠分析師目標價共識，本區自動隱藏；系統不推估、不杜撰逐家券商報告。")
 
         # 區塊 D：財務基本面季度結構矩陣大表
         st.markdown("### 📊 財務基本面季度結構矩陣大表")
