@@ -2310,343 +2310,138 @@ if stock_input:
         ai_forecast = build_ai_forecast(res, compass, decision_engine)
 
 
-        st.markdown("### 👤 如果我是你")
-        iw_col1, iw_col2 = st.columns([1.15, 0.85])
-        with iw_col1:
-            actions_html = "".join(
-                f"<div style='font-size:16px;color:#1E293B;line-height:1.9;'>✓ {action}</div>"
-                for action in if_i_were_you["actions"]
-            )
+
+        # 精簡首頁：每個結論只出現一次，其他內容只負責提供證據
+        main_reasons = []
+        for member in committee.get("members", []):
+            summary = str(member.get("summary", "")).strip()
+            if summary and summary not in main_reasons:
+                main_reasons.append(summary)
+            if len(main_reasons) >= 3:
+                break
+        if not main_reasons:
+            main_reasons = [str(decision_engine.get("summary", "目前訊號仍需持續觀察。"))]
+
+        main_risks = list(if_i_were_you.get("warnings", []) or [])[:3]
+        if not main_risks:
+            main_risks = list(decision_engine.get("veto_reasons", []) or [])[:3]
+        if not main_risks:
+            main_risks = ["留意趨勢失效價、成交量突然放大，以及大盤方向轉弱。"]
+
+        reasons_html = "".join(
+            f"<div style='font-size:14px;color:#334155;line-height:1.75;margin-top:5px;'>• {reason}</div>"
+            for reason in main_reasons
+        )
+        risks_html = "".join(
+            f"<div style='font-size:14px;color:#334155;line-height:1.75;margin-top:5px;'>• {risk}</div>"
+            for risk in main_risks
+        )
+        actions_html = "".join(
+            f"<div style='font-size:14px;color:#334155;line-height:1.75;margin-top:5px;'>• {action}</div>"
+            for action in list(if_i_were_you.get("actions", []) or [])[:3]
+        )
+
+        st.markdown("### 📌 今日判斷")
+        st.markdown(f"""
+        <div style="background:#FFFFFF;border:1px solid #E2E8F0;border-left:9px solid {decision_engine['color']};padding:22px;border-radius:14px;box-shadow:0 3px 12px rgba(15,23,42,.06);">
+          <div style="font-size:12px;color:#64748B;font-weight:900;letter-spacing:.08em;">CURRENT VIEW</div>
+          <div style="font-size:28px;color:{decision_engine['color']};font-weight:950;margin:7px 0 9px 0;">{decision_engine['label']}</div>
+          <div style="font-size:15px;color:#334155;line-height:1.75;">{decision_engine['summary']}</div>
+          <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:15px;">
+            <span style="background:{decision_engine['color']}18;color:{decision_engine['color']};border:1px solid {decision_engine['color']}55;padding:6px 11px;border-radius:999px;font-size:12px;font-weight:900;">條件 {int(decision_engine.get('completed',0) or 0)} / {int(decision_engine.get('total',0) or 0)}</span>
+            <span style="background:#F8FAFC;color:#334155;border:1px solid #CBD5E1;padding:6px 11px;border-radius:999px;font-size:12px;font-weight:900;">判斷信心 {int(committee.get('cio_confidence',0) or 0)}%</span>
+            <span style="background:#F8FAFC;color:#334155;border:1px solid #CBD5E1;padding:6px 11px;border-radius:999px;font-size:12px;font-weight:900;">資料完整度 {data_quality_audit['score']}%</span>
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        overview_col1, overview_col2 = st.columns(2)
+        with overview_col1:
             st.markdown(f"""
-            <div style="background:#FFFFFF;border:1px solid #E2E8F0;border-left:9px solid {if_i_were_you['color']};padding:22px;border-radius:14px;min-height:245px;box-shadow:0 3px 12px rgba(15,23,42,.06);">
-              <div style="font-size:12px;color:#64748B;font-weight:900;letter-spacing:.08em;">IF I WERE YOU</div>
-              <div style="font-size:27px;color:{if_i_were_you['color']};font-weight:950;margin:7px 0 13px 0;">{if_i_were_you['headline']}</div>
-              {actions_html}
+            <div style="background:#FFFFFF;border:1px solid #E2E8F0;padding:18px;border-radius:12px;min-height:230px;">
+              <div style="font-size:16px;color:#0F172A;font-weight:950;">判斷依據</div>
+              {reasons_html}
+              <div style="font-size:16px;color:#0F172A;font-weight:950;margin-top:16px;padding-top:12px;border-top:1px dashed #CBD5E1;">目前策略</div>
+              {actions_html or '<div style="font-size:14px;color:#64748B;margin-top:7px;">目前以等待確認為主。</div>'}
             </div>
             """, unsafe_allow_html=True)
-        with iw_col2:
-            st.markdown("#### ⚠️ 今天特別不要犯")
-            if if_i_were_you["warnings"]:
-                for warning in if_i_were_you["warnings"]:
-                    st.warning(warning)
-            else:
-                st.success("目前沒有額外警示；照既定分批與風險防線執行即可。")
+        with overview_col2:
+            st.markdown(f"""
+            <div style="background:#FFFFFF;border:1px solid #E2E8F0;padding:18px;border-radius:12px;min-height:230px;">
+              <div style="font-size:16px;color:#0F172A;font-weight:950;">主要風險</div>
+              {risks_html}
+              <div style="font-size:16px;color:#0F172A;font-weight:950;margin-top:16px;padding-top:12px;border-top:1px dashed #CBD5E1;">價格計畫</div>
+              <div style="font-size:14px;color:#334155;line-height:1.75;margin-top:5px;">• 趨勢失效參考：{bp['停損防守']}</div>
+              <div style="font-size:14px;color:#334155;line-height:1.75;margin-top:5px;">• 移動保護參考：{bp['移動停利']}</div>
+              <div style="font-size:14px;color:#334155;line-height:1.75;margin-top:5px;">• 情境目標參考：{bp['預期目標']}</div>
+            </div>
+            """, unsafe_allow_html=True)
 
-        st.markdown("### 🔮 AI 預告")
-        visible_forecasts = ai_forecast["scenarios"][:3]
-        forecast_cols = st.columns(len(visible_forecasts)) if visible_forecasts else []
-        for col, scenario in zip(forecast_cols, visible_forecasts):
-            with col:
-                st.markdown(f"""
-                <div style="background:#FFFFFF;border:1px solid #E2E8F0;border-top:6px solid {scenario['color']};padding:15px;border-radius:11px;min-height:205px;">
-                  <div style="font-size:13px;color:#475569;font-weight:900;line-height:1.55;">{scenario['title']}</div>
-                  <div style="font-size:19px;color:{scenario['color']};font-weight:950;margin:11px 0;">{scenario['result']}</div>
-                  <div style="font-size:13px;color:#64748B;line-height:1.65;">{scenario['detail']}</div>
-                </div>
-                """, unsafe_allow_html=True)
+        if decision_change.get("available"):
+            change_text = (
+                f"{decision_change['previous_date']}：{decision_change['previous_label']} "
+                f"→ 今天：{decision_change['current_label']}"
+            )
+            if not decision_change.get("changed"):
+                change_text = f"與前一交易日相比：維持「{decision_change['current_label']}」"
+            st.caption(change_text)
+        else:
+            st.caption("系統將從今天開始累積每日判斷紀錄。")
 
-        show_more_analysis = st.toggle("🔎 查看更多分析與判斷原因", value=False)
+        show_more_analysis = st.toggle("🔎 查看判斷依據、歷史與完整數據", value=False)
         if show_more_analysis:
-            st.markdown("### 🚦 AI 今日行動中心｜四個問題快速決策")
-            st.caption("以下不是四套不同判斷，而是同一套 Decision Engine 對買進、加碼、停損與今日焦點的統一回答。")
-            action_cols = st.columns(4)
-            for col, card in zip(action_cols, today_board["cards"]):
-                with col:
-                    st.markdown(f"""
-                    <div style="background:#FFFFFF;border:1px solid #E2E8F0;border-top:6px solid {card['color']};padding:17px;border-radius:12px;min-height:190px;box-shadow:0 2px 8px rgba(15,23,42,.05);">
-                      <div style="font-size:14px;color:#64748B;font-weight:900;">{card['question']}</div>
-                      <div style="font-size:23px;color:{card['color']};font-weight:950;margin:10px 0 9px 0;">{card['answer']}</div>
-                      <div style="font-size:14px;color:#334155;line-height:1.7;">{card['reason']}</div>
-                    </div>
-                    """, unsafe_allow_html=True)
+            detail_tab1, detail_tab2, detail_tab3 = st.tabs(["判斷依據", "決策歷史", "資料與模型"])
 
+            with detail_tab1:
+                st.markdown("#### 進場條件")
+                for item in decision_engine.get("checklist", []):
+                    mark = "✅" if item.get("passed") else "❌"
+                    st.markdown(f"{mark} **{item.get('name','')}**｜{item.get('current','')}")
+                    st.caption(item.get("why", ""))
 
-            # v61：決策原因、昨日比較、近七日軌跡、資料品質自我檢查
-            st.markdown("### 🧩 AI 決策解釋｜距離下一個燈號還差什麼")
-            missing_now = decision_engine.get("missing", []) or []
-            completed_now = int(decision_engine.get("completed", 0) or 0)
-            total_now = int(decision_engine.get("total", 0) or 0)
-            progress_pct = int(round(completed_now / total_now * 100)) if total_now else 0
+                st.markdown("#### 四個分析面向")
+                for member in committee.get("members", []):
+                    with st.expander(f"{member['avatar']} {member['role']}｜{member['label']}｜信心 {member['confidence']}%", expanded=False):
+                        st.write(member.get("summary", ""))
+                        for label, value in member.get("evidence", []):
+                            st.markdown(f"**{label}**｜{value}")
 
-            ex_col1, ex_col2 = st.columns([1.1, 0.9])
-            with ex_col1:
-                st.markdown(f"""
-                <div style="background:#FFFFFF;border:1px solid #E2E8F0;border-left:8px solid {decision_engine['color']};padding:19px;border-radius:12px;min-height:210px;">
-                  <div style="font-size:12px;color:#64748B;font-weight:900;">WHY THIS DECISION</div>
-                  <div style="font-size:23px;color:{decision_engine['color']};font-weight:950;margin-top:6px;">{decision_engine['label']}</div>
-                  <div style="font-size:15px;color:#334155;line-height:1.7;margin-top:8px;">{decision_engine['summary']}</div>
-                  <div style="margin-top:14px;height:11px;background:#E2E8F0;border-radius:999px;overflow:hidden;">
-                    <div style="width:{progress_pct}%;height:100%;background:{decision_engine['color']};"></div>
-                  </div>
-                  <div style="font-size:13px;color:#64748B;text-align:right;margin-top:6px;">完成 {completed_now} / {total_now}</div>
-                </div>
-                """, unsafe_allow_html=True)
-            with ex_col2:
-                if decision_engine.get("veto_reasons"):
-                    st.error("**風控否決權已啟動**\n\n" + "\n".join(f"🛡️ {x}" for x in decision_engine["veto_reasons"]))
-                elif missing_now:
-                    st.warning("**完成以下條件後，系統才可能升級燈號：**\n\n" + "\n".join(f"□ {x}" for x in missing_now))
+            with detail_tab2:
+                st.markdown("#### 與前一交易日比較")
+                if decision_change.get("available"):
+                    st.write(change_text)
+                    for reason in decision_change.get("reasons", []):
+                        st.markdown(f"• {reason}")
                 else:
-                    st.success("**五項條件皆已完成。**\n\n目前可依分批與風險預算執行，但仍不可忽略追高、風險報酬與趨勢失效檢查。")
+                    st.info(decision_change.get("headline", "目前沒有前一交易日資料。"))
 
-            compare_col, audit_col = st.columns(2)
-            with compare_col:
-                st.markdown("#### 🔄 昨天 vs 今天")
-                if decision_change["available"]:
-                    arrow = "→" if decision_change["changed"] else "＝"
-                    st.markdown(f"""
-                    <div style="background:#F8FAFC;border:1px solid #CBD5E1;padding:16px;border-radius:11px;">
-                      <div style="display:flex;justify-content:space-around;align-items:center;text-align:center;">
-                        <div><div style="font-size:12px;color:#64748B;">{decision_change['previous_date']}</div><div style="font-size:20px;font-weight:950;">{decision_change['previous_label']}</div><div style="font-size:12px;color:#64748B;">信心 {decision_change['previous_confidence']}%</div></div>
-                        <div style="font-size:28px;color:#64748B;">{arrow}</div>
-                        <div><div style="font-size:12px;color:#64748B;">今天</div><div style="font-size:20px;font-weight:950;color:{decision_engine['color']};">{decision_change['current_label']}</div><div style="font-size:12px;color:#64748B;">信心 {decision_change['current_confidence']}%</div></div>
-                      </div>
-                    </div>
-                    """, unsafe_allow_html=True)
-                    with st.expander("查看改變原因", expanded=True):
-                        for reason in decision_change["reasons"]:
-                            st.write(reason)
+                st.markdown("#### 近七日決策")
+                if decision_timeline:
+                    for row in decision_timeline:
+                        st.markdown(
+                            f"**{row.get('decision_date','')}｜{row.get('decision_label','—')}**　"
+                            f"條件 {int(row.get('completed',0) or 0)}/{int(row.get('total',0) or 0)}，"
+                            f"信心 {int(row.get('confidence',0) or 0)}%"
+                        )
                 else:
-                    st.info(decision_change["headline"])
-                    for reason in decision_change["reasons"]:
-                        st.caption(reason)
+                    st.info("尚無歷史紀錄。")
 
-            with audit_col:
-                st.markdown("#### 🧪 AI 資料品質")
-                st.markdown(f"**{data_quality_audit['stars']}　{data_quality_audit['score']}%**")
+            with detail_tab3:
+                st.markdown("#### 資料完整度")
                 st.progress(data_quality_audit["score"])
-                st.caption(f"可用資料 {data_quality_audit['available']} / {data_quality_audit['total']}。券商共識缺漏不會單獨否決核心技術決策。")
-                with st.expander("逐項查看資料是否可用", expanded=True):
-                    for item in data_quality_audit["items"]:
-                        icon = "✅" if item["available"] else "❌"
-                        st.markdown(f"{icon} **{item['name']}**｜{item['value']}")
+                st.caption(f"可用資料 {data_quality_audit['available']} / {data_quality_audit['total']}")
+                for item in data_quality_audit.get("items", []):
+                    icon = "✅" if item.get("available") else "❌"
+                    st.markdown(f"{icon} **{item.get('name','')}**｜{item.get('value','')}")
 
-            st.markdown("#### 🗓️ 近七日 AI Decision Timeline")
-            if decision_timeline:
-                timeline_cols = st.columns(min(len(decision_timeline), 7))
-                for col, row in zip(timeline_cols, decision_timeline):
-                    label = row.get("decision_label", "—")
-                    color = "#16A34A" if "布局" in label or "買" in label else "#DC2626" if "不建議" in label or "風險" in label else "#D97706"
-                    with col:
-                        st.markdown(f"""
-                        <div style="background:#FFFFFF;border:1px solid #E2E8F0;border-top:5px solid {color};padding:11px;border-radius:9px;text-align:center;min-height:128px;">
-                          <div style="font-size:11px;color:#64748B;">{str(row.get('decision_date',''))[5:]}</div>
-                          <div style="font-size:15px;font-weight:950;color:{color};margin-top:6px;">{label}</div>
-                          <div style="font-size:12px;color:#475569;margin-top:7px;">{int(row.get('completed',0) or 0)}/{int(row.get('total',0) or 0)}</div>
-                          <div style="font-size:11px;color:#64748B;">信心 {int(row.get('confidence',0) or 0)}%</div>
-                        </div>
-                        """, unsafe_allow_html=True)
-            else:
-                st.info("尚無歷史紀錄；系統會從今天開始，每檔股票每天保存一筆最新決策。")
-
-
-
-            today_brief = build_today_brief(res, compass, decision_engine, user_holding)
-            st.markdown("### 🗓️ AI 今日任務｜只看三件事")
-            st.markdown(f"""
-            <div style="background:linear-gradient(135deg,#0F172A 0%,#1E3A8A 100%);color:#FFFFFF;padding:20px 22px;border-radius:14px;margin-bottom:14px;box-shadow:0 6px 18px rgba(15,23,42,.16);">
-              <div style="font-size:12px;color:#BFDBFE;font-weight:900;letter-spacing:.08em;">TODAY'S COACHING NOTE</div>
-              <div style="font-size:22px;font-weight:950;line-height:1.55;margin-top:7px;">{today_brief['headline']}</div>
-            </div>
-            """, unsafe_allow_html=True)
-
-            priority_cols = st.columns(3)
-            for idx, (col, item) in enumerate(zip(priority_cols, today_brief["priorities"]), start=1):
-                with col:
-                    st.markdown(f"""
-                    <div style="background:#FFFFFF;border:1px solid #E2E8F0;padding:16px;border-radius:12px;min-height:175px;box-shadow:0 2px 8px rgba(15,23,42,.04);">
-                      <div style="font-size:12px;color:#2563EB;font-weight:950;">今天注意 {idx}</div>
-                      <div style="font-size:16px;color:#0F172A;font-weight:950;line-height:1.55;margin-top:6px;">{item['icon']} {item['title']}</div>
-                      <div style="font-size:13px;color:#475569;line-height:1.6;margin-top:9px;">{item['current']}</div>
-                      <div style="display:inline-block;margin-top:11px;padding:4px 9px;border-radius:999px;background:#EFF6FF;color:#1D4ED8;font-size:12px;font-weight:900;">{item['state']}</div>
-                    </div>
-                    """, unsafe_allow_html=True)
-
-            do_col, dont_col = st.columns(2)
-            with do_col:
-                st.success("**今天可以做**\n\n" + "\n".join(f"✅ {x}" for x in today_brief["can_do"]))
-            with dont_col:
-                st.error("**今天不要做**\n\n" + "\n".join(f"❌ {x}" for x in today_brief["avoid"]))
-
-            st.markdown("### 🧠 AI 投資委員會")
-            st.caption("首頁先呈現每位分析師的立場、信心與一句理由；需要時可展開查看數據依據與信心組成。")
-
-            committee_cols = st.columns(4)
-            for col, member in zip(committee_cols, committee["members"]):
-                with col:
-                    st.markdown(f"""
-                    <div style="background:#FFFFFF;border:1px solid #E2E8F0;border-top:5px solid {member['color']};padding:17px;border-radius:12px;min-height:225px;box-shadow:0 2px 8px rgba(15,23,42,.05);">
-                      <div style="font-size:18px;font-weight:950;color:#0F172A;">{member['avatar']} {member['role']}</div>
-                      <div style="font-size:20px;font-weight:950;color:{member['color']};margin:9px 0 3px 0;">{member['icon']} {member['label']}</div>
-                      <div style="font-size:13px;color:#64748B;font-weight:800;">信心：{member['confidence']}%</div>
-                      <div style="height:8px;background:#E2E8F0;border-radius:999px;overflow:hidden;margin:7px 0 13px 0;">
-                        <div style="width:{member['confidence']}%;height:100%;background:{member['color']};"></div>
-                      </div>
-                      <div style="font-size:14px;color:#334155;line-height:1.7;">{member['summary']}</div>
-                    </div>
-                    """, unsafe_allow_html=True)
-
-                    with st.expander("▼ 查看分析依據", expanded=show_evidence_default):
-                        for label, value in member["evidence"]:
-                            st.markdown(f"**{label}**  \n{value}")
-                    with st.expander("▼ 查看信心計算", expanded=False):
-                        if member["breakdown"]:
-                            for label, points in member["breakdown"]:
-                                sign = "+" if points > 0 else ""
-                                st.markdown(f"`{sign}{points}`　{label}")
-                        st.markdown(f"---\n**最終信心：{member['confidence']}%**")
-
-            cio_color = "#10B981" if committee["bearish"] == 0 and committee["bullish"] >= 2 else "#EF4444" if committee["bearish"] >= 2 else "#F59E0B"
-            stars = "★" * max(1, min(5, round(committee["cio_confidence"] / 20))) + "☆" * max(0, 5 - max(1, min(5, round(committee["cio_confidence"] / 20))))
-            st.markdown(f"""
-            <div style="background:#FFFFFF;border:2px solid {cio_color};border-left:8px solid {cio_color};padding:20px;border-radius:12px;margin:16px 0 10px 0;">
-              <div style="font-size:12px;color:#64748B;font-weight:900;letter-spacing:.08em;">CHIEF INVESTMENT OFFICER</div>
-              <div style="font-size:20px;color:#0F172A;font-weight:950;margin-top:5px;">🧠 AI 投資總監</div>
-              <div style="font-size:14px;color:#475569;margin-top:10px;">整體意見：偏多／可控 {committee['bullish']} 位、中性／保守 {committee['cautious']} 位、偏空 {committee['bearish']} 位</div>
-              <div style="font-size:13px;color:#64748B;font-weight:900;margin-top:16px;">🎯 最終決策</div>
-              <div style="font-size:25px;color:{cio_color};font-weight:950;margin:3px 0 8px 0;">{committee['cio']}</div>
-              <div style="font-size:14px;color:#475569;line-height:1.75;">{committee['cio_desc']}</div>
-              <div style="font-size:16px;color:#0F172A;font-weight:900;margin-top:13px;">{stars}　AI 信心：{committee['cio_confidence']}%</div>
-            </div>
-            <div style="background:#F8FAFC;border:1px solid #CBD5E1;padding:15px 18px;border-radius:10px;margin:0 0 24px 0;">
-              <div style="font-size:12px;color:#64748B;font-weight:900;">💬 今日一句話</div>
-              <div style="font-size:18px;color:#0F172A;font-weight:950;margin-top:4px;">{today_brief['headline']}</div>
-            </div>
-            """, unsafe_allow_html=True)
-
-            # Phase 4：AI 情境中心（把「發生什麼」直接翻成「下一步怎麼做」）
-            scenarios = build_ai_scenario_center(res, compass, committee, decision_engine)
-            st.markdown("### 🎬 AI 操作劇本｜情境中心")
-            st.caption("以下不是預測明天漲跌，而是預先設定：當價格真的走到該情境時，應該採取什麼行動。")
-
-            srow1 = st.columns(2)
-            srow2 = st.columns(2)
-            for col, scenario in zip(srow1 + srow2, scenarios):
-                with col:
-                    st.markdown(f"""
-                    <div style="background:#FFFFFF;border:1px solid #E2E8F0;border-left:7px solid {scenario['color']};padding:18px;border-radius:12px;min-height:235px;margin-bottom:14px;box-shadow:0 2px 8px rgba(15,23,42,.05);">
-                      <div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;">
-                        <div>
-                          <div style="font-size:18px;font-weight:950;color:#0F172A;">{scenario['icon']} {scenario['name']}</div>
-                          <div style="font-size:13px;color:#64748B;margin-top:3px;">參考價格：<b>{scenario['price']:.2f} 元</b></div>
-                        </div>
-                        <span style="background:{scenario['color']}18;color:{scenario['color']};border:1px solid {scenario['color']}55;padding:4px 9px;border-radius:999px;font-size:12px;font-weight:900;white-space:nowrap;">{scenario['tag']}</span>
-                      </div>
-                      <div style="font-size:16px;font-weight:900;color:#1E293B;margin-top:15px;">{scenario['title']}</div>
-                      <div style="font-size:14px;color:#334155;line-height:1.7;margin-top:10px;"><b>AI 建議：</b>{scenario['action']}</div>
-                      <div style="font-size:13px;color:#64748B;line-height:1.65;margin-top:10px;padding-top:10px;border-top:1px dashed #CBD5E1;"><b>需要確認：</b>{scenario['watch']}</div>
-                    </div>
-                    """, unsafe_allow_html=True)
-
-            with st.expander("📌 情境中心使用說明", expanded=False):
-                st.markdown("""
-                - **上漲／下跌百分比是壓力測試，不是漲跌預測。**
-                - 盤中觸價不等於確認，突破與跌破原則上仍要搭配收盤、量能及原始技術防線。
-                - 情境卡不會取代風險紀律；當價格收盤有效跌破趨勢失效價（風險防線）時，應優先處理風險。
-                """)
-
-            # Phase 5：AI 投資教練（依持有狀態與風險預算，翻成今天可執行的步驟）
-            # 沿用首頁已建立的單一 Decision Engine，避免不同區塊重複判斷。
-            coach = build_ai_investment_coach(
-                res, compass, committee, user_holding, user_cost, capital, risk_pct, decision_engine
-            )
-            st.markdown("### 🧑‍🏫 AI 投資教練｜今天該做什麼")
-            st.markdown(f"""
-            <div style="background:#FFFFFF;border:1px solid #E2E8F0;border-left:8px solid {coach['color']};padding:21px;border-radius:12px;margin:8px 0 14px 0;box-shadow:0 2px 8px rgba(15,23,42,.05);">
-              <div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap;">
-                <div>
-                  <div style="font-size:12px;color:#64748B;font-weight:900;letter-spacing:.08em;">PERSONAL ACTION COACH</div>
-                  <div style="font-size:23px;color:#0F172A;font-weight:950;margin-top:5px;">{coach['headline']}</div>
-                </div>
-                <span style="background:{coach['color']}18;color:{coach['color']};border:1px solid {coach['color']}55;padding:5px 11px;border-radius:999px;font-size:12px;font-weight:900;">{coach['status']}</span>
-              </div>
-              <div style="font-size:15px;color:#334155;line-height:1.75;margin-top:13px;"><b>教練指令：</b>{coach['primary']}</div>
-              <div style="font-size:13px;color:#64748B;margin-top:9px;">{coach['cost_text']}｜投資委員會信心 {coach['confidence']}%</div>
-            </div>
-            """, unsafe_allow_html=True)
-
-            coach_col1, coach_col2 = st.columns([1.15, 0.85])
-            with coach_col1:
-                st.markdown("#### ✅ AI 進場 Checklist")
-                st.markdown(f"**完成度：{decision_engine['completed']} / {decision_engine['total']}｜{decision_engine['label']}**")
-                for item in decision_engine["checklist"]:
-                    mark = "✅" if item["passed"] else "❌"
-                    st.markdown(f"{mark} **{item['name']}**  \n{item['current']}")
-                    with st.expander(f"為什麼要看：{item['name']}", expanded=False):
-                        st.write(item["why"])
-                if decision_engine["missing"]:
-                    st.warning("尚未達成：" + "、".join(decision_engine["missing"]))
-                else:
-                    st.success("五項技術條件皆已達成；仍須同時通過風控否決、買點與風險報酬檢查。")
-                st.info(f"執行節奏：{coach['pace']}")
-            with coach_col2:
-                st.markdown("#### 🧮 風險預算試算")
-                rc1, rc2 = st.columns(2)
-                with rc1:
-                    st.metric("單筆風險上限", f"{coach['max_risk_ntd']:,.0f} 元")
-                with rc2:
-                    st.metric("每股計畫風險", f"{coach['per_share_risk']:.2f} 元")
-                st.markdown(f"**建議評估價：** {coach['entry']:.2f} 元  ")
-                st.markdown(f"**趨勢失效價（風險防線）：** {coach['stop']:.2f} 元  ")
-                st.markdown(f"**第一目標區：** {coach['target1']:.2f} 元")
-                st.caption(coach["sizing_note"])
-
-            with st.expander("🔎 查看教練計算邏輯與限制", expanded=False):
-                st.markdown(f"""
-                - 核心資金池：**{capital:,.1f} 萬元**
-                - 單筆最大風險：**{risk_pct:.1f}%**，約 **{coach['max_risk_ntd']:,.0f} 元**
-                - 每股計畫風險：建議評估價減趨勢失效價（風險防線），約 **{coach['per_share_risk']:.2f} 元**
-                - 理論股數同時受「風險預算」與「可用資金」限制，最後取較小值。
-                - 此試算未納入手續費、交易稅、流動性、跳空與個人其他持倉，不等同下單建議。
-                """)
-
-
-            # Phase 6：AI 信心解釋中心（說明總信心從哪裡來，以及哪些因素正在扣分）
-            confidence_center = build_ai_confidence_center(res, compass, committee, decision_engine)
-            st.markdown("### 🔍 AI 信心解釋｜為什麼是這個分數？")
-            st.markdown(f"""
-            <div style="background:#FFFFFF;border:1px solid #E2E8F0;border-left:8px solid {confidence_center['color']};padding:20px;border-radius:12px;margin:8px 0 14px 0;box-shadow:0 2px 8px rgba(15,23,42,.05);">
-              <div style="display:flex;justify-content:space-between;gap:16px;align-items:center;flex-wrap:wrap;">
-                <div>
-                  <div style="font-size:12px;color:#64748B;font-weight:900;letter-spacing:.08em;">EXPLAINABLE CONFIDENCE</div>
-                  <div style="font-size:22px;color:#0F172A;font-weight:950;margin-top:5px;">{confidence_center['level']}｜{confidence_center['score']}%</div>
-                  <div style="font-size:14px;color:#475569;line-height:1.7;margin-top:8px;">{confidence_center['headline']}</div>
-                </div>
-                <div style="min-width:190px;">
-                  <div style="font-size:12px;color:#64748B;font-weight:800;margin-bottom:6px;">AI 總信心</div>
-                  <div style="height:12px;background:#E2E8F0;border-radius:999px;overflow:hidden;">
-                    <div style="width:{confidence_center['score']}%;height:100%;background:{confidence_center['color']};"></div>
-                  </div>
-                  <div style="font-size:12px;color:#64748B;margin-top:6px;text-align:right;">{confidence_center['score']} / 100</div>
-                </div>
-              </div>
-            </div>
-            """, unsafe_allow_html=True)
-
-            conf_col1, conf_col2 = st.columns([1.05, 0.95])
-            with conf_col1:
-                st.markdown("#### 影響總信心的關鍵因素")
-                for name, value, sign, desc in confidence_center["drivers"]:
-                    icon = "🟢" if sign == "+" else "🔴" if sign == "−" else "🟡"
-                    st.markdown(f"**{icon} {name}｜{value}**  \n{desc}")
-            with conf_col2:
-                st.markdown("#### 四位分析師信心分布")
-                for row in confidence_center["members"]:
-                    st.markdown(f"**{row['role']}｜{row['label']}｜{row['confidence']}%**")
-                    st.progress(max(0, min(100, row["confidence"])))
-
-            with st.expander("🧮 查看 AI 總信心計算方式", expanded=False):
-                st.markdown(f"**目前公式：** {confidence_center['formula']}")
-                st.markdown(f"""
-                - 四位分析師平均信心：**{confidence_center['average_member']:.1f}%**
-                - 資料完整度：**{confidence_center['quality']:.1f}%**
-                - 分析師最高與最低信心差距：**{confidence_center['spread']:.1f} 分**
-                - 最終 AI 信心：**{confidence_center['score']}%**
-                - 信心代表「現有證據的一致程度」，**不代表未來上漲機率，也不保證報酬**。
-                - 決策歷史使用本機 SQLite 儲存；若部署平台重建執行環境，歷史資料可能重置。
-                """)
-
-
+                confidence_center = build_ai_confidence_center(res, compass, committee, decision_engine)
+                with st.expander("查看信心計算方式", expanded=False):
+                    st.markdown(f"**目前公式：** {confidence_center['formula']}")
+                    st.markdown(f"四個分析面向平均信心：**{confidence_center['average_member']:.1f}%**")
+                    st.markdown(f"資料完整度：**{confidence_center['quality']:.1f}%**")
+                    st.markdown(f"分析面向信心差距：**{confidence_center['spread']:.1f} 分**")
+                    st.markdown(f"最終判斷信心：**{confidence_center['score']}%**")
+                    st.caption("信心代表現有證據的一致程度，不等於未來上漲機率。")
             # Phase 7：完整專業分析改為收合式，首頁維持 AI-first 閱讀順序
             st.markdown("### 📚 完整專業分析｜需要時再展開")
             st.markdown("""
