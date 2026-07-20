@@ -9,7 +9,7 @@ from urllib3.util.retry import Retry
 from FinMind.data import DataLoader
 
 # ============ 1. Page Config ============
-st.set_page_config(page_title="Project Compass v63｜極簡決策首頁", layout="wide")
+st.set_page_config(page_title="Project Compass v64｜資料顯示優化版", layout="wide")
 
 # ============ 2. Global Constants ============
 TZ = pytz.timezone("Asia/Taipei")
@@ -19,7 +19,7 @@ FUGLE_TOKEN = os.getenv("FUGLE_TOKEN", "") or st.secrets.get("FUGLE_TOKEN", "")
 # ============ 3. Helper Functions ============
 def safe_float(x, default=0.0):
     try:
-        if x is None or str(x).strip() in ["-", "", "None", "nan", "NaN"]: return default
+        if x is None or str(x).strip() in ["-", "", "資料不足", "nan", "NaN"]: return default
         return float(str(x).replace(",", "").replace("%", "").replace(" ", "").strip())
     except Exception: return default
 
@@ -424,7 +424,7 @@ def get_broker_consensus_data(stock_id: str, current_price: float):
                 t_mean = safe_float(fin_data.get("targetMeanPrice", {}).get("raw"))
                 t_high = safe_float(fin_data.get("targetHighPrice", {}).get("raw"))
                 t_low = safe_float(fin_data.get("targetLowPrice", {}).get("raw"))
-                rec_key = str(fin_data.get("recommendationKey", "N/A")).upper()
+                rec_key = str(fin_data.get("recommendationKey", "資料不足")).upper()
                 
                 if t_mean > 0:
                     rating_map = {"BUY": "🟢 建議買進", "STRONG_BUY": "👑 強烈加碼", "HOLD": "🟡 持有/中性", "SELL": "🔴 減碼/賣出"}
@@ -1189,6 +1189,7 @@ def build_ai_investment_committee(res: dict, compass: dict) -> dict:
     pv = str(ta.get("price_volume", "價量中性"))
     accumulation = str(ta.get("accumulation", "資金平衡"))
     divergence = str(ta.get("volume_divergence", "無明顯背離"))
+    volume_display = get_volume_display(ta)
     vol_ratio = float(ta.get("volume_ratio", 0) or 0)
     pv_score = 52
     pv_breakdown = []
@@ -1387,6 +1388,72 @@ def build_ai_scenario_center(res: dict, compass: dict, committee: dict, decision
 
 
 
+
+def is_missing_display_value(value) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, str) and value.strip().lower() in {"", "-", "none", "nan", "n/a", "null"}:
+        return True
+    try:
+        return bool(math.isnan(float(value)))
+    except (TypeError, ValueError):
+        return False
+
+
+def readable_value(value, unit: str = "", decimals: int = 2, zero_as_pending: bool = False) -> str:
+    if is_missing_display_value(value):
+        return "資料不足"
+    try:
+        number = float(value)
+        if zero_as_pending and number <= 0:
+            return "尚未更新"
+        return f"{number:,.{decimals}f}{unit}"
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def get_volume_display(ta: dict) -> dict:
+    raw = ta.get("volume_ratio")
+    if is_missing_display_value(raw):
+        return {
+            "icon": "⚪",
+            "current": "資料不足",
+            "passed": False,
+            "available": False,
+            "status": "unknown",
+        }
+
+    try:
+        ratio = float(raw)
+    except (TypeError, ValueError):
+        return {
+            "icon": "⚪",
+            "current": "資料格式異常",
+            "passed": False,
+            "available": False,
+            "status": "unknown",
+        }
+
+    if ratio <= 0:
+        return {
+            "icon": "⏳",
+            "current": "尚未更新",
+            "passed": False,
+            "available": False,
+            "status": "pending",
+        }
+
+    passed = ratio >= 1.20
+    return {
+        "icon": "✅" if passed else "❌",
+        "current": f"{ratio:.2f} 倍",
+        "passed": passed,
+        "available": True,
+        "status": "passed" if passed else "failed",
+    }
+
+
+
 def build_decision_engine(res: dict, compass: dict, committee: dict, user_holding: bool = False) -> dict:
     """全站單一 Decision Engine；風控否決權高於所有進場條件。"""
     ta = res.get("trend_analysis", {}) or {}
@@ -1408,7 +1475,7 @@ def build_decision_engine(res: dict, compass: dict, committee: dict, user_holdin
 
     price_ok = current >= entry if current > 0 and entry > 0 else False
     volume_direction_ok = "價跌量增" not in price_volume and "賣壓" not in price_volume
-    volume_ok = vol_ratio >= 1.20 and volume_direction_ok
+    volume_ok = volume_display["available"] and vol_ratio >= 1.20 and volume_direction_ok
     ma20_ok = ma20 > 0 and slope20 > 0 and current >= ma20
     direction_ok = not any(k in trend_state + long_term + medium_term for k in ["空頭", "趨勢破壞", "下跌段"])
     adx_ok = adx >= 25 and direction_ok
@@ -1417,8 +1484,9 @@ def build_decision_engine(res: dict, compass: dict, committee: dict, user_holdin
     checklist = [
         {"key":"price", "name":f"收盤站上建議評估價 {entry:.2f} 元", "passed":price_ok,
          "current":f"目前 {current:.2f} 元｜{compass.get('entry_zone_text','')}", "why":"收盤站上評估價才算價格確認；盤中觸價不算。若高於評估價太多，風控仍可否決追價。"},
-        {"key":"volume", "name":"成交量達近 20 日均量 1.20 倍，且不是下跌放量", "passed":volume_ok,
-         "current":f"目前 {vol_ratio:.2f} 倍｜{price_volume}", "why":"放量只有在價格方向健康時才是正向確認；下跌放量代表賣壓，不能列為進場加分。"},
+        {"key":"volume", "name":"成交量需達近 20 日均量 1.20 倍", "passed":volume_ok,
+         "current":f"目前 {volume_display['current']}｜{price_volume}" if volume_display["available"] else f"目前 {volume_display['current']}｜AI需求：至少 1.20 倍",
+         "why":"尚未更新或資料不足時，不會把 0.00 倍當成有效訊號；只有量能達標且不是下跌放量，才列為進場確認。"},
         {"key":"ma20", "name":"MA20 上揚且收盤位於 MA20 之上", "passed":ma20_ok,
          "current":f"MA20 {ma20:.2f} 元｜20日線斜率 {slope20:+.2f}%", "why":"同時要求均線方向向上與價格站上均線，避免把單日反彈誤認為趨勢恢復。"},
         {"key":"adx", "name":"ADX 至少 25，且主要趨勢方向不是空方", "passed":adx_ok,
@@ -2162,7 +2230,7 @@ def build_data_quality_audit(res: dict, decision: dict) -> dict:
         ("MA20 與斜率", valid_num(res.get("ma20_val", ta.get("ma20"))) and valid_num(ta.get("slope20"), allow_zero=True),
          f"MA20 {float(res.get('ma20_val', ta.get('ma20', 0)) or 0):.2f}｜斜率 {float(ta.get('slope20', 0) or 0):+.2f}%"),
         ("ADX", valid_num(ta.get("adx")), f"{float(ta.get('adx', 0) or 0):.1f}"),
-        ("OBV／資金累積", str(ta.get("accumulation", "")).strip() not in ["", "資料不足", "None"], str(ta.get("accumulation", "資料不足"))),
+        ("OBV／資金累積", str(ta.get("accumulation", "")).strip() not in ["", "資料不足", "資料不足"], str(ta.get("accumulation", "資料不足"))),
         ("法人籌碼", not any("法人" in str(x) for x in raw_missing), "可用" if not any("法人" in str(x) for x in raw_missing) else "缺漏"),
         ("券商目標價共識", not any("券商" in str(x) or "目標價" in str(x) for x in raw_missing),
          "可用" if not any("券商" in str(x) or "目標價" in str(x) for x in raw_missing) else "缺漏（不影響核心技術決策）"),
@@ -2192,8 +2260,8 @@ with st.sidebar:
     auto_refresh = st.checkbox("🔄 開啟盤中每 15 秒更新報價", value=False)
     show_evidence_default = st.checkbox("🔎 預設展開各項數據依據", value=False)
 
-st.markdown("## 🧭 Project Compass v63｜極簡決策首頁")
-st.caption("首頁只保留：今天怎麼做、如果我是你、AI 預告。其他內容需要時再展開。")
+st.markdown("## 🧭 Project Compass v64｜資料顯示優化版")
+st.caption("首頁維持極簡，並把 0.00、None、NaN 等工程數值翻成一般人看得懂的狀態。")
 stock_input = st.text_input("請輸入核心目標個股代碼：", value="3037")
 
 u_col1, u_col2 = st.columns(2)
@@ -2233,6 +2301,19 @@ if stock_input:
         """, unsafe_allow_html=True)
 
         with st.expander("💰 查看價格計畫與判斷證據", expanded=False):
+            volume_color = {
+                "passed": "#16A34A",
+                "failed": "#DC2626",
+                "pending": "#D97706",
+                "unknown": "#64748B",
+            }.get(volume_display["status"], "#64748B")
+            st.markdown(f"""
+            <div style="background:#FFFFFF;border:1px solid #E2E8F0;border-left:7px solid {volume_color};padding:15px;border-radius:10px;margin-bottom:14px;">
+              <div style="font-size:18px;font-weight:900;color:#0F172A;">{volume_display['icon']} 成交量</div>
+              <div style="font-size:16px;color:#334155;margin-top:6px;">目前：<b>{volume_display['current']}</b></div>
+              <div style="font-size:14px;color:#64748B;margin-top:4px;">AI需求：至少 1.20 倍</div>
+            </div>
+            """, unsafe_allow_html=True)
             hc1, hc2, hc3, hc4 = st.columns(4)
             with hc1: st.metric("目前股價", f"{res['current_price']:.2f} 元")
             with hc2: st.metric("建議評估價", f"{compass['entry']:.2f} 元")
@@ -2256,6 +2337,7 @@ if stock_input:
 
         # Phase 3：AI 投資委員會正式版（第一層摘要＋分析依據＋信心計算）
         committee = build_ai_investment_committee(res, compass)
+        volume_display = get_volume_display(res.get("trend_analysis", {}) or {})
         decision_engine = build_decision_engine(res, compass, committee, user_holding)
         committee = align_committee_with_decision(committee, decision_engine)
 
