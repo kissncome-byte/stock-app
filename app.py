@@ -593,7 +593,7 @@ def detect_swing_structure(df: pd.DataFrame, window: int = 3):
     return {"label":label, "higher_high":hh, "higher_low":hl, "lower_high":lh, "lower_low":ll,
             "last_swing_high":highs[-1][1] if highs else None, "last_swing_low":lows[-1][1] if lows else None}
 
-def classify_trend_and_models(df: pd.DataFrame, weekly: pd.DataFrame, current_price: float, current_vol_shares: float):
+def classify_trend_and_models(df: pd.DataFrame, weekly: pd.DataFrame, current_price: float, current_vol_shares: float, volume_valid: bool = True):
     last = df.iloc[-1]
     structure = detect_swing_structure(df.tail(150).reset_index(drop=True))
     ma10, ma20, ma60 = map(float, [last.get("MA10", np.nan), last["MA20"], last["MA60"]])
@@ -603,7 +603,7 @@ def classify_trend_and_models(df: pd.DataFrame, weekly: pd.DataFrame, current_pr
     atr, vol_ma20 = safe_float(last.get("ATR14"),1), safe_float(last.get("MA20_Vol"),1)
     peak60 = float(df["high"].tail(60).max())
     drawdown = (current_price/peak60-1)*100 if peak60>0 else 0
-    volume_ratio = current_vol_shares/vol_ma20 if vol_ma20>0 else 0
+    volume_ratio = current_vol_shares/vol_ma20 if volume_valid and vol_ma20>0 else 0
     pullback_volume_ratio = float(df["vol"].tail(5).mean()/vol_ma20) if vol_ma20>0 else 0
     weekly_ok = False
     weekly_desc = "週線資料不足"
@@ -631,7 +631,9 @@ def classify_trend_and_models(df: pd.DataFrame, weekly: pd.DataFrame, current_pr
 
     upv, dnv = safe_float(last.get("UP_VOL20")), safe_float(last.get("DOWN_VOL20"))
     cmf, obv = safe_float(last.get("CMF20")), safe_float(last.get("OBV")); obvma=safe_float(last.get("OBV_MA20"))
-    if current_price>=ma20 and volume_ratio>=1.3: price_volume="價漲量增，買盤積極"
+    if not volume_valid:
+        price_volume="成交量資料尚未更新"
+    elif current_price>=ma20 and volume_ratio>=1.3: price_volume="價漲量增，買盤積極"
     elif current_price<ma20 and pullback_volume_ratio<=0.9 and long_bull: price_volume="價跌量縮，較像多頭拉回"
     elif current_price<ma20 and volume_ratio>=1.3: price_volume="價跌量增，賣壓需警戒"
     elif current_price>=ma20 and volume_ratio<0.8: price_volume="價漲量縮，追價力道不足"
@@ -640,7 +642,7 @@ def classify_trend_and_models(df: pd.DataFrame, weekly: pd.DataFrame, current_pr
     divergence = "出現價格創高但OBV未創高的量價背離" if bool(last.get("BEARISH_VOL_DIVERGENCE",False)) else "未見明顯空方量價背離"
     return {"long_term":long_label, "medium_term":medium_label, "short_term":short_label, "weekly_desc":weekly_desc,
             "trend_strength":trend_strength, "adx":adx, "structure":structure, "drawdown_pct":drawdown,
-            "volume_ratio":volume_ratio, "pullback_volume_ratio":pullback_volume_ratio, "price_volume":price_volume,
+            "volume_ratio":volume_ratio, "volume_valid":volume_valid, "pullback_volume_ratio":pullback_volume_ratio, "price_volume":price_volume,
             "accumulation":accumulation, "volume_divergence":divergence, "entry_model":model, "entry_ready":model_ready,
             "breakout_model":breakout, "pullback_model":pullback, "retest_model":retest, "base_model":base_turn,
             "stop_candle":stop_candle, "ma10":ma10, "ma120":ma120, "ma240":ma240,
@@ -667,7 +669,8 @@ def resolve_trend_state(stock_id: str, analysis: dict, current_price: float, str
     elif analysis["entry_model"]=="築底轉強": state="趨勢轉強"
     elif analysis["medium_term"]=="築底": state="築底"
     else: state="觀察"
-    reason = f"長期={analysis['long_term']}；中期={analysis['medium_term']}；短期={analysis['short_term']}；量比={volume_ratio:.2f}；原始結構停損價={structure_stop:.2f}"
+    volume_reason = f"{volume_ratio:.2f}" if analysis.get("volume_valid", False) else "尚未更新"
+    reason = f"長期={analysis['long_term']}；中期={analysis['medium_term']}；短期={analysis['short_term']}；量比={volume_reason}；原始結構停損價={structure_stop:.2f}"
     now={"state":state,"weak_days":weak_days,"break_days":break_days,"reason":reason}
     if prev.get("state") != state:
         log_key=f"trend_log_{stock_id}"
@@ -745,9 +748,11 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     t = tick_size(current_price)
     df_for_indicators = df_raw.copy().sort_values("date").reset_index(drop=True)
     
-    if rt_success:
+    # 只有價格與成交量都有效時，才把盤中資料寫入日線指標。
+    # 避免「價格抓到、成交量沒抓到」時，把 0 張寫進日線並污染量比與均量。
+    if rt_success and volume_valid:
         if str(df_for_indicators.iloc[-1]["date"]) == today_str:
-            df_for_indicators.loc[df_for_indicators.index[-1], ["close", "vol"]] = [rt_close, rt_vol_lots * 1000.0]
+            df_for_indicators.loc[df_for_indicators.index[-1], ["open", "high", "low", "close", "vol"]] = [rt_open, rt_high, rt_low, rt_close, rt_vol_lots * 1000.0]
         else:
             df_for_indicators = pd.concat([df_for_indicators, pd.DataFrame([{"date": today_str, "open": float(rt_open), "high": float(rt_high), "low": float(rt_low), "close": float(rt_close), "vol": float(rt_vol_lots * 1000.0), "amount": float(rt_close * rt_vol_lots * 1000.0)}])], ignore_index=True)
 
@@ -762,7 +767,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     rsi_now, macd_hist, atr = safe_float(hist_last.get("RSI14", 50.0)), safe_float(hist_last.get("MACD_HIST", 0.0)), safe_float(hist_last.get("ATR14", 1.0))
     k9_now, d9_now = safe_float(hist_last.get("K9", 50.0)), safe_float(hist_last.get("D9", 50.0))
     weekly_df = build_weekly_indicators(df_for_indicators)
-    trend_analysis = classify_trend_and_models(df, weekly_df, current_price, current_vol * 1000.0)
+    trend_analysis = classify_trend_and_models(df, weekly_df, current_price, current_vol * 1000.0, volume_valid=volume_valid)
     swing = trend_analysis["structure"]
     structure_stop_raw = swing.get("last_swing_low") or float(hist_last.get("Sup_20D", current_price - 2*atr))
     structure_stop = floor_to_tick(min(structure_stop_raw, ma20_val - 0.5*atr) if trend_analysis["long_term"]=="長期多頭" else structure_stop_raw, t)
@@ -822,7 +827,8 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     elif k9_now > 70: kd_timing = "隨機指標在 70 以上高檔鈍化（超買強勢）。"
     else: kd_timing = f"KD 指標目前在 20~70 之間常態區洗盤 (K={k9_now:.1f} / D={d9_now:.1f})。"
     bb_stage = "多頭主導（MACD 柱狀體在零軸上方安全區）。" if macd_hist >= 0 else "空頭修正（MACD 柱狀體在零軸下方收縮）。"
-    volume_verdict = f"{trend_analysis['price_volume']}；{trend_analysis['accumulation']}；{trend_analysis['volume_divergence']}。RSI14={rsi_now:.1f}，量比={trend_analysis['volume_ratio']:.2f}。"
+    volume_verdict = (f"{trend_analysis['price_volume']}；{trend_analysis['accumulation']}；{trend_analysis['volume_divergence']}。RSI14={rsi_now:.1f}，量比={trend_analysis['volume_ratio']:.2f}。"
+                      if volume_valid else f"成交量資料尚未更新；目前不判斷量比與價量關係。RSI14={rsi_now:.1f}。")
 
     rev_df = get_rev_df(stock_id, days=730)
     if rev_df is not None and not rev_df.empty:
@@ -1210,9 +1216,13 @@ def build_ai_investment_committee(res: dict, compass: dict) -> dict:
     accumulation = str(ta.get("accumulation", "資金平衡"))
     divergence = str(ta.get("volume_divergence", "無明顯背離"))
     vol_ratio = float(ta.get("volume_ratio", 0) or 0)
+    volume_valid = bool(res.get("volume_valid", ta.get("volume_valid", False)))
     pv_score = 52
     pv_breakdown = []
-    if "價漲量增" in pv:
+    if not volume_valid:
+        pv_score = 50
+        pv_breakdown.append(("成交量資料尚未更新", 0))
+    elif "價漲量增" in pv:
         pv_score += 20; pv_breakdown.append(("價漲量增", +20))
     elif "價跌量增" in pv:
         pv_score -= 22; pv_breakdown.append(("價跌量增", -22))
@@ -1226,9 +1236,9 @@ def build_ai_investment_committee(res: dict, compass: dict) -> dict:
         pv_score += 6; pv_breakdown.append(("未見背離", +6))
     elif "背離" in divergence:
         pv_score -= 8; pv_breakdown.append(("出現背離", -8))
-    if vol_ratio >= 1.2:
+    if volume_valid and vol_ratio >= 1.2:
         pv_score += 7; pv_breakdown.append(("量比高於 1.2", +7))
-    elif 0 < vol_ratio < 0.8:
+    elif volume_valid and 0 < vol_ratio < 0.8:
         pv_score -= 5; pv_breakdown.append(("量能不足", -5))
     pv_conf = clamp(pv_score)
     if pv_conf >= 66:
@@ -1418,6 +1428,7 @@ def build_decision_engine(res: dict, compass: dict, committee: dict, user_holdin
     slope20 = float(ta.get("slope20", 0) or 0)
     adx = float(ta.get("adx", 0) or 0)
     vol_ratio = float(ta.get("volume_ratio", 0) or 0)
+    volume_valid = bool(res.get("volume_valid", ta.get("volume_valid", False)))
     accumulation = str(ta.get("accumulation", "資料不足"))
     price_volume = str(ta.get("price_volume", "資料不足"))
     trend_state = str(res.get("trend_state", "觀察"))
@@ -1428,7 +1439,7 @@ def build_decision_engine(res: dict, compass: dict, committee: dict, user_holdin
 
     price_ok = current >= entry if current > 0 and entry > 0 else False
     volume_direction_ok = "價跌量增" not in price_volume and "賣壓" not in price_volume
-    volume_ok = vol_ratio >= 1.20 and volume_direction_ok
+    volume_ok = volume_valid and vol_ratio >= 1.20 and volume_direction_ok
     ma20_ok = ma20 > 0 and slope20 > 0 and current >= ma20
     direction_ok = not any(k in trend_state + long_term + medium_term for k in ["空頭", "趨勢破壞", "下跌段"])
     adx_ok = adx >= 25 and direction_ok
@@ -1438,7 +1449,7 @@ def build_decision_engine(res: dict, compass: dict, committee: dict, user_holdin
         {"key":"price", "name":f"收盤站上建議評估價 {entry:.2f} 元", "passed":price_ok,
          "current":f"目前 {current:.2f} 元｜{compass.get('entry_zone_text','')}", "why":"收盤站上評估價才算價格確認；盤中觸價不算。若高於評估價太多，風控仍可否決追價。"},
         {"key":"volume", "name":"成交量需達近 20 日均量 1.20 倍", "passed":volume_ok,
-         "current":(f"目前 {vol_ratio:.2f} 倍｜{price_volume}" if vol_ratio > 0 else "目前尚未更新｜AI需求：至少 1.20 倍"),
+         "current":(f"目前 {vol_ratio:.2f} 倍｜{price_volume}" if volume_valid else "目前尚未更新｜AI需求：至少 1.20 倍"),
          "why":"放量只有在價格方向健康時才是正向確認；下跌放量代表賣壓，不能列為進場加分。"},
         {"key":"ma20", "name":"MA20 上揚且收盤位於 MA20 之上", "passed":ma20_ok,
          "current":f"MA20 {ma20:.2f} 元｜20日線斜率 {slope20:+.2f}%", "why":"同時要求均線方向向上與價格站上均線，避免把單日反彈誤認為趨勢恢復。"},
@@ -2179,8 +2190,8 @@ def build_data_quality_audit(res: dict, decision: dict) -> dict:
 
     items = [
         ("收盤／即時價格", valid_num(res.get("current_price")), f"{float(res.get('current_price', 0) or 0):.2f} 元"),
-        ("成交量比率", valid_num(ta.get("volume_ratio")),
-         f"{float(ta.get('volume_ratio', 0) or 0):.2f} 倍" if float(ta.get("volume_ratio", 0) or 0) > 0 else "尚未更新"),
+        ("成交量比率", bool(res.get("volume_valid", False)) and valid_num(ta.get("volume_ratio"), allow_zero=True),
+         f"{float(ta.get('volume_ratio', 0) or 0):.2f} 倍" if bool(res.get("volume_valid", False)) else "尚未更新"),
         ("MA20 與斜率", valid_num(res.get("ma20_val", ta.get("ma20"))) and valid_num(ta.get("slope20"), allow_zero=True),
          f"MA20 {float(res.get('ma20_val', ta.get('ma20', 0)) or 0):.2f}｜斜率 {float(ta.get('slope20', 0) or 0):+.2f}%"),
         ("ADX", valid_num(ta.get("adx")), f"{float(ta.get('adx', 0) or 0):.1f}"),
@@ -2722,7 +2733,7 @@ if stock_input:
                         {"項目":"最近波段低點", "數值":f"{swing_low:.2f} 元" if swing_low else "資料不足", "判斷用途":"趨勢失效與低點是否墊高"},
                         {"項目":"趨勢失效參考價", "數值":f"{res['structure_stop']:.2f} 元", "判斷用途":"跌破不等於立刻賣出，需搭配收盤、量能與連續天數確認"},
                         {"項目":"ADX14", "數值":f"{ta['adx']:.1f}", "判斷用途":"低於18偏震盪；18至25趨勢形成；25以上趨勢較明確"},
-                        {"項目":"當日量比", "數值":f"{ta['volume_ratio']:.2f} 倍" if float(ta.get("volume_ratio", 0) or 0) > 0 else "尚未更新", "判斷用途":"相對20日均量；1.3倍以上視為明顯放量參考"},
+                        {"項目":"當日量比", "數值":f"{ta['volume_ratio']:.2f} 倍" if bool(res.get("volume_valid", False)) else "尚未更新", "判斷用途":"相對20日均量；1.3倍以上視為明顯放量參考"},
                         {"項目":"近5日拉回量比", "數值":f"{ta['pullback_volume_ratio']:.2f} 倍", "判斷用途":"0.9倍以下視為拉回量縮參考"},
                         {"項目":"距60日高點回檔", "數值":f"{ta['drawdown_pct']:.1f}%", "判斷用途":"辨識追高、正常拉回或深度修正"},
                         {"項目":"量價背離", "數值":ta['volume_divergence'], "判斷用途":"價格創高時資金是否同步"},
