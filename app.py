@@ -1422,6 +1422,76 @@ def build_decision_engine(res: dict, compass: dict, committee: dict, user_holdin
         "entry": entry, "stop": stop, "target1": target1, "trend_state": trend_state,
     }
 
+def build_today_action_board(res: dict, compass: dict, decision: dict, user_holding: bool = False) -> dict:
+    """把 Decision Engine 濃縮成首頁四個可立即回答的行動問題。"""
+    current = float(res.get("current_price", 0) or 0)
+    entry = float(decision.get("entry", compass.get("entry", 0)) or 0)
+    stop = float(decision.get("stop", compass.get("stop", 0)) or 0)
+    target1 = float(decision.get("target1", compass.get("target1", 0)) or 0)
+    completed = int(decision.get("completed", 0) or 0)
+    total = int(decision.get("total", 0) or 0)
+    missing = decision.get("missing", []) or []
+
+    if decision.get("stop_broken"):
+        buy_answer, buy_color = "🔴 不可以", "#DC2626"
+        buy_reason = f"目前已到或跌破 {stop:.2f} 元風險防線，先處理風險。"
+    elif decision.get("buy"):
+        buy_answer, buy_color = "🟢 可以分批", "#16A34A"
+        buy_reason = f"進場條件已完成 {completed}/{total}，第一筆仍以小部位為主。"
+    elif completed >= 3:
+        buy_answer, buy_color = "🟡 先等待", "#D97706"
+        buy_reason = f"目前完成 {completed}/{total}，還差 {len(missing)} 項確認條件。"
+    else:
+        buy_answer, buy_color = "🔴 暫不建議", "#DC2626"
+        buy_reason = f"目前只完成 {completed}/{total}，量價與趨勢證據不足。"
+
+    if not user_holding:
+        add_answer, add_color = "⚪ 尚未持有", "#64748B"
+        add_reason = "先完成第一筆進場，不把『買進』與『加碼』混在一起。"
+    elif decision.get("stop_broken"):
+        add_answer, add_color = "🔴 不可加碼", "#DC2626"
+        add_reason = "風險防線已失守，不以攤平取代停損紀律。"
+    elif decision.get("add"):
+        add_answer, add_color = "🟢 可小量加碼", "#16A34A"
+        add_reason = "五項條件完整且尚未逼近第一目標區。"
+    elif decision.get("near_pressure"):
+        add_answer, add_color = "🟠 不建議", "#F97316"
+        add_reason = f"目前已接近第一目標區 {target1:.2f} 元，追價報酬風險比下降。"
+    else:
+        add_answer, add_color = "🟡 等待確認", "#D97706"
+        add_reason = f"目前進場條件完成 {completed}/{total}，尚不足以增加曝險。"
+
+    if not user_holding:
+        stop_answer, stop_color = "⚪ 無持倉", "#64748B"
+        stop_reason = f"先記住未來的風險防線 {stop:.2f} 元，再考慮下單。" if stop > 0 else "風險防線資料不足，暫不建立新部位。"
+    elif decision.get("stop_broken"):
+        stop_answer, stop_color = "🔴 需要處理", "#DC2626"
+        stop_reason = f"收盤若無法站回 {stop:.2f} 元，依原計畫減碼或退出。"
+    else:
+        stop_answer, stop_color = "🟢 暫不需要", "#16A34A"
+        buffer_pct = ((current / stop) - 1) * 100 if stop > 0 else 0
+        stop_reason = f"目前仍高於風險防線約 {buffer_pct:.1f}%，每日以收盤確認。" if stop > 0 else "風險防線資料不足，需先補齊。"
+
+    failed_items = [i for i in decision.get("checklist", []) if not i.get("passed")]
+    if decision.get("stop_broken"):
+        focus = f"先確認收盤能否站回 {stop:.2f} 元風險防線。"
+    elif failed_items:
+        first = failed_items[0]
+        focus = f"今天最重要：{first.get('name', '等待條件確認')}；{first.get('current', '')}。"
+    else:
+        focus = f"條件已齊，第一筆分批後仍要守住 {stop:.2f} 元風險防線。"
+
+    return {
+        "cards": [
+            {"question": "今天可以買嗎？", "answer": buy_answer, "reason": buy_reason, "color": buy_color},
+            {"question": "今天可以加碼嗎？", "answer": add_answer, "reason": add_reason, "color": add_color},
+            {"question": "今天需要停損嗎？", "answer": stop_answer, "reason": stop_reason, "color": stop_color},
+            {"question": "今天最重要的是？", "answer": "🎯 只看一件事", "reason": focus, "color": "#2563EB"},
+        ],
+        "focus": focus,
+    }
+
+
 def build_ai_investment_coach(res: dict, compass: dict, committee: dict, user_holding: bool, user_cost: float, capital_wan: float, risk_pct: float, decision_engine: dict = None) -> dict:
     """依使用者是否持有，將既有價位與風險資料整理成可執行的個人化教練指令。"""
     current = float(res.get("current_price", 0) or 0)
@@ -1579,7 +1649,7 @@ with st.sidebar:
     show_evidence_default = st.checkbox("🔎 預設展開各項數據依據", value=False)
 
 st.markdown("## 🧭 Project Compass v60｜AI 股票決策平台")
-st.caption("先看 AI 決策，再看投資委員會、情境劇本與個人化教練；需要時再展開完整專業分析。Phase 11 已建立單一 Decision Engine，AI 教練會直接顯示可執行的收盤、量能、均線、ADX 與資金條件。")
+st.caption("先用首頁四個問題快速確認買進、加碼、停損與今日焦點，再查看投資委員會、操作劇本及完整分析。Phase 12 的所有答案皆由同一套 Decision Engine 產生。")
 stock_input = st.text_input("請輸入核心目標個股代碼：", value="3037")
 
 u_col1, u_col2 = st.columns(2)
@@ -1632,6 +1702,22 @@ if stock_input:
 
         # Phase 3：AI 投資委員會正式版（第一層摘要＋分析依據＋信心計算）
         committee = build_ai_investment_committee(res, compass)
+        decision_engine = build_decision_engine(res, compass, committee, user_holding)
+        today_board = build_today_action_board(res, compass, decision_engine, user_holding)
+
+        st.markdown("### 🚦 AI 今日行動中心｜四個問題快速決策")
+        st.caption("以下不是四套不同判斷，而是同一套 Decision Engine 對買進、加碼、停損與今日焦點的統一回答。")
+        action_cols = st.columns(4)
+        for col, card in zip(action_cols, today_board["cards"]):
+            with col:
+                st.markdown(f"""
+                <div style="background:#FFFFFF;border:1px solid #E2E8F0;border-top:6px solid {card['color']};padding:17px;border-radius:12px;min-height:190px;box-shadow:0 2px 8px rgba(15,23,42,.05);">
+                  <div style="font-size:14px;color:#64748B;font-weight:900;">{card['question']}</div>
+                  <div style="font-size:23px;color:{card['color']};font-weight:950;margin:10px 0 9px 0;">{card['answer']}</div>
+                  <div style="font-size:14px;color:#334155;line-height:1.7;">{card['reason']}</div>
+                </div>
+                """, unsafe_allow_html=True)
+
         st.markdown("### 🧠 AI 投資委員會")
         st.caption("首頁先呈現每位分析師的立場、信心與一句理由；需要時可展開查看數據依據與信心組成。")
 
@@ -1710,7 +1796,7 @@ if stock_input:
             """)
 
         # Phase 5：AI 投資教練（依持有狀態與風險預算，翻成今天可執行的步驟）
-        decision_engine = build_decision_engine(res, compass, committee, user_holding)
+        # 沿用首頁已建立的單一 Decision Engine，避免不同區塊重複判斷。
         coach = build_ai_investment_coach(
             res, compass, committee, user_holding, user_cost, capital, risk_pct, decision_engine
         )
