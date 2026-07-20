@@ -1,4 +1,4 @@
-import os, time, math, requests, certifi, pytz, urllib.parse
+import os, time, math, json, sqlite3, requests, certifi, pytz, urllib.parse
 import pandas as pd
 import numpy as np
 import streamlit as st
@@ -9,7 +9,7 @@ from urllib3.util.retry import Retry
 from FinMind.data import DataLoader
 
 # ============ 1. Page Config ============
-st.set_page_config(page_title="Project Compass v60 正式版｜AI 股票決策平台", layout="wide")
+st.set_page_config(page_title="Project Compass v61｜智慧決策追蹤版", layout="wide")
 
 # ============ 2. Global Constants ============
 TZ = pytz.timezone("Asia/Taipei")
@@ -1803,6 +1803,210 @@ def build_ai_confidence_center(res: dict, compass: dict, committee: dict, decisi
         "formula": f"分析師平均 {avg_member:.0f}% × 75% ＋ 資料完整度 {quality:.0f}% × 25%",
     }
 
+
+# ============ 9.5 Decision History & Explainability ============
+HISTORY_DB = os.getenv("PROJECT_COMPASS_DB", "project_compass_history.db")
+
+def init_decision_history_db() -> None:
+    """建立每日決策快照資料表。Streamlit Cloud 重新部署後本機資料可能重置。"""
+    try:
+        with sqlite3.connect(HISTORY_DB, timeout=5) as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS decision_history (
+                    stock_id TEXT NOT NULL,
+                    stock_name TEXT,
+                    decision_date TEXT NOT NULL,
+                    captured_at TEXT NOT NULL,
+                    current_price REAL,
+                    decision_label TEXT,
+                    decision_status TEXT,
+                    confidence INTEGER,
+                    completed INTEGER,
+                    total INTEGER,
+                    entry_price REAL,
+                    stop_price REAL,
+                    target_price REAL,
+                    data_quality REAL,
+                    missing_conditions TEXT,
+                    veto_reasons TEXT,
+                    PRIMARY KEY (stock_id, decision_date)
+                )
+            """)
+            conn.commit()
+    except Exception as exc:
+        log_error("init_decision_history_db", exc)
+
+def fetch_previous_decision(stock_id: str, before_date: str) -> dict | None:
+    try:
+        with sqlite3.connect(HISTORY_DB, timeout=5) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute("""
+                SELECT * FROM decision_history
+                WHERE stock_id = ? AND decision_date < ?
+                ORDER BY decision_date DESC
+                LIMIT 1
+            """, (str(stock_id), before_date)).fetchone()
+            return dict(row) if row else None
+    except Exception as exc:
+        log_error("fetch_previous_decision", exc)
+        return None
+
+def fetch_decision_timeline(stock_id: str, limit: int = 7) -> list[dict]:
+    try:
+        with sqlite3.connect(HISTORY_DB, timeout=5) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute("""
+                SELECT * FROM decision_history
+                WHERE stock_id = ?
+                ORDER BY decision_date DESC
+                LIMIT ?
+            """, (str(stock_id), int(limit))).fetchall()
+            return [dict(row) for row in reversed(rows)]
+    except Exception as exc:
+        log_error("fetch_decision_timeline", exc)
+        return []
+
+def save_daily_decision_snapshot(res: dict, compass: dict, committee: dict, decision: dict) -> None:
+    """同一股票同一天只保留最新快照，避免 Streamlit rerun 產生大量重複紀錄。"""
+    now = datetime.now(TZ)
+    payload = (
+        str(res.get("stock_id", "")),
+        str(res.get("stock_name", "")),
+        now.strftime("%Y-%m-%d"),
+        now.strftime("%Y-%m-%d %H:%M:%S"),
+        float(res.get("current_price", 0) or 0),
+        str(decision.get("label", "")),
+        str(decision.get("status", "")),
+        int(committee.get("cio_confidence", compass.get("confidence", 0)) or 0),
+        int(decision.get("completed", 0) or 0),
+        int(decision.get("total", 0) or 0),
+        float(decision.get("entry", compass.get("entry", 0)) or 0),
+        float(decision.get("stop", compass.get("stop", 0)) or 0),
+        float(decision.get("target1", compass.get("target1", 0)) or 0),
+        float(res.get("data_quality_score", 0) or 0),
+        json.dumps(decision.get("missing", []) or [], ensure_ascii=False),
+        json.dumps(decision.get("veto_reasons", []) or [], ensure_ascii=False),
+    )
+    try:
+        with sqlite3.connect(HISTORY_DB, timeout=5) as conn:
+            conn.execute("""
+                INSERT INTO decision_history (
+                    stock_id, stock_name, decision_date, captured_at, current_price,
+                    decision_label, decision_status, confidence, completed, total,
+                    entry_price, stop_price, target_price, data_quality,
+                    missing_conditions, veto_reasons
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(stock_id, decision_date) DO UPDATE SET
+                    stock_name=excluded.stock_name,
+                    captured_at=excluded.captured_at,
+                    current_price=excluded.current_price,
+                    decision_label=excluded.decision_label,
+                    decision_status=excluded.decision_status,
+                    confidence=excluded.confidence,
+                    completed=excluded.completed,
+                    total=excluded.total,
+                    entry_price=excluded.entry_price,
+                    stop_price=excluded.stop_price,
+                    target_price=excluded.target_price,
+                    data_quality=excluded.data_quality,
+                    missing_conditions=excluded.missing_conditions,
+                    veto_reasons=excluded.veto_reasons
+            """, payload)
+            conn.commit()
+    except Exception as exc:
+        log_error("save_daily_decision_snapshot", exc)
+
+def build_decision_change(previous: dict | None, current: dict, current_confidence: int) -> dict:
+    """將前一個交易日與今日決策差異翻成可讀原因。"""
+    if not previous:
+        return {
+            "available": False,
+            "headline": "尚無前一日紀錄",
+            "reasons": ["從今天開始累積每日快照，下一個交易日即可顯示決策變化。"],
+        }
+
+    prev_missing = set(json.loads(previous.get("missing_conditions") or "[]"))
+    now_missing = set(current.get("missing", []) or [])
+    completed_now = sorted(prev_missing - now_missing)
+    newly_missing = sorted(now_missing - prev_missing)
+    reasons = []
+
+    for item in completed_now[:3]:
+        reasons.append(f"✅ 新增達成：{item}")
+    for item in newly_missing[:3]:
+        reasons.append(f"❌ 轉為未達：{item}")
+
+    price_now = float(current.get("current", 0) or 0)
+    price_prev = float(previous.get("current_price", 0) or 0)
+    if price_prev > 0:
+        change_pct = (price_now / price_prev - 1) * 100
+        if abs(change_pct) >= 1:
+            reasons.append(f"股價較前次紀錄 {change_pct:+.1f}%")
+
+    prev_veto = set(json.loads(previous.get("veto_reasons") or "[]"))
+    now_veto = set(current.get("veto_reasons", []) or [])
+    for item in sorted(now_veto - prev_veto)[:2]:
+        reasons.append(f"🛡️ 新增風控否決：{item}")
+    for item in sorted(prev_veto - now_veto)[:2]:
+        reasons.append(f"🟢 解除風控否決：{item}")
+
+    prev_conf = int(previous.get("confidence", 0) or 0)
+    conf_delta = int(current_confidence) - prev_conf
+    if conf_delta:
+        reasons.append(f"AI 信心 {prev_conf}% → {current_confidence}%（{conf_delta:+d}）")
+
+    if not reasons:
+        reasons = ["主要條件與風控狀態沒有明顯變化。"]
+
+    return {
+        "available": True,
+        "previous_label": previous.get("decision_label", "—"),
+        "previous_date": previous.get("decision_date", "—"),
+        "previous_confidence": prev_conf,
+        "current_label": current.get("label", "—"),
+        "current_confidence": int(current_confidence),
+        "changed": previous.get("decision_label") != current.get("label"),
+        "reasons": reasons[:6],
+    }
+
+def build_data_quality_audit(res: dict, decision: dict) -> dict:
+    """逐項檢查 Decision Engine 依賴資料，避免把缺值誤當成 0 或負面訊號。"""
+    ta = res.get("trend_analysis", {}) or {}
+    raw_missing = set(res.get("missing_data", []) or [])
+
+    def valid_num(value, allow_zero=False):
+        try:
+            number = float(value)
+            return np.isfinite(number) and (allow_zero or number > 0)
+        except Exception:
+            return False
+
+    items = [
+        ("收盤／即時價格", valid_num(res.get("current_price")), f"{float(res.get('current_price', 0) or 0):.2f} 元"),
+        ("成交量比率", valid_num(ta.get("volume_ratio")), f"{float(ta.get('volume_ratio', 0) or 0):.2f} 倍"),
+        ("MA20 與斜率", valid_num(res.get("ma20_val", ta.get("ma20"))) and valid_num(ta.get("slope20"), allow_zero=True),
+         f"MA20 {float(res.get('ma20_val', ta.get('ma20', 0)) or 0):.2f}｜斜率 {float(ta.get('slope20', 0) or 0):+.2f}%"),
+        ("ADX", valid_num(ta.get("adx")), f"{float(ta.get('adx', 0) or 0):.1f}"),
+        ("OBV／資金累積", str(ta.get("accumulation", "")).strip() not in ["", "資料不足", "None"], str(ta.get("accumulation", "資料不足"))),
+        ("法人籌碼", not any("法人" in str(x) for x in raw_missing), "可用" if not any("法人" in str(x) for x in raw_missing) else "缺漏"),
+        ("券商目標價共識", not any("券商" in str(x) or "目標價" in str(x) for x in raw_missing),
+         "可用" if not any("券商" in str(x) or "目標價" in str(x) for x in raw_missing) else "缺漏（不影響核心技術決策）"),
+    ]
+    available = sum(1 for _, ok, _ in items if ok)
+    score = round(available / len(items) * 100)
+    stars = max(1, min(5, round(score / 20)))
+    return {
+        "items": [{"name": name, "available": ok, "value": value} for name, ok, value in items],
+        "available": available,
+        "total": len(items),
+        "score": score,
+        "stars": "★" * stars + "☆" * (5 - stars),
+        "missing_core": [x["name"] for x in [{"name": n, "available": o} for n, o, _ in items[:5]] if not x["available"]],
+        "decision_missing": decision.get("missing", []) or [],
+    }
+
+init_decision_history_db()
+
 # ============ 10. UI Presentation Layer ============
 with st.sidebar:
     st.header("🛡️ 全球資金池風控參數")
@@ -1813,8 +2017,8 @@ with st.sidebar:
     auto_refresh = st.checkbox("🔄 開啟盤中每 15 秒更新報價", value=False)
     show_evidence_default = st.checkbox("🔎 預設展開各項數據依據", value=False)
 
-st.markdown("## 🧭 Project Compass v60 正式版｜AI 股票決策平台")
-st.caption("首頁、投資委員會、AI 教練、操作劇本與信心中心皆由同一套 Decision Engine 驅動；風控否決權高於進場條件。")
+st.markdown("## 🧭 Project Compass v61｜智慧決策追蹤版")
+st.caption("同一套 Decision Engine 驅動全站，並加入決策原因、昨日比較、近七日軌跡與 AI 資料品質自我檢查。")
 stock_input = st.text_input("請輸入核心目標個股代碼：", value="3037")
 
 u_col1, u_col2 = st.columns(2)
@@ -1877,6 +2081,19 @@ if stock_input:
         committee = build_ai_investment_committee(res, compass)
         decision_engine = build_decision_engine(res, compass, committee, user_holding)
         committee = align_committee_with_decision(committee, decision_engine)
+
+        # v61：先讀取前一日快照，再寫入今日最新快照。
+        today_key = datetime.now(TZ).strftime("%Y-%m-%d")
+        previous_decision = fetch_previous_decision(res.get("stock_id", stock_input), today_key)
+        save_daily_decision_snapshot(res, compass, committee, decision_engine)
+        decision_timeline = fetch_decision_timeline(res.get("stock_id", stock_input), 7)
+        decision_change = build_decision_change(
+            previous_decision,
+            decision_engine,
+            int(committee.get("cio_confidence", compass.get("confidence", 0)) or 0),
+        )
+        data_quality_audit = build_data_quality_audit(res, decision_engine)
+
         today_board = build_today_action_board(res, compass, decision_engine, user_holding)
 
         st.markdown("### 🚦 AI 今日行動中心｜四個問題快速決策")
@@ -1891,6 +2108,86 @@ if stock_input:
                   <div style="font-size:14px;color:#334155;line-height:1.7;">{card['reason']}</div>
                 </div>
                 """, unsafe_allow_html=True)
+
+
+        # v61：決策原因、昨日比較、近七日軌跡、資料品質自我檢查
+        st.markdown("### 🧩 AI 決策解釋｜距離下一個燈號還差什麼")
+        missing_now = decision_engine.get("missing", []) or []
+        completed_now = int(decision_engine.get("completed", 0) or 0)
+        total_now = int(decision_engine.get("total", 0) or 0)
+        progress_pct = int(round(completed_now / total_now * 100)) if total_now else 0
+
+        ex_col1, ex_col2 = st.columns([1.1, 0.9])
+        with ex_col1:
+            st.markdown(f"""
+            <div style="background:#FFFFFF;border:1px solid #E2E8F0;border-left:8px solid {decision_engine['color']};padding:19px;border-radius:12px;min-height:210px;">
+              <div style="font-size:12px;color:#64748B;font-weight:900;">WHY THIS DECISION</div>
+              <div style="font-size:23px;color:{decision_engine['color']};font-weight:950;margin-top:6px;">{decision_engine['label']}</div>
+              <div style="font-size:15px;color:#334155;line-height:1.7;margin-top:8px;">{decision_engine['summary']}</div>
+              <div style="margin-top:14px;height:11px;background:#E2E8F0;border-radius:999px;overflow:hidden;">
+                <div style="width:{progress_pct}%;height:100%;background:{decision_engine['color']};"></div>
+              </div>
+              <div style="font-size:13px;color:#64748B;text-align:right;margin-top:6px;">完成 {completed_now} / {total_now}</div>
+            </div>
+            """, unsafe_allow_html=True)
+        with ex_col2:
+            if decision_engine.get("veto_reasons"):
+                st.error("**風控否決權已啟動**\n\n" + "\n".join(f"🛡️ {x}" for x in decision_engine["veto_reasons"]))
+            elif missing_now:
+                st.warning("**完成以下條件後，系統才可能升級燈號：**\n\n" + "\n".join(f"□ {x}" for x in missing_now))
+            else:
+                st.success("**五項條件皆已完成。**\n\n目前可依分批與風險預算執行，但仍不可忽略追高、風險報酬與趨勢失效檢查。")
+
+        compare_col, audit_col = st.columns(2)
+        with compare_col:
+            st.markdown("#### 🔄 昨天 vs 今天")
+            if decision_change["available"]:
+                arrow = "→" if decision_change["changed"] else "＝"
+                st.markdown(f"""
+                <div style="background:#F8FAFC;border:1px solid #CBD5E1;padding:16px;border-radius:11px;">
+                  <div style="display:flex;justify-content:space-around;align-items:center;text-align:center;">
+                    <div><div style="font-size:12px;color:#64748B;">{decision_change['previous_date']}</div><div style="font-size:20px;font-weight:950;">{decision_change['previous_label']}</div><div style="font-size:12px;color:#64748B;">信心 {decision_change['previous_confidence']}%</div></div>
+                    <div style="font-size:28px;color:#64748B;">{arrow}</div>
+                    <div><div style="font-size:12px;color:#64748B;">今天</div><div style="font-size:20px;font-weight:950;color:{decision_engine['color']};">{decision_change['current_label']}</div><div style="font-size:12px;color:#64748B;">信心 {decision_change['current_confidence']}%</div></div>
+                  </div>
+                </div>
+                """, unsafe_allow_html=True)
+                with st.expander("查看改變原因", expanded=True):
+                    for reason in decision_change["reasons"]:
+                        st.write(reason)
+            else:
+                st.info(decision_change["headline"])
+                for reason in decision_change["reasons"]:
+                    st.caption(reason)
+
+        with audit_col:
+            st.markdown("#### 🧪 AI 資料品質")
+            st.markdown(f"**{data_quality_audit['stars']}　{data_quality_audit['score']}%**")
+            st.progress(data_quality_audit["score"])
+            st.caption(f"可用資料 {data_quality_audit['available']} / {data_quality_audit['total']}。券商共識缺漏不會單獨否決核心技術決策。")
+            with st.expander("逐項查看資料是否可用", expanded=True):
+                for item in data_quality_audit["items"]:
+                    icon = "✅" if item["available"] else "❌"
+                    st.markdown(f"{icon} **{item['name']}**｜{item['value']}")
+
+        st.markdown("#### 🗓️ 近七日 AI Decision Timeline")
+        if decision_timeline:
+            timeline_cols = st.columns(min(len(decision_timeline), 7))
+            for col, row in zip(timeline_cols, decision_timeline):
+                label = row.get("decision_label", "—")
+                color = "#16A34A" if "布局" in label or "買" in label else "#DC2626" if "不建議" in label or "風險" in label else "#D97706"
+                with col:
+                    st.markdown(f"""
+                    <div style="background:#FFFFFF;border:1px solid #E2E8F0;border-top:5px solid {color};padding:11px;border-radius:9px;text-align:center;min-height:128px;">
+                      <div style="font-size:11px;color:#64748B;">{str(row.get('decision_date',''))[5:]}</div>
+                      <div style="font-size:15px;font-weight:950;color:{color};margin-top:6px;">{label}</div>
+                      <div style="font-size:12px;color:#475569;margin-top:7px;">{int(row.get('completed',0) or 0)}/{int(row.get('total',0) or 0)}</div>
+                      <div style="font-size:11px;color:#64748B;">信心 {int(row.get('confidence',0) or 0)}%</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+        else:
+            st.info("尚無歷史紀錄；系統會從今天開始，每檔股票每天保存一筆最新決策。")
+
 
 
         today_brief = build_today_brief(res, compass, decision_engine, user_holding)
@@ -2095,6 +2392,7 @@ if stock_input:
             - 分析師最高與最低信心差距：**{confidence_center['spread']:.1f} 分**
             - 最終 AI 信心：**{confidence_center['score']}%**
             - 信心代表「現有證據的一致程度」，**不代表未來上漲機率，也不保證報酬**。
+            - 決策歷史使用本機 SQLite 儲存；若部署平台重建執行環境，歷史資料可能重置。
             """)
 
 
