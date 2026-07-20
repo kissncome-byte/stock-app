@@ -9,7 +9,7 @@ from urllib3.util.retry import Retry
 from FinMind.data import DataLoader
 
 # ============ 1. Page Config ============
-st.set_page_config(page_title="Project Compass v63｜極簡決策首頁", layout="wide")
+st.set_page_config(page_title="Project Compass v64.2｜成交量診斷版", layout="wide")
 
 # ============ 2. Global Constants ============
 TZ = pytz.timezone("Asia/Taipei")
@@ -148,8 +148,10 @@ def compute_live_data(stock_id: str, market_type: str, hist_last_close: float, h
     session = get_requests_session()
     is_otc = any(x in str(market_type).upper() for x in ["OTC", "TWO", "櫃", "上櫃"])
     fallback = {"open": hist_last_close, "high": hist_last_close, "low": hist_last_close,
-                "close": hist_last_close, "volume_lots": hist_lots, "previous_close": hist_last_close,
-                "success": False, "source": "歷史收盤備援", "quote_time": None, "is_stale": True}
+                "close": hist_last_close, "volume_lots": 0.0, "previous_close": hist_last_close,
+                "success": False, "source": "歷史收盤備援", "quote_time": None, "is_stale": True,
+                "volume_valid": False, "raw_volume": None,
+                "volume_note": "即時行情未取得，不能把前一交易日成交量當成今日成交量"}
     if FUGLE_TOKEN:
         try:
             r = session.get(f"https://api.fugle.tw/marketdata/v1.0/stock/intraday/quote/{stock_id}", headers={"X-API-KEY": FUGLE_TOKEN}, timeout=3)
@@ -157,14 +159,18 @@ def compute_live_data(stock_id: str, market_type: str, hist_last_close: float, h
                 data = r.json().get("data", r.json())
                 price = safe_float(data.get("closePrice")) or safe_float(data.get("referencePrice"))
                 prev = safe_float(data.get("previousClose")) or safe_float(data.get("referencePrice")) or hist_last_close
-                vol_shares = safe_float(data.get("total", {}).get("tradeVolume", 0))
+                raw_volume = data.get("total", {}).get("tradeVolume", None)
+                vol_shares = safe_float(raw_volume)
+                volume_valid = vol_shares > 0
                 quote_time = data.get("lastUpdated") or data.get("closeTime") or data.get("date")
                 if price > 0:
                     return {"open": safe_float(data.get("openPrice")) or price, "high": safe_float(data.get("highPrice")) or price,
                             "low": safe_float(data.get("lowPrice")) or price, "close": price,
-                            "volume_lots": vol_shares / 1000.0 if vol_shares > 0 else hist_lots,
+                            "volume_lots": vol_shares / 1000.0 if volume_valid else 0.0,
                             "previous_close": prev, "success": True, "source": "Fugle 即時行情",
-                            "quote_time": quote_time, "is_stale": False}
+                            "quote_time": quote_time, "is_stale": False,
+                            "volume_valid": volume_valid, "raw_volume": raw_volume,
+                            "volume_note": "Fugle 已提供有效累計成交量" if volume_valid else f"Fugle 成交量欄位無效：{raw_volume!r}"}
         except Exception as exc:
             log_error("Fugle quote", exc)
     for prefix in (["otc", "tse"] if is_otc else ["tse", "otc"]):
@@ -174,14 +180,19 @@ def compute_live_data(stock_id: str, market_type: str, hist_last_close: float, h
             if payload.get("msgArray"):
                 info = payload["msgArray"][0]
                 price = safe_float(info.get("z")) or safe_float(str(info.get("b", "")).split("_")[0]) or safe_float(info.get("o"))
-                # TWSE MIS 的 v 為累計成交量，實務上通常以張呈現；不再使用語意不明的 g 欄位。
-                vol_lots = safe_float(info.get("v")) or hist_lots
+                # TWSE MIS 的 v 為累計成交量（張）。價格成功不代表成交量欄位也有效。
+                raw_volume = info.get("v")
+                vol_lots = safe_float(raw_volume)
+                volume_valid = vol_lots > 0
                 prev = safe_float(info.get("y")) or hist_last_close
                 if price > 0:
                     return {"open": safe_float(info.get("o")) or price, "high": safe_float(info.get("h")) or price,
-                            "low": safe_float(info.get("l")) or price, "close": price, "volume_lots": vol_lots,
+                            "low": safe_float(info.get("l")) or price, "close": price,
+                            "volume_lots": vol_lots if volume_valid else 0.0,
                             "previous_close": prev, "success": True, "source": f"TWSE {prefix.upper()} 即時行情",
-                            "quote_time": info.get("t") or info.get("d"), "is_stale": False}
+                            "quote_time": info.get("t") or info.get("d"), "is_stale": False,
+                            "volume_valid": volume_valid, "raw_volume": raw_volume,
+                            "volume_note": "TWSE MIS 已提供有效累計成交量" if volume_valid else f"TWSE MIS 成交量欄位 v 無效：{raw_volume!r}"}
         except Exception as exc:
             log_error("TWSE quote", exc)
     return fallback
@@ -728,6 +739,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     quote = compute_live_data(stock_id, market_type, float(hist_last_raw["close"]), float(hist_last_raw["vol"]))
     rt_open, rt_high, rt_low, rt_close = quote["open"], quote["high"], quote["low"], quote["close"]
     rt_vol_lots, rt_success, rt_source = quote["volume_lots"], quote["success"], quote["source"]
+    volume_valid = bool(quote.get("volume_valid", rt_vol_lots > 0))
     previous_close = quote["previous_close"]
     current_price, current_vol = rt_close, rt_vol_lots 
     t = tick_size(current_price)
@@ -889,6 +901,14 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     res_dict["relative_strength"] = relative_strength
     res_dict["is_rs_gold"] = is_rs_gold
     res_dict["rt_source"] = rt_source
+    res_dict["quote_success"] = rt_success
+    res_dict["quote_time"] = quote.get("quote_time")
+    res_dict["quote_is_stale"] = quote.get("is_stale", not rt_success)
+    res_dict["volume_valid"] = volume_valid
+    res_dict["raw_volume"] = quote.get("raw_volume")
+    res_dict["volume_note"] = quote.get("volume_note", "未提供成交量診斷")
+    res_dict["volume_ma20_shares"] = vol_ma20_val
+    res_dict["volume_ma20_lots"] = vol_ma20_val / 1000.0 if vol_ma20_val > 0 else 0.0
     res_dict["m_desc"] = macro_text
     res_dict["m_color"] = "gray" if macro_bull is None else ("red" if not macro_bull else "green")
     res_dict["fin_df"] = fin_df
@@ -936,7 +956,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     res_dict["ma240_val"] = trend_analysis["ma240"]
 
     quality_flags = {
-        "價格": current_price > 0, "成交量": current_vol >= 0, "大盤": macro_bull is not None,
+        "價格": current_price > 0, "成交量": volume_valid and current_vol > 0, "大盤": macro_bull is not None,
         "財報": not fin_df.empty, "法人": not institutional_df.empty,
         "同業": peer_corr_val is not None, "新聞": bool(raw_news_list)
     }
@@ -2193,9 +2213,10 @@ with st.sidebar:
     sector_panic_toggle = st.checkbox("🔥 同族群其他龍頭股「集體下殺破5%」", value=False)
     auto_refresh = st.checkbox("🔄 開啟盤中每 15 秒更新報價", value=False)
     show_evidence_default = st.checkbox("🔎 預設展開各項數據依據", value=False)
+    debug_mode = st.checkbox("🛠 開啟成交量資料診斷", value=False)
 
-st.markdown("## 🧭 Project Compass v64.1｜穩定顯示版")
-st.caption("首頁維持極簡；無效或尚未更新的數值改用自然語言顯示。")
+st.markdown("## 🧭 Project Compass v64.2｜成交量診斷版")
+st.caption("成交量缺失時不再冒充 0.00 倍；可從側欄開啟資料診斷。")
 stock_input = st.text_input("請輸入核心目標個股代碼：", value="3037")
 
 u_col1, u_col2 = st.columns(2)
@@ -2851,6 +2872,45 @@ if stock_input:
                 with bx1: st.metric("風險預算可容納部位（含粗估成本與滑價）", f"{res['suggested_lots']} 張 + {res['suggested_odd_lot']} 股")
                 with bx2: st.metric("結構停損估計成交價（含滑價）", f"{res['expected_stop_price']:.2f} 元")
                 with bx3: st.metric("大波段移動停利線 (ATR)", res["trailing_stop_line"])
+
+        if debug_mode:
+            st.markdown("---")
+            with st.expander("🛠 成交量資料診斷", expanded=True):
+                ta_debug = res.get("trend_analysis", {}) or {}
+                volume_valid_debug = bool(res.get("volume_valid", False))
+                today_lots = float(res.get("current_vol", 0) or 0)
+                avg20_lots = float(res.get("volume_ma20_lots", 0) or 0)
+                ratio_debug = float(ta_debug.get("volume_ratio", 0) or 0)
+
+                if volume_valid_debug:
+                    st.success("即時成交量有效，可以用來計算今日量比。")
+                else:
+                    st.warning("即時成交量無效；畫面上的 0 代表資料缺失，不代表市場真的零成交。AI 不應把它視為有效量比。")
+
+                d1, d2, d3, d4 = st.columns(4)
+                with d1: st.metric("行情來源", str(res.get("rt_source", "未知")))
+                with d2: st.metric("價格取得成功", "是" if res.get("quote_success") else "否")
+                with d3: st.metric("成交量有效", "是" if volume_valid_debug else "否")
+                with d4: st.metric("資料時間", str(res.get("quote_time") or "未提供"))
+
+                v1, v2, v3 = st.columns(3)
+                with v1: st.metric("今日累計成交量", f"{today_lots:,.0f} 張" if volume_valid_debug else "尚未取得")
+                with v2: st.metric("近20日平均成交量", f"{avg20_lots:,.0f} 張" if avg20_lots > 0 else "資料不足")
+                with v3: st.metric("今日量比", f"{ratio_debug:.2f} 倍" if volume_valid_debug and avg20_lots > 0 else "無法計算")
+
+                st.markdown("**計算過程**")
+                if volume_valid_debug and avg20_lots > 0:
+                    st.code(f"{today_lots:,.0f} 張 ÷ {avg20_lots:,.0f} 張 = {ratio_debug:.4f} 倍")
+                    if ratio_debug >= 1.20:
+                        st.success(f"成交量條件成立：{ratio_debug:.2f} ≥ 1.20")
+                    else:
+                        st.info(f"成交量條件尚未成立：{ratio_debug:.2f} < 1.20")
+                else:
+                    st.code("缺少有效的今日累計成交量，因此不計算 volume_ratio。")
+
+                st.markdown("**API 原始成交量欄位**")
+                st.code(repr(res.get("raw_volume")))
+                st.caption(str(res.get("volume_note", "未提供診斷說明")))
 
 if auto_refresh:
     time.sleep(15)
