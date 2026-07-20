@@ -16,6 +16,9 @@ TZ = pytz.timezone("Asia/Taipei")
 FINMIND_TOKEN = os.getenv("FINMIND_TOKEN", "") or st.secrets.get("FINMIND_TOKEN", "")
 FUGLE_TOKEN = os.getenv("FUGLE_TOKEN", "") or st.secrets.get("FUGLE_TOKEN", "")
 
+# 即時成交量來源單位與更新時點不穩定，暫停使用「當日成交量比率」做顯示與決策。
+USE_INTRADAY_VOLUME_RATIO = False
+
 # ============ 3. Helper Functions ============
 def safe_float(x, default=0.0):
     try:
@@ -742,7 +745,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     quote = compute_live_data(stock_id, market_type, float(hist_last_raw["close"]), float(hist_last_raw["vol"]))
     rt_open, rt_high, rt_low, rt_close = quote["open"], quote["high"], quote["low"], quote["close"]
     rt_vol_lots, rt_success, rt_source = quote["volume_lots"], quote["success"], quote["source"]
-    volume_valid = bool(quote.get("volume_valid", rt_vol_lots > 0))
+    volume_valid = bool(quote.get("volume_valid", rt_vol_lots > 0)) and USE_INTRADAY_VOLUME_RATIO
     previous_close = quote["previous_close"]
     current_price, current_vol = rt_close, rt_vol_lots 
     t = tick_size(current_price)
@@ -1074,7 +1077,7 @@ def build_compass_home_summary(res: dict, is_holding: bool) -> dict:
     pros, cons = [], []
     if "多頭" in str(ta.get("long_term", "")) or "多頭" in str(res.get("trend_state", "")):
         pros.append("中長期趨勢仍有支撐")
-    if float(ta.get("volume_ratio", 0) or 0) >= 1.3:
+    if bool(res.get("volume_valid", False)) and float(ta.get("volume_ratio", 0) or 0) >= 1.3:
         pros.append("成交量明顯放大")
     if res.get("institutional_summary", {}).get("consensus_score", 0) > 0:
         pros.append("法人一致性偏多")
@@ -1082,7 +1085,7 @@ def build_compass_home_summary(res: dict, is_holding: bool) -> dict:
         cons.append("部分資料缺漏，信心需下修")
     if "警戒" in str(res.get("trend_state", "")) or "破壞" in str(res.get("trend_state", "")):
         cons.append("趨勢已有弱化或破壞跡象")
-    if float(ta.get("volume_ratio", 0) or 0) < 0.8:
+    if bool(res.get("volume_valid", False)) and 0 < float(ta.get("volume_ratio", 0) or 0) < 0.8:
         cons.append("量能不足，訊號可信度有限")
     if issues:
         cons.append("價格計畫已啟動合理性修正，請查看安全檢查")
@@ -1247,10 +1250,10 @@ def build_ai_investment_committee(res: dict, compass: dict) -> dict:
         pv_label, pv_color, pv_icon = "偏空", "#EF4444", "🔴"
     else:
         pv_label, pv_color, pv_icon = "中性", "#F59E0B", "🟡"
-    pv_summary = f"{pv}；{accumulation}；{divergence}，目前量比 {vol_ratio:.2f}。"
+    pv_summary = (f"{pv}；{accumulation}；{divergence}，目前量比 {vol_ratio:.2f}。" if volume_valid else f"{accumulation}；{divergence}。即時成交量比率暫不納入判斷。")
     pv_evidence = [
         ("價量型態", pv), ("資金累積", accumulation), ("量價背離", divergence),
-        ("Volume Ratio", fmt_num(vol_ratio, 2)), ("價量綜合判讀", str(res.get("volume_verdict", "資料不足"))),
+        ("即時成交量比率", fmt_num(vol_ratio, 2) if volume_valid else "暫停使用"), ("價量綜合判讀", str(res.get("volume_verdict", "資料不足"))),
     ]
 
     # 4) 風控分析師
@@ -1439,7 +1442,7 @@ def build_decision_engine(res: dict, compass: dict, committee: dict, user_holdin
 
     price_ok = current >= entry if current > 0 and entry > 0 else False
     volume_direction_ok = "價跌量增" not in price_volume and "賣壓" not in price_volume
-    volume_ok = volume_valid and vol_ratio >= 1.20 and volume_direction_ok
+    volume_ok = True  # 即時成交量比率已停用，不作為進場必要條件
     ma20_ok = ma20 > 0 and slope20 > 0 and current >= ma20
     direction_ok = not any(k in trend_state + long_term + medium_term for k in ["空頭", "趨勢破壞", "下跌段"])
     adx_ok = adx >= 25 and direction_ok
@@ -1448,9 +1451,6 @@ def build_decision_engine(res: dict, compass: dict, committee: dict, user_holdin
     checklist = [
         {"key":"price", "name":f"收盤站上建議評估價 {entry:.2f} 元", "passed":price_ok,
          "current":f"目前 {current:.2f} 元｜{compass.get('entry_zone_text','')}", "why":"收盤站上評估價才算價格確認；盤中觸價不算。若高於評估價太多，風控仍可否決追價。"},
-        {"key":"volume", "name":"成交量需達近 20 日均量 1.20 倍", "passed":volume_ok,
-         "current":(f"目前 {vol_ratio:.2f} 倍｜{price_volume}" if volume_valid else "目前尚未更新｜AI需求：至少 1.20 倍"),
-         "why":"放量只有在價格方向健康時才是正向確認；下跌放量代表賣壓，不能列為進場加分。"},
         {"key":"ma20", "name":"MA20 上揚且收盤位於 MA20 之上", "passed":ma20_ok,
          "current":f"MA20 {ma20:.2f} 元｜20日線斜率 {slope20:+.2f}%", "why":"同時要求均線方向向上與價格站上均線，避免把單日反彈誤認為趨勢恢復。"},
         {"key":"adx", "name":"ADX 至少 25，且主要趨勢方向不是空方", "passed":adx_ok,
@@ -2190,8 +2190,6 @@ def build_data_quality_audit(res: dict, decision: dict) -> dict:
 
     items = [
         ("收盤／即時價格", valid_num(res.get("current_price")), f"{float(res.get('current_price', 0) or 0):.2f} 元"),
-        ("成交量比率", bool(res.get("volume_valid", False)) and valid_num(ta.get("volume_ratio"), allow_zero=True),
-         f"{float(ta.get('volume_ratio', 0) or 0):.2f} 倍" if bool(res.get("volume_valid", False)) else "尚未更新"),
         ("MA20 與斜率", valid_num(res.get("ma20_val", ta.get("ma20"))) and valid_num(ta.get("slope20"), allow_zero=True),
          f"MA20 {float(res.get('ma20_val', ta.get('ma20', 0)) or 0):.2f}｜斜率 {float(ta.get('slope20', 0) or 0):+.2f}%"),
         ("ADX", valid_num(ta.get("adx")), f"{float(ta.get('adx', 0) or 0):.1f}"),
@@ -2227,7 +2225,7 @@ with st.sidebar:
     debug_mode = st.checkbox("🛠 開啟成交量資料診斷", value=False)
 
 st.markdown("## 🧭 Project Compass v64.2｜成交量診斷版")
-st.caption("成交量缺失時不再冒充 0.00 倍；可從側欄開啟資料診斷。")
+st.caption("即時成交量比率因資料來源不穩定，已暫停顯示並排除於 AI 決策之外。")
 stock_input = st.text_input("請輸入核心目標個股代碼：", value="3037")
 
 u_col1, u_col2 = st.columns(2)
@@ -2733,7 +2731,6 @@ if stock_input:
                         {"項目":"最近波段低點", "數值":f"{swing_low:.2f} 元" if swing_low else "資料不足", "判斷用途":"趨勢失效與低點是否墊高"},
                         {"項目":"趨勢失效參考價", "數值":f"{res['structure_stop']:.2f} 元", "判斷用途":"跌破不等於立刻賣出，需搭配收盤、量能與連續天數確認"},
                         {"項目":"ADX14", "數值":f"{ta['adx']:.1f}", "判斷用途":"低於18偏震盪；18至25趨勢形成；25以上趨勢較明確"},
-                        {"項目":"當日量比", "數值":f"{ta['volume_ratio']:.2f} 倍" if bool(res.get("volume_valid", False)) else "尚未更新", "判斷用途":"相對20日均量；1.3倍以上視為明顯放量參考"},
                         {"項目":"近5日拉回量比", "數值":f"{ta['pullback_volume_ratio']:.2f} 倍", "判斷用途":"0.9倍以下視為拉回量縮參考"},
                         {"項目":"距60日高點回檔", "數值":f"{ta['drawdown_pct']:.1f}%", "判斷用途":"辨識追高、正常拉回或深度修正"},
                         {"項目":"量價背離", "數值":ta['volume_divergence'], "判斷用途":"價格創高時資金是否同步"},
@@ -2896,7 +2893,7 @@ if stock_input:
                 if volume_valid_debug:
                     st.success("即時成交量有效，可以用來計算今日量比。")
                 else:
-                    st.warning("即時成交量無效；畫面上的 0 代表資料缺失，不代表市場真的零成交。AI 不應把它視為有效量比。")
+                    st.info("即時成交量比率功能目前已停用；原始成交量僅供診斷，不參與畫面與 AI 決策。")
 
                 d1, d2, d3, d4 = st.columns(4)
                 with d1: st.metric("行情來源", str(res.get("rt_source", "未知")))
@@ -2907,7 +2904,7 @@ if stock_input:
                 v1, v2, v3 = st.columns(3)
                 with v1: st.metric("今日累計成交量", f"{today_lots:,.0f} 張" if volume_valid_debug else "尚未取得")
                 with v2: st.metric("近20日平均成交量", f"{avg20_lots:,.0f} 張" if avg20_lots > 0 else "資料不足")
-                with v3: st.metric("今日量比", f"{ratio_debug:.2f} 倍" if volume_valid_debug and avg20_lots > 0 else "無法計算")
+                with v3: st.metric("今日量比", "已停用")
 
                 st.markdown("**計算過程**")
                 if volume_valid_debug and avg20_lots > 0:
@@ -2917,7 +2914,7 @@ if stock_input:
                     else:
                         st.info(f"成交量條件尚未成立：{ratio_debug:.2f} < 1.20")
                 else:
-                    st.code("缺少有效的今日累計成交量，因此不計算 volume_ratio。")
+                    st.code("即時成交量比率已停用，不計算 volume_ratio。")
 
                 st.markdown("**API 原始成交量欄位**")
                 st.code(repr(res.get("raw_volume")))
