@@ -9,7 +9,7 @@ from urllib3.util.retry import Retry
 from FinMind.data import DataLoader
 
 # ============ 1. Page Config ============
-st.set_page_config(page_title="Project Compass v60｜AI 股票決策平台", layout="wide")
+st.set_page_config(page_title="Project Compass v60 正式版｜AI 股票決策平台", layout="wide")
 
 # ============ 2. Global Constants ============
 TZ = pytz.timezone("Asia/Taipei")
@@ -970,9 +970,9 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
 
 
 def build_compass_home_summary(res: dict, is_holding: bool) -> dict:
-    """將既有分析結果整理成首頁用的 AI 決策摘要，不改動底層評分邏輯。"""
-    bp = res.get("tactical_blueprint", {})
-    ta = res.get("trend_analysis", {})
+    """整理首頁價格計畫，並集中執行合理性檢查。"""
+    bp = res.get("tactical_blueprint", {}) or {}
+    ta = res.get("trend_analysis", {}) or {}
     action = str(bp.get("action_now", "先觀察"))
     strategy = str(bp.get("strategy_name", "⚪ 資料不足"))
     quality = float(res.get("data_quality_score", 0) or 0)
@@ -981,19 +981,57 @@ def build_compass_home_summary(res: dict, is_holding: bool) -> dict:
         confidence = min(confidence, 55)
 
     price = float(res.get("current_price", 0) or 0)
+    tick = tick_size(price) if price > 0 else 0.01
+    atr = float(res.get("atr", res.get("atr14", 0)) or 0)
     entry = float(res.get("expected_entry_price", price) or price)
-    stop = float(res.get("structure_stop", res.get("expected_stop_price", 0)) or 0)
-    # 首頁再做一次安全檢查：多方規劃的失效價不可高於現價或建議評估價。
+    if entry <= 0:
+        entry = price
+
+    issues = []
+    raw_stop = float(res.get("structure_stop", res.get("expected_stop_price", 0)) or 0)
+    stop = raw_stop
     stop_ceiling = min(x for x in [price, entry] if x > 0) if any(x > 0 for x in [price, entry]) else 0
     if stop_ceiling > 0 and (stop <= 0 or stop >= stop_ceiling):
-        atr = float(res.get("atr", res.get("atr14", 0)) or 0)
-        fallback_gap = max(2.0 * atr, stop_ceiling * 0.03)
-        stop = max(0.0, stop_ceiling - fallback_gap)
-    target1 = float(res.get("real_resistance", res.get("expected_target_price", 0)) or 0)
-    target2 = float(res.get("expected_target_price", target1) or target1)
+        fallback_gap = max(2.0 * atr, stop_ceiling * 0.03, tick)
+        stop = floor_to_tick(max(tick, stop_ceiling - fallback_gap), tick)
+        issues.append("原始結構價不在有效風險區間，已改用現價下方的 ATR／百分比防線。")
+
+    raw_resistance = float(res.get("real_resistance", 0) or 0)
+    model_target = float(res.get("expected_target_price", 0) or 0)
+    valid_targets = sorted(x for x in [raw_resistance, model_target] if x > entry)
+    target1 = valid_targets[0] if valid_targets else entry + max(2.0 * atr, entry * 0.05, tick)
+    target2 = valid_targets[-1] if valid_targets else target1
+    target_kind = "第一目標區"
+
+    # 第一目標必須是可操作的近端目標；過遠的原始壓力改列為中長期延伸目標。
+    if entry > 0 and (target1 - entry) / entry > 0.25:
+        target2 = target1
+        target1 = ceil_to_tick(entry + max(2.0 * atr, entry * 0.08), tick)
+        target1 = min(target1, ceil_to_tick(entry * 1.15, tick))
+        target_kind = "近端第一目標區"
+        issues.append("原始目標距離評估價超過 25%，已改列為中長期延伸目標，並建立較近的第一目標區。")
+    if target1 <= entry:
+        target1 = ceil_to_tick(entry + max(2.0 * atr, entry * 0.05, tick), tick)
+        issues.append("原始目標未高於評估價，已依 ATR 建立替代目標。")
+    target2 = max(target2, target1)
+
     risk = max(entry - stop, 0)
     reward = max(target1 - entry, 0)
     rr = reward / risk if risk > 0 else None
+    if risk <= 0:
+        issues.append("風險防線與評估價無法形成有效風險距離，決策引擎將否決進場。")
+    if rr is not None and rr < 1.0:
+        issues.append(f"近端風險報酬比僅 {rr:.2f}，不符合積極進場條件。")
+
+    entry_gap_pct = ((price - entry) / entry * 100) if price > 0 and entry > 0 else None
+    if entry_gap_pct is not None and abs(entry_gap_pct) <= 1.0:
+        entry_zone_text = "目前已進入建議評估區"
+    elif entry_gap_pct is not None and entry_gap_pct > 3.0:
+        entry_zone_text = "目前高於建議評估區，不宜因條件達標而追高"
+    elif entry_gap_pct is not None and entry_gap_pct < -3.0:
+        entry_zone_text = "目前低於建議評估區，需先確認趨勢未失效"
+    else:
+        entry_zone_text = "目前接近建議評估區"
 
     if quality < 60:
         decision = "等待"
@@ -1007,8 +1045,7 @@ def build_compass_home_summary(res: dict, is_holding: bool) -> dict:
         decision = "等待"
 
     today = f"目前屬於「{res.get('trend_state', '觀察')}」，{bp.get('desc', '先等待更多資料確認。')}"
-    pros = []
-    cons = []
+    pros, cons = [], []
     if "多頭" in str(ta.get("long_term", "")) or "多頭" in str(res.get("trend_state", "")):
         pros.append("中長期趨勢仍有支撐")
     if float(ta.get("volume_ratio", 0) or 0) >= 1.3:
@@ -1021,17 +1058,19 @@ def build_compass_home_summary(res: dict, is_holding: bool) -> dict:
         cons.append("趨勢已有弱化或破壞跡象")
     if float(ta.get("volume_ratio", 0) or 0) < 0.8:
         cons.append("量能不足，訊號可信度有限")
-    if not pros:
-        pros.append("目前沒有足夠強的正向證據")
-    if not cons:
-        cons.append("市場仍可能受突發消息與大盤波動影響")
+    if issues:
+        cons.append("價格計畫已啟動合理性修正，請查看安全檢查")
+    if not pros: pros.append("目前沒有足夠強的正向證據")
+    if not cons: cons.append("市場仍可能受突發消息與大盤波動影響")
 
     return {
         "decision": decision, "strategy": strategy, "action": action, "confidence": confidence,
         "today": today, "entry": entry, "stop": stop, "target1": target1, "target2": target2,
-        "rr": rr, "pros": pros[:3], "cons": cons[:3],
+        "target_kind": target_kind, "rr": rr, "pros": pros[:3], "cons": cons[:3],
+        "issues": issues, "plan_valid": risk > 0 and target1 > entry,
+        "entry_zone_text": entry_zone_text, "entry_gap_pct": entry_gap_pct,
+        "raw_stop": raw_stop, "raw_resistance": raw_resistance,
     }
-
 
 def build_ai_investment_committee(res: dict, compass: dict) -> dict:
     """把既有分析結果轉成可解釋的 AI 投資委員會，不改動底層模型。"""
@@ -1272,8 +1311,9 @@ def build_ai_investment_committee(res: dict, compass: dict) -> dict:
 
 
 
-def build_ai_scenario_center(res: dict, compass: dict, committee: dict) -> list:
-    """以既有價格計畫建立四種操作情境，不新增資料來源、不改動原始評分模型。"""
+def build_ai_scenario_center(res: dict, compass: dict, committee: dict, decision: dict = None) -> list:
+    """以單一價格計畫建立四種操作情境。"""
+    decision = decision or {}
     current = float(res.get("current_price", 0) or 0)
     entry = float(compass.get("entry", current) or current)
     stop = float(compass.get("stop", 0) or 0)
@@ -1315,7 +1355,7 @@ def build_ai_scenario_center(res: dict, compass: dict, committee: dict) -> list:
         down_tag, down_color = "觀察支撐", "#F59E0B"
 
     breakout_action = "收盤站穩後可分批建立或增加部位，第一筆仍以小部位為主，趨勢失效價（風險防線）不向下放寬。"
-    if committee.get("cio", "").startswith("等待"):
+    if decision.get("status") in ["WAIT", "VETO", "AVOID"]:
         breakout_action = "這是原本等待策略的轉折條件；確認站穩後再由等待改為分批布局。"
     breakout_watch = f"確認價約 {breakout_confirm:.2f} 元；第一目標 {target1:.2f} 元，延伸目標 {target2:.2f} 元。"
 
@@ -1348,60 +1388,85 @@ def build_ai_scenario_center(res: dict, compass: dict, committee: dict) -> list:
 
 
 def build_decision_engine(res: dict, compass: dict, committee: dict, user_holding: bool = False) -> dict:
-    """Project Compass 單一決策引擎：集中產生買進、加碼、風險與 Checklist 判斷。
-
-    所有條件都使用程式既有資料；資料不足時不會自動視為通過。
-    """
+    """全站單一 Decision Engine；風控否決權高於所有進場條件。"""
     ta = res.get("trend_analysis", {}) or {}
     current = float(res.get("current_price", 0) or 0)
     entry = float(compass.get("entry", current) or current)
     stop = float(compass.get("stop", 0) or 0)
     target1 = float(compass.get("target1", 0) or 0)
     ma20 = float(res.get("ma20_val", ta.get("ma20", 0)) or 0)
-    ma60 = float(res.get("ma60_val", ta.get("ma60", 0)) or 0)
     slope20 = float(ta.get("slope20", 0) or 0)
     adx = float(ta.get("adx", 0) or 0)
     vol_ratio = float(ta.get("volume_ratio", 0) or 0)
     accumulation = str(ta.get("accumulation", "資料不足"))
+    price_volume = str(ta.get("price_volume", "資料不足"))
     trend_state = str(res.get("trend_state", "觀察"))
+    long_term = str(ta.get("long_term", "資料不足"))
+    medium_term = str(ta.get("medium_term", "資料不足"))
+    quality = float(res.get("data_quality_score", 0) or 0)
+    rr = compass.get("rr")
 
     price_ok = current >= entry if current > 0 and entry > 0 else False
-    volume_ok = vol_ratio >= 1.20
-    ma20_ok = slope20 > 0 and current >= ma20 if ma20 > 0 else False
-    adx_ok = adx >= 25
-    obv_ok = any(k in accumulation for k in ["累積", "流入", "吸籌"])
+    volume_direction_ok = "價跌量增" not in price_volume and "賣壓" not in price_volume
+    volume_ok = vol_ratio >= 1.20 and volume_direction_ok
+    ma20_ok = ma20 > 0 and slope20 > 0 and current >= ma20
+    direction_ok = not any(k in trend_state + long_term + medium_term for k in ["空頭", "趨勢破壞", "下跌段"])
+    adx_ok = adx >= 25 and direction_ok
+    obv_ok = any(k in accumulation for k in ["偏累積", "流入", "吸籌"]) and "流出" not in accumulation
 
     checklist = [
         {"key":"price", "name":f"收盤站上建議評估價 {entry:.2f} 元", "passed":price_ok,
-         "current":f"目前 {current:.2f} 元", "why":"收盤站上評估價，代表價格已回到策略可執行區；盤中觸價不算確認。"},
-        {"key":"volume", "name":"成交量達近 20 日均量 1.20 倍", "passed":volume_ok,
-         "current":f"目前 {vol_ratio:.2f} 倍", "why":"量能高於近期均量，較能降低無量突破或短暫反彈的風險。"},
+         "current":f"目前 {current:.2f} 元｜{compass.get('entry_zone_text','')}", "why":"收盤站上評估價才算價格確認；盤中觸價不算。若高於評估價太多，風控仍可否決追價。"},
+        {"key":"volume", "name":"成交量達近 20 日均量 1.20 倍，且不是下跌放量", "passed":volume_ok,
+         "current":f"目前 {vol_ratio:.2f} 倍｜{price_volume}", "why":"放量只有在價格方向健康時才是正向確認；下跌放量代表賣壓，不能列為進場加分。"},
         {"key":"ma20", "name":"MA20 上揚且收盤位於 MA20 之上", "passed":ma20_ok,
-         "current":f"MA20 {ma20:.2f} 元｜20日線斜率 {slope20:+.2f}%", "why":"同時要求均線方向向上與價格站上均線，避免只看單日反彈。"},
-        {"key":"adx", "name":"ADX 至少 25", "passed":adx_ok,
-         "current":f"目前 ADX {adx:.1f}", "why":"ADX 達 25 通常表示趨勢較明確；低於此值時較容易處於盤整。"},
-        {"key":"obv", "name":"資金累積／OBV 未轉弱", "passed":obv_ok,
-         "current":accumulation, "why":"價格上漲若沒有資金累積支持，突破延續性通常較差。"},
+         "current":f"MA20 {ma20:.2f} 元｜20日線斜率 {slope20:+.2f}%", "why":"同時要求均線方向向上與價格站上均線，避免把單日反彈誤認為趨勢恢復。"},
+        {"key":"adx", "name":"ADX 至少 25，且主要趨勢方向不是空方", "passed":adx_ok,
+         "current":f"目前 ADX {adx:.1f}｜{long_term}／{medium_term}", "why":"ADX 只代表趨勢強度，不代表上漲；空頭趨勢中的高 ADX 不能當作多方加分。"},
+        {"key":"obv", "name":"資金累積／OBV 明確偏多", "passed":obv_ok,
+         "current":accumulation, "why":"『未轉弱』只代表中性，必須出現明確資金累積，才列為完整進場條件。"},
     ]
     completed = sum(1 for item in checklist if item["passed"])
     total = len(checklist)
     missing = [item["name"] for item in checklist if not item["passed"]]
 
     stop_broken = stop > 0 and current <= stop
+    overextended = entry > 0 and current > entry * 1.03
     near_pressure = target1 > 0 and current >= target1 * 0.95
+    data_veto = quality < 60
+    plan_veto = not bool(compass.get("plan_valid", False))
+    rr_veto = rr is None or rr < 1.0
+    trend_veto = any(k in trend_state for k in ["趨勢破壞", "空頭"])
+    veto_reasons = []
+    if stop_broken: veto_reasons.append(f"價格已到或跌破 {stop:.2f} 元風險防線")
+    if data_veto: veto_reasons.append(f"資料完整度僅 {quality:.0f}%")
+    if plan_veto: veto_reasons.append("價格計畫未形成有效的評估價、風險防線與目標")
+    if rr_veto: veto_reasons.append("近端風險報酬比不足 1.0")
+    if trend_veto: veto_reasons.append(f"目前趨勢狀態為 {trend_state}")
+    if overextended: veto_reasons.append("現價高於建議評估價超過 3%，避免追高")
+
+    hard_veto = stop_broken or data_veto or plan_veto or trend_veto
+    buy_ready = completed == total and not hard_veto and not rr_veto and not overextended and not near_pressure
     if stop_broken:
         status, label, color = "STOP", "🔴 風險處理", "#DC2626"
         buy, add, reduce_or_exit = False, False, True
         summary = f"目前價格已到或跌破 {stop:.2f} 元風險防線，停止新增並依紀律處理部位。"
-    elif completed == total:
+    elif hard_veto:
+        status, label, color = "VETO", "🔴 風控否決", "#DC2626"
+        buy, add, reduce_or_exit = False, False, False
+        summary = "風控條件尚未通過：" + "；".join(veto_reasons[:2]) + "。"
+    elif buy_ready:
         status, label, color = "BUY", "🟢 可分批布局", "#16A34A"
-        buy, add, reduce_or_exit = True, not near_pressure, False
-        summary = "五項進場條件皆已達成，可開始第一筆分批布局，但不要一次押滿。"
+        buy, add, reduce_or_exit = True, user_holding, False
+        summary = "五項進場條件與風控條件皆已達成，可開始第一筆分批布局，但不要一次押滿。"
+    elif completed == total and (overextended or near_pressure or rr_veto):
+        status, label, color = "WAIT", "🟠 條件達標但不追價", "#F97316"
+        buy, add, reduce_or_exit = False, False, False
+        summary = "技術條件雖完整，但買點或風險報酬不合格；現在不是不能看多，而是不值得追價。"
     elif completed >= 3:
         status, label, color = "WAIT", "🟡 觀察中", "#D97706"
         buy, add, reduce_or_exit = False, False, False
-        short_missing = "、".join([m.split(" ")[0] for m in missing[:2]])
-        summary = f"目前完成 {completed}/{total}，還差 {short_missing} 等條件，今天先不要急著執行。"
+        summary = f"目前完成 {completed}/{total}，還有 {total-completed} 項條件未確認，今天先等待。"
     elif completed == 2:
         status, label, color = "WAIT", "🟠 再等等", "#F97316"
         buy, add, reduce_or_exit = False, False, False
@@ -1412,15 +1477,33 @@ def build_decision_engine(res: dict, compass: dict, committee: dict, user_holdin
         summary = f"目前只完成 {completed}/{total}，證據不足，保留資金比搶先進場重要。"
 
     if user_holding and not stop_broken:
-        add = completed == total and not near_pressure
+        add = buy_ready and not near_pressure
 
     return {
         "status": status, "label": label, "color": color, "summary": summary,
         "buy": buy, "add": add, "reduce_or_exit": reduce_or_exit,
         "completed": completed, "total": total, "missing": missing,
         "checklist": checklist, "stop_broken": stop_broken, "near_pressure": near_pressure,
+        "overextended": overextended, "hard_veto": hard_veto, "veto_reasons": veto_reasons,
         "entry": entry, "stop": stop, "target1": target1, "trend_state": trend_state,
+        "quality": quality, "rr": rr,
     }
+
+
+def align_committee_with_decision(committee: dict, decision: dict) -> dict:
+    """讓投資總監、首頁與教練引用同一份 Decision Engine 結果。"""
+    committee = dict(committee)
+    committee["cio"] = decision.get("label", committee.get("cio", "等待"))
+    committee["cio_desc"] = decision.get("summary", committee.get("cio_desc", ""))
+    committee["quote"] = (
+        "保護資金，比預測反彈更重要。" if decision.get("stop_broken") or decision.get("hard_veto")
+        else "可以布局，但不要一次重押。" if decision.get("buy")
+        else "現在不是不能看多，而是不值得追價。" if decision.get("overextended") or decision.get("near_pressure")
+        else "條件沒有全部確認，等待就是紀律。"
+    )
+    if decision.get("hard_veto"):
+        committee["cio_confidence"] = min(int(committee.get("cio_confidence", 0) or 0), 60)
+    return committee
 
 def build_today_action_board(res: dict, compass: dict, decision: dict, user_holding: bool = False) -> dict:
     """把 Decision Engine 濃縮成首頁四個可立即回答的行動問題。"""
@@ -1489,6 +1572,84 @@ def build_today_action_board(res: dict, compass: dict, decision: dict, user_hold
             {"question": "今天最重要的是？", "answer": "🎯 只看一件事", "reason": focus, "color": "#2563EB"},
         ],
         "focus": focus,
+    }
+
+
+
+def build_today_brief(res: dict, compass: dict, decision: dict, user_holding: bool = False) -> dict:
+    """將 Decision Engine 轉成今日一句話、三項重點，以及可做／不要做的具體指令。"""
+    current = float(res.get("current_price", 0) or 0)
+    entry = float(decision.get("entry", compass.get("entry", 0)) or 0)
+    stop = float(decision.get("stop", compass.get("stop", 0)) or 0)
+    target1 = float(decision.get("target1", compass.get("target1", 0)) or 0)
+    checklist = decision.get("checklist", []) or []
+    failed = [x for x in checklist if not x.get("passed")]
+    passed = [x for x in checklist if x.get("passed")]
+
+    def short_name(item: dict) -> str:
+        key = item.get("key", "")
+        return {
+            "price": "收盤價",
+            "volume": "成交量",
+            "ma20": "MA20",
+            "adx": "ADX",
+            "obv": "OBV／資金累積",
+        }.get(key, item.get("name", "條件確認"))
+
+    if decision.get("stop_broken"):
+        headline = "現在最重要的不是找反彈，而是先把風險控制住。"
+    elif decision.get("buy"):
+        headline = "進場條件已齊，可以開始第一筆，但不要一次押滿。"
+    elif failed:
+        first = short_name(failed[0])
+        headline = f"趨勢尚未完全確認，今天先等 {first} 補上最後證據。"
+    else:
+        headline = decision.get("summary", "今天先依既定風險計畫執行。")
+
+    priorities = []
+    for item in failed[:3]:
+        priorities.append({
+            "title": item.get("name", "等待條件確認"),
+            "current": item.get("current", "目前資料不足"),
+            "state": "尚未達成",
+            "icon": "○",
+        })
+    for item in passed:
+        if len(priorities) >= 3:
+            break
+        priorities.append({
+            "title": item.get("name", "維持已達成條件"),
+            "current": item.get("current", "已達成"),
+            "state": "持續確認",
+            "icon": "✓",
+        })
+    while len(priorities) < 3:
+        priorities.append({
+            "title": f"收盤是否守住風險防線 {stop:.2f} 元" if stop > 0 else "補齊風險防線資料",
+            "current": f"目前股價 {current:.2f} 元",
+            "state": "每日確認",
+            "icon": "○",
+        })
+
+    if decision.get("stop_broken"):
+        can_do = ["停止新增部位", "依原計畫減碼或退出", "等待重新站回風險防線後再評估"]
+        avoid = ["不要用攤平取代停損", "不要預設一定會反彈", "不要任意放寬風險防線"]
+    elif decision.get("buy"):
+        can_do = ["先執行第一筆小部位", f"將 {stop:.2f} 元寫入交易計畫" if stop > 0 else "先確認風險防線", "保留後續加碼資金"]
+        avoid = ["不要一次買滿", "不要因盤中急漲追價", "不要在未設定風險前下單"]
+    elif user_holding:
+        can_do = ["依收盤確認原趨勢是否維持", f"接近 {target1:.2f} 元時規劃停利" if target1 > 0 else "等待有效目標區", "只在條件完整時考慮加碼"]
+        avoid = ["不要在條件未齊時加碼", "不要因短線震盪隨意改計畫", "不要忽略風險防線"]
+    else:
+        first_missing = short_name(failed[0]) if failed else "進場條件"
+        can_do = [f"等待 {first_missing} 達標", f"在 {entry:.2f} 元附近觀察收盤" if entry > 0 else "等待有效評估價", "先規劃第一筆部位與風險"]
+        avoid = ["不要只因價格接近評估價就買", "不要把盤中觸價當成收盤確認", "不要在條件不足時提前重押"]
+
+    return {
+        "headline": headline,
+        "priorities": priorities[:3],
+        "can_do": can_do,
+        "avoid": avoid,
     }
 
 
@@ -1577,8 +1738,9 @@ def build_ai_investment_coach(res: dict, compass: dict, committee: dict, user_ho
     }
 
 
-def build_ai_confidence_center(res: dict, compass: dict, committee: dict) -> dict:
-    """解釋 AI 總信心的來源、加分與扣分，讓總監結論可追溯。"""
+def build_ai_confidence_center(res: dict, compass: dict, committee: dict, decision: dict = None) -> dict:
+    """解釋 AI 總信心來源，並顯示 Decision Engine 的風控否決。"""
+    decision = decision or {}
     members = committee.get("members", []) or []
     quality = float(res.get("data_quality_score", 0) or 0)
     confidences = [float(m.get("confidence", 0) or 0) for m in members]
@@ -1611,6 +1773,9 @@ def build_ai_confidence_center(res: dict, compass: dict, committee: dict) -> dic
         drivers.append(("信心分歧", f"差距 {spread:.0f} 分", "±", "部分面向把握度不同，需要看價格確認。"))
     else:
         drivers.append(("信心分歧", f"差距 {spread:.0f} 分", "−", "分析面向分歧較大，不宜把單一結論視為確定答案。"))
+
+    if decision.get("veto_reasons"):
+        drivers.append(("Decision Engine 風控", "；".join(decision.get("veto_reasons", [])[:2]), "−", "即使部分技術條件達標，風控否決權仍優先。"))
 
     missing = res.get("missing_data", []) or []
     if missing:
@@ -1648,8 +1813,8 @@ with st.sidebar:
     auto_refresh = st.checkbox("🔄 開啟盤中每 15 秒更新報價", value=False)
     show_evidence_default = st.checkbox("🔎 預設展開各項數據依據", value=False)
 
-st.markdown("## 🧭 Project Compass v60｜AI 股票決策平台")
-st.caption("先用首頁四個問題快速確認買進、加碼、停損與今日焦點，再查看投資委員會、操作劇本及完整分析。Phase 12 的所有答案皆由同一套 Decision Engine 產生。")
+st.markdown("## 🧭 Project Compass v60 正式版｜AI 股票決策平台")
+st.caption("首頁、投資委員會、AI 教練、操作劇本與信心中心皆由同一套 Decision Engine 驅動；風控否決權高於進場條件。")
 stock_input = st.text_input("請輸入核心目標個股代碼：", value="3037")
 
 u_col1, u_col2 = st.columns(2)
@@ -1664,6 +1829,7 @@ if stock_input:
         bp = bp_data["blueprint"]
         missing_text = "、".join(res["missing_data"]) if res["missing_data"] else "無"
         st.info(f"資料完整度：{res['data_quality_score']:.0f}%｜缺少：{missing_text}。資料不足的項目不納入方向判斷。")
+        st.caption(f"資料更新時間：{datetime.now(TZ).strftime('%Y-%m-%d %H:%M:%S')}（台北時間）｜報價來源：{res.get('rt_source', res.get('quote_source', '依目前可用資料'))}")
 
         # 0. Project Compass 首頁：先回答該怎麼做，再展開證據
         compass = build_compass_home_summary(res, user_holding)
@@ -1691,8 +1857,15 @@ if stock_input:
         with hc1: st.metric("目前股價", f"{res['current_price']:.2f} 元")
         with hc2: st.metric("建議評估價", f"{compass['entry']:.2f} 元")
         with hc3: st.metric("趨勢失效價（風險防線）", f"{compass['stop']:.2f} 元")
-        with hc4: st.metric("第一目標區", f"{compass['target1']:.2f} 元")
+        with hc4: st.metric(compass.get("target_kind", "第一目標區"), f"{compass['target1']:.2f} 元")
         st.caption("趨勢失效價（風險防線）：原本看多／續抱理由可能失效的價位。原則上以收盤有效跌破，或跌破同時伴隨明顯放量，作為重新評估、減碼或退出的訊號；不是預測最低價。")
+        st.caption(f"評估區狀態：{compass['entry_zone_text']}。近端風險報酬比：{compass['rr']:.2f}" if compass.get('rr') is not None else f"評估區狀態：{compass['entry_zone_text']}。近端風險報酬比目前無法計算。")
+        if compass.get("target2", 0) > compass.get("target1", 0) * 1.05:
+            st.caption(f"中長期延伸目標：{compass['target2']:.2f} 元；它不是第一筆交易的近端停利依據。")
+        if compass.get("issues"):
+            with st.expander("🛡️ 價格計畫安全檢查", expanded=True):
+                for issue in compass["issues"]:
+                    st.warning(issue)
 
         pcol, ccol = st.columns(2)
         with pcol:
@@ -1703,6 +1876,7 @@ if stock_input:
         # Phase 3：AI 投資委員會正式版（第一層摘要＋分析依據＋信心計算）
         committee = build_ai_investment_committee(res, compass)
         decision_engine = build_decision_engine(res, compass, committee, user_holding)
+        committee = align_committee_with_decision(committee, decision_engine)
         today_board = build_today_action_board(res, compass, decision_engine, user_holding)
 
         st.markdown("### 🚦 AI 今日行動中心｜四個問題快速決策")
@@ -1717,6 +1891,34 @@ if stock_input:
                   <div style="font-size:14px;color:#334155;line-height:1.7;">{card['reason']}</div>
                 </div>
                 """, unsafe_allow_html=True)
+
+
+        today_brief = build_today_brief(res, compass, decision_engine, user_holding)
+        st.markdown("### 🗓️ AI 今日任務｜只看三件事")
+        st.markdown(f"""
+        <div style="background:linear-gradient(135deg,#0F172A 0%,#1E3A8A 100%);color:#FFFFFF;padding:20px 22px;border-radius:14px;margin-bottom:14px;box-shadow:0 6px 18px rgba(15,23,42,.16);">
+          <div style="font-size:12px;color:#BFDBFE;font-weight:900;letter-spacing:.08em;">TODAY'S COACHING NOTE</div>
+          <div style="font-size:22px;font-weight:950;line-height:1.55;margin-top:7px;">{today_brief['headline']}</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        priority_cols = st.columns(3)
+        for idx, (col, item) in enumerate(zip(priority_cols, today_brief["priorities"]), start=1):
+            with col:
+                st.markdown(f"""
+                <div style="background:#FFFFFF;border:1px solid #E2E8F0;padding:16px;border-radius:12px;min-height:175px;box-shadow:0 2px 8px rgba(15,23,42,.04);">
+                  <div style="font-size:12px;color:#2563EB;font-weight:950;">今天注意 {idx}</div>
+                  <div style="font-size:16px;color:#0F172A;font-weight:950;line-height:1.55;margin-top:6px;">{item['icon']} {item['title']}</div>
+                  <div style="font-size:13px;color:#475569;line-height:1.6;margin-top:9px;">{item['current']}</div>
+                  <div style="display:inline-block;margin-top:11px;padding:4px 9px;border-radius:999px;background:#EFF6FF;color:#1D4ED8;font-size:12px;font-weight:900;">{item['state']}</div>
+                </div>
+                """, unsafe_allow_html=True)
+
+        do_col, dont_col = st.columns(2)
+        with do_col:
+            st.success("**今天可以做**\n\n" + "\n".join(f"✅ {x}" for x in today_brief["can_do"]))
+        with dont_col:
+            st.error("**今天不要做**\n\n" + "\n".join(f"❌ {x}" for x in today_brief["avoid"]))
 
         st.markdown("### 🧠 AI 投資委員會")
         st.caption("首頁先呈現每位分析師的立場、信心與一句理由；需要時可展開查看數據依據與信心組成。")
@@ -1760,12 +1962,12 @@ if stock_input:
         </div>
         <div style="background:#F8FAFC;border:1px solid #CBD5E1;padding:15px 18px;border-radius:10px;margin:0 0 24px 0;">
           <div style="font-size:12px;color:#64748B;font-weight:900;">💬 今日一句話</div>
-          <div style="font-size:18px;color:#0F172A;font-weight:950;margin-top:4px;">{committee['quote']}</div>
+          <div style="font-size:18px;color:#0F172A;font-weight:950;margin-top:4px;">{today_brief['headline']}</div>
         </div>
         """, unsafe_allow_html=True)
 
         # Phase 4：AI 情境中心（把「發生什麼」直接翻成「下一步怎麼做」）
-        scenarios = build_ai_scenario_center(res, compass, committee)
+        scenarios = build_ai_scenario_center(res, compass, committee, decision_engine)
         st.markdown("### 🎬 AI 操作劇本｜情境中心")
         st.caption("以下不是預測明天漲跌，而是預先設定：當價格真的走到該情境時，應該採取什麼行動。")
 
@@ -1827,7 +2029,7 @@ if stock_input:
             if decision_engine["missing"]:
                 st.warning("尚未達成：" + "、".join(decision_engine["missing"]))
             else:
-                st.success("五項條件皆已達成，可依風險預算開始第一筆分批布局。")
+                st.success("五項技術條件皆已達成；仍須同時通過風控否決、買點與風險報酬檢查。")
             st.info(f"執行節奏：{coach['pace']}")
         with coach_col2:
             st.markdown("#### 🧮 風險預算試算")
@@ -1852,7 +2054,7 @@ if stock_input:
 
 
         # Phase 6：AI 信心解釋中心（說明總信心從哪裡來，以及哪些因素正在扣分）
-        confidence_center = build_ai_confidence_center(res, compass, committee)
+        confidence_center = build_ai_confidence_center(res, compass, committee, decision_engine)
         st.markdown("### 🔍 AI 信心解釋｜為什麼是這個分數？")
         st.markdown(f"""
         <div style="background:#FFFFFF;border:1px solid #E2E8F0;border-left:8px solid {confidence_center['color']};padding:20px;border-radius:12px;margin:8px 0 14px 0;box-shadow:0 2px 8px rgba(15,23,42,.05);">
