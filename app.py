@@ -1082,7 +1082,23 @@ def build_ai_investment_committee(res: dict, compass: dict) -> dict:
     consensus_label = str(inst.get("consensus_label", "資料不足"))
     sitc_trend = str(res.get("sitc_trend", "投信資料不足"))
     margin_trend = str(res.get("margin_trend", "融資資料不足"))
-    broker_consensus = str(res.get("broker_consensus", "券商資料不足"))
+    bc_obj = res.get("broker_consensus", {})
+    if isinstance(bc_obj, dict):
+        if bc_obj.get("is_real") and bc_obj.get("mean") is not None:
+            broker_parts = [f"平均目標價 {float(bc_obj['mean']):.2f} 元"]
+            if bc_obj.get("high") is not None:
+                broker_parts.append(f"最高 {float(bc_obj['high']):.2f} 元")
+            if bc_obj.get("low") is not None:
+                broker_parts.append(f"最低 {float(bc_obj['low']):.2f} 元")
+            if bc_obj.get("rating"):
+                broker_parts.append(f"評等 {bc_obj.get('rating')}")
+            if bc_obj.get("coverage_count"):
+                broker_parts.append(f"涵蓋 {int(bc_obj['coverage_count'])} 位分析師")
+            broker_consensus = "｜".join(broker_parts)
+        else:
+            broker_consensus = "目前查無可靠公開券商目標價共識"
+    else:
+        broker_consensus = str(bc_obj) if bc_obj else "目前查無可靠公開券商目標價共識"
     chip_score = 52 + inst_score * 14
     chip_breakdown = [("法人一致性", inst_score * 14)] if inst_score else [("法人一致性中性", 0)]
     if any(k in sitc_trend for k in ["買", "增加", "偏多"]):
