@@ -1009,6 +1009,228 @@ def build_compass_home_summary(res: dict, is_holding: bool) -> dict:
         "rr": rr, "pros": pros[:3], "cons": cons[:3],
     }
 
+
+def build_ai_investment_committee(res: dict, compass: dict) -> dict:
+    """把既有分析結果轉成可解釋的 AI 投資委員會，不改動底層模型。"""
+    ta = res.get("trend_analysis", {}) or {}
+    inst = res.get("institutional_summary", {}) or {}
+    quality = float(res.get("data_quality_score", 0) or 0)
+
+    def clamp(value, low=0, high=100):
+        return max(low, min(high, int(round(value))))
+
+    def fmt_num(value, digits=2, suffix=""):
+        try:
+            return f"{float(value):.{digits}f}{suffix}"
+        except Exception:
+            return "資料不足"
+
+    # 1) 趨勢分析師
+    long_term = str(ta.get("long_term", "資料不足"))
+    medium_term = str(ta.get("medium_term", "資料不足"))
+    short_term = str(ta.get("short_term", "資料不足"))
+    trend_state = str(res.get("trend_state", "觀察"))
+    adx = float(ta.get("adx", 0) or 0)
+    slope60 = float(ta.get("slope60", 0) or 0)
+    ma20 = float(res.get("ma20_val", ta.get("ma20", 0)) or 0)
+    ma60 = float(res.get("ma60_val", ta.get("ma60", 0)) or 0)
+    ma120 = float(res.get("ma120_val", ta.get("ma120", 0)) or 0)
+    structure_label = str((ta.get("structure", {}) or {}).get("label", "資料不足"))
+    weekly_desc = str(ta.get("weekly_desc", "資料不足"))
+
+    trend_score = 50
+    trend_breakdown = []
+    if "多頭" in long_term or trend_state in ["多頭持有", "多頭正常拉回", "突破確認"]:
+        trend_score += 22; trend_breakdown.append(("長線／狀態偏多", +22))
+    elif "空頭" in long_term or trend_state in ["趨勢破壞", "空頭"]:
+        trend_score -= 28; trend_breakdown.append(("長線／狀態偏空", -28))
+    if ma20 > ma60 > 0:
+        trend_score += 12; trend_breakdown.append(("MA20 高於 MA60", +12))
+    elif ma20 < ma60 and ma60 > 0:
+        trend_score -= 10; trend_breakdown.append(("MA20 低於 MA60", -10))
+    if slope60 > 0:
+        trend_score += 8; trend_breakdown.append(("MA60 斜率上揚", +8))
+    elif slope60 < 0:
+        trend_score -= 8; trend_breakdown.append(("MA60 斜率下彎", -8))
+    if adx >= 25:
+        trend_score += 8; trend_breakdown.append(("ADX 顯示趨勢明確", +8))
+    elif 0 < adx < 18:
+        trend_score -= 5; trend_breakdown.append(("ADX 趨勢力不足", -5))
+    if any(k in structure_label for k in ["多頭", "Higher", "墊高", "上升"]):
+        trend_score += 7; trend_breakdown.append(("波段結構偏多", +7))
+    elif any(k in structure_label for k in ["空頭", "Lower", "下降", "破壞"]):
+        trend_score -= 7; trend_breakdown.append(("波段結構轉弱", -7))
+    trend_conf = clamp(trend_score)
+    if trend_conf >= 68:
+        trend_label, trend_color, trend_icon = "偏多", "#10B981", "🟢"
+        trend_summary = f"{long_term}，波段結構為{structure_label}；MA20、MA60目前維持多方支撐。"
+    elif trend_conf <= 42:
+        trend_label, trend_color, trend_icon = "偏空", "#EF4444", "🔴"
+        trend_summary = f"{long_term}，目前狀態為「{trend_state}」；MA60五日斜率 {slope60:+.2f}%，趨勢仍偏弱。"
+    else:
+        trend_label, trend_color, trend_icon = "中性", "#F59E0B", "🟡"
+        trend_summary = f"{long_term}／{medium_term}，ADX {adx:.1f}；目前方向尚未形成一致訊號。"
+    trend_evidence = [
+        ("短期趨勢", short_term), ("中期趨勢", medium_term), ("長期趨勢", long_term),
+        ("週線", weekly_desc), ("波段結構", structure_label), ("ADX", fmt_num(adx, 1)),
+        ("MA20", fmt_num(ma20)), ("MA60", fmt_num(ma60)), ("MA120", fmt_num(ma120)),
+        ("MA60 五日斜率", fmt_num(slope60, 2, "%")),
+    ]
+
+    # 2) 籌碼分析師
+    inst_score = int(inst.get("consensus_score", 0) or 0)
+    consensus_label = str(inst.get("consensus_label", "資料不足"))
+    sitc_trend = str(res.get("sitc_trend", "投信資料不足"))
+    margin_trend = str(res.get("margin_trend", "融資資料不足"))
+    broker_consensus = str(res.get("broker_consensus", "券商資料不足"))
+    chip_score = 52 + inst_score * 14
+    chip_breakdown = [("法人一致性", inst_score * 14)] if inst_score else [("法人一致性中性", 0)]
+    if any(k in sitc_trend for k in ["買", "增加", "偏多"]):
+        chip_score += 10; chip_breakdown.append(("投信偏買", +10))
+    elif any(k in sitc_trend for k in ["賣", "減少", "偏空"]):
+        chip_score -= 10; chip_breakdown.append(("投信偏賣", -10))
+    if any(k in margin_trend for k in ["下降", "減少", "降溫"]):
+        chip_score += 5; chip_breakdown.append(("融資降溫", +5))
+    elif any(k in margin_trend for k in ["大增", "暴增", "過熱"]):
+        chip_score -= 7; chip_breakdown.append(("融資升溫", -7))
+    chip_conf = clamp(chip_score)
+    if chip_conf >= 66:
+        chip_label, chip_color, chip_icon = "偏多", "#10B981", "🟢"
+    elif chip_conf <= 40:
+        chip_label, chip_color, chip_icon = "偏空", "#EF4444", "🔴"
+    else:
+        chip_label, chip_color, chip_icon = "中性", "#F59E0B", "🟡"
+    chip_summary = f"三大法人20日一致性為「{consensus_label}」；{sitc_trend}，{margin_trend}。"
+    chip_evidence = [
+        ("三大法人一致性", consensus_label), ("一致性分數", str(inst_score)),
+        ("投信趨勢", sitc_trend), ("融資趨勢", margin_trend),
+        ("券商共識", broker_consensus),
+    ]
+
+    # 3) 價量分析師
+    pv = str(ta.get("price_volume", "價量中性"))
+    accumulation = str(ta.get("accumulation", "資金平衡"))
+    divergence = str(ta.get("volume_divergence", "無明顯背離"))
+    vol_ratio = float(ta.get("volume_ratio", 0) or 0)
+    pv_score = 52
+    pv_breakdown = []
+    if "價漲量增" in pv:
+        pv_score += 20; pv_breakdown.append(("價漲量增", +20))
+    elif "價跌量增" in pv:
+        pv_score -= 22; pv_breakdown.append(("價跌量增", -22))
+    elif "價跌量縮" in pv:
+        pv_score += 7; pv_breakdown.append(("價跌量縮", +7))
+    if any(k in accumulation for k in ["流入", "吸籌", "累積"]):
+        pv_score += 12; pv_breakdown.append(("資金流入", +12))
+    elif "流出" in accumulation:
+        pv_score -= 12; pv_breakdown.append(("資金流出", -12))
+    if any(k in divergence for k in ["無", "沒有"]):
+        pv_score += 6; pv_breakdown.append(("未見背離", +6))
+    elif "背離" in divergence:
+        pv_score -= 8; pv_breakdown.append(("出現背離", -8))
+    if vol_ratio >= 1.2:
+        pv_score += 7; pv_breakdown.append(("量比高於 1.2", +7))
+    elif 0 < vol_ratio < 0.8:
+        pv_score -= 5; pv_breakdown.append(("量能不足", -5))
+    pv_conf = clamp(pv_score)
+    if pv_conf >= 66:
+        pv_label, pv_color, pv_icon = "偏多", "#10B981", "🟢"
+    elif pv_conf <= 40:
+        pv_label, pv_color, pv_icon = "偏空", "#EF4444", "🔴"
+    else:
+        pv_label, pv_color, pv_icon = "中性", "#F59E0B", "🟡"
+    pv_summary = f"{pv}；{accumulation}；{divergence}，目前量比 {vol_ratio:.2f}。"
+    pv_evidence = [
+        ("價量型態", pv), ("資金累積", accumulation), ("量價背離", divergence),
+        ("Volume Ratio", fmt_num(vol_ratio, 2)), ("價量綜合判讀", str(res.get("volume_verdict", "資料不足"))),
+    ]
+
+    # 4) 風控分析師
+    entry = float(compass.get("entry", 0) or 0)
+    stop = float(compass.get("stop", 0) or 0)
+    target = float(compass.get("target1", 0) or 0)
+    resistance = float(res.get("real_resistance", target) or target)
+    current = float(res.get("current_price", 0) or 0)
+    atr = float(res.get("atr", 0) or 0)
+    rr = compass.get("rr")
+    stop_pct = ((entry - stop) / entry * 100) if entry > 0 and stop > 0 else None
+    pressure_pct = ((resistance - current) / current * 100) if current > 0 and resistance > 0 else None
+    risk_score = 58
+    risk_breakdown = []
+    if quality < 60:
+        risk_score -= 22; risk_breakdown.append(("資料完整度不足", -22))
+    else:
+        risk_breakdown.append(("資料完整度足夠", +5)); risk_score += 5
+    if rr is not None and rr >= 1.5:
+        risk_score += 14; risk_breakdown.append(("風險報酬比良好", +14))
+    elif rr is not None and rr < 1.0:
+        risk_score -= 18; risk_breakdown.append(("風險報酬比不足", -18))
+    if pressure_pct is not None and pressure_pct <= 5:
+        risk_score -= 12; risk_breakdown.append(("距離壓力區過近", -12))
+    if stop_pct is not None and stop_pct > 12:
+        risk_score -= 10; risk_breakdown.append(("停損距離過大", -10))
+    elif stop_pct is not None and stop_pct <= 8:
+        risk_score += 7; risk_breakdown.append(("停損距離可控", +7))
+    risk_conf = clamp(100 - risk_score + 35)  # 數字代表對風控立場的把握度
+    if risk_score >= 72:
+        risk_label, risk_color, risk_icon = "可控", "#10B981", "🟢"
+    elif risk_score <= 48:
+        risk_label, risk_color, risk_icon = "保守", "#F97316", "🟠"
+    else:
+        risk_label, risk_color, risk_icon = "中性", "#F59E0B", "🟡"
+    rr_text = f"{rr:.2f}" if rr is not None else "無法計算"
+    pressure_text = f"{pressure_pct:.1f}%" if pressure_pct is not None else "資料不足"
+    if risk_label == "保守":
+        risk_summary = f"距離壓力區約 {pressure_text}，風險報酬比 {rr_text}；目前不建議一次重押或追高。"
+    else:
+        risk_summary = f"評估價 {entry:.2f}、失效價 {stop:.2f}，風險報酬比 {rr_text}；仍應採分批與明確停損。"
+    risk_evidence = [
+        ("ATR14", fmt_num(atr)), ("結構停損", fmt_num(res.get("structure_stop", stop))),
+        ("MA60", fmt_num(res.get("ma60_val", 0))), ("距離壓力區", pressure_text),
+        ("風險報酬比", rr_text), ("停損距離", f"{stop_pct:.1f}%" if stop_pct is not None else "資料不足"),
+        ("資料完整度", f"{quality:.0f}%"), ("大盤風險", str(res.get("m_desc", "資料不足"))),
+        ("族群風險", str(res.get("peer_resonance_text", "資料不足"))),
+    ]
+
+    members = [
+        {"role":"趨勢分析師", "avatar":"👨", "label":trend_label, "icon":trend_icon, "color":trend_color, "confidence":trend_conf, "summary":trend_summary, "evidence":trend_evidence, "breakdown":trend_breakdown},
+        {"role":"籌碼分析師", "avatar":"👩", "label":chip_label, "icon":chip_icon, "color":chip_color, "confidence":chip_conf, "summary":chip_summary, "evidence":chip_evidence, "breakdown":chip_breakdown},
+        {"role":"價量分析師", "avatar":"👨", "label":pv_label, "icon":pv_icon, "color":pv_color, "confidence":pv_conf, "summary":pv_summary, "evidence":pv_evidence, "breakdown":pv_breakdown},
+        {"role":"風控分析師", "avatar":"👩", "label":risk_label, "icon":risk_icon, "color":risk_color, "confidence":risk_conf, "summary":risk_summary, "evidence":risk_evidence, "breakdown":risk_breakdown},
+    ]
+
+    bullish = sum(m["label"] in ["偏多", "可控"] for m in members)
+    cautious = sum(m["label"] in ["中性", "保守"] for m in members)
+    bearish = sum(m["label"] == "偏空" for m in members)
+    cio_conf = clamp(sum(m["confidence"] for m in members) / len(members) * 0.75 + quality * 0.25)
+    decision = str(compass.get("decision", "等待"))
+    if quality < 60:
+        cio = "資料不足，暫緩決策"
+        cio_desc = "部分關鍵資料尚未取得，現階段應以等待與控制部位為優先。"
+        quote = "沒有足夠證據時，等待本身就是一種決策。"
+    elif bearish >= 2:
+        cio = "風險優先，等待條件改善"
+        cio_desc = "趨勢或價量已有兩項以上轉弱，不建議逆勢承擔不必要風險。"
+        quote = "保護資金，比預測反彈更重要。"
+    elif risk_label == "保守" and bullish >= 2:
+        cio = "等待拉回分批布局"
+        cio_desc = "趨勢與價量仍偏多，但買點接近壓力區，建議等待更好的風險報酬位置。"
+        quote = "現在不是不能買，而是不值得追高。"
+    elif bullish >= 3:
+        cio = decision
+        cio_desc = "多數分析面向相互支持，可依既定失效價採分批執行，避免一次重押。"
+        quote = "可以布局，但不要一次重押。"
+    else:
+        cio = f"有條件執行：{decision}"
+        cio_desc = "目前訊號尚未完全一致，應降低部位、等待價格與量能進一步確認。"
+        quote = "最大的風險不一定是趨勢，而可能是買點。"
+
+    return {
+        "members": members,
+        "bullish": bullish, "cautious": cautious, "bearish": bearish,
+        "cio": cio, "cio_desc": cio_desc, "cio_confidence": cio_conf, "quote": quote,
+    }
+
 # ============ 10. UI Presentation Layer ============
 with st.sidebar:
     st.header("🛡️ 全球資金池風控參數")
@@ -1020,7 +1242,7 @@ with st.sidebar:
     show_evidence_default = st.checkbox("🔎 預設展開各項數據依據", value=False)
 
 st.markdown("## 🧭 Project Compass v60｜AI 股票決策平台")
-st.caption("先看 AI 決策，再看價格計畫與完整證據。第一階段只調整首頁，不改動原有分析核心。")
+st.caption("先看 AI 決策，再看價格計畫與完整證據。第三階段完成 AI 投資委員會正式版；底層分析、API、快取與計算邏輯維持不變。")
 stock_input = st.text_input("請輸入核心目標個股代碼：", value="3037")
 
 u_col1, u_col2 = st.columns(2)
@@ -1069,6 +1291,55 @@ if stock_input:
             st.success("支持這個判斷的證據\n\n" + "\n".join(f"• {x}" for x in compass["pros"]))
         with ccol:
             st.warning("AI 自我檢查：可能失準的原因\n\n" + "\n".join(f"• {x}" for x in compass["cons"]))
+
+        # Phase 3：AI 投資委員會正式版（第一層摘要＋分析依據＋信心計算）
+        committee = build_ai_investment_committee(res, compass)
+        st.markdown("### 🧠 AI 投資委員會")
+        st.caption("首頁先呈現每位分析師的立場、信心與一句理由；需要時可展開查看數據依據與信心組成。")
+
+        committee_cols = st.columns(4)
+        for col, member in zip(committee_cols, committee["members"]):
+            with col:
+                st.markdown(f"""
+                <div style="background:#FFFFFF;border:1px solid #E2E8F0;border-top:5px solid {member['color']};padding:17px;border-radius:12px;min-height:225px;box-shadow:0 2px 8px rgba(15,23,42,.05);">
+                  <div style="font-size:18px;font-weight:950;color:#0F172A;">{member['avatar']} {member['role']}</div>
+                  <div style="font-size:20px;font-weight:950;color:{member['color']};margin:9px 0 3px 0;">{member['icon']} {member['label']}</div>
+                  <div style="font-size:13px;color:#64748B;font-weight:800;">信心：{member['confidence']}%</div>
+                  <div style="height:8px;background:#E2E8F0;border-radius:999px;overflow:hidden;margin:7px 0 13px 0;">
+                    <div style="width:{member['confidence']}%;height:100%;background:{member['color']};"></div>
+                  </div>
+                  <div style="font-size:14px;color:#334155;line-height:1.7;">{member['summary']}</div>
+                </div>
+                """, unsafe_allow_html=True)
+
+                with st.expander("▼ 查看分析依據", expanded=show_evidence_default):
+                    for label, value in member["evidence"]:
+                        st.markdown(f"**{label}**  \n{value}")
+                with st.expander("▼ 查看信心計算", expanded=False):
+                    if member["breakdown"]:
+                        for label, points in member["breakdown"]:
+                            sign = "+" if points > 0 else ""
+                            st.markdown(f"`{sign}{points}`　{label}")
+                    st.markdown(f"---\n**最終信心：{member['confidence']}%**")
+
+        cio_color = "#10B981" if committee["bearish"] == 0 and committee["bullish"] >= 2 else "#EF4444" if committee["bearish"] >= 2 else "#F59E0B"
+        stars = "★" * max(1, min(5, round(committee["cio_confidence"] / 20))) + "☆" * max(0, 5 - max(1, min(5, round(committee["cio_confidence"] / 20))))
+        st.markdown(f"""
+        <div style="background:#FFFFFF;border:2px solid {cio_color};border-left:8px solid {cio_color};padding:20px;border-radius:12px;margin:16px 0 10px 0;">
+          <div style="font-size:12px;color:#64748B;font-weight:900;letter-spacing:.08em;">CHIEF INVESTMENT OFFICER</div>
+          <div style="font-size:20px;color:#0F172A;font-weight:950;margin-top:5px;">🧠 AI 投資總監</div>
+          <div style="font-size:14px;color:#475569;margin-top:10px;">整體意見：偏多／可控 {committee['bullish']} 位、中性／保守 {committee['cautious']} 位、偏空 {committee['bearish']} 位</div>
+          <div style="font-size:13px;color:#64748B;font-weight:900;margin-top:16px;">🎯 最終決策</div>
+          <div style="font-size:25px;color:{cio_color};font-weight:950;margin:3px 0 8px 0;">{committee['cio']}</div>
+          <div style="font-size:14px;color:#475569;line-height:1.75;">{committee['cio_desc']}</div>
+          <div style="font-size:16px;color:#0F172A;font-weight:900;margin-top:13px;">{stars}　AI 信心：{committee['cio_confidence']}%</div>
+        </div>
+        <div style="background:#F8FAFC;border:1px solid #CBD5E1;padding:15px 18px;border-radius:10px;margin:0 0 24px 0;">
+          <div style="font-size:12px;color:#64748B;font-weight:900;">💬 今日一句話</div>
+          <div style="font-size:18px;color:#0F172A;font-weight:950;margin-top:4px;">{committee['quote']}</div>
+        </div>
+        """, unsafe_allow_html=True)
+
 
         # 1. 綜合結論卡片
         st.markdown(f"""
