@@ -9,7 +9,7 @@ from urllib3.util.retry import Retry
 from FinMind.data import DataLoader
 
 # ============ 1. Page Config ============
-st.set_page_config(page_title="Project Compass v61｜智慧決策追蹤版", layout="wide")
+st.set_page_config(page_title="Project Compass v62｜小白決策助手", layout="wide")
 
 # ============ 2. Global Constants ============
 TZ = pytz.timezone("Asia/Taipei")
@@ -1505,6 +1505,181 @@ def align_committee_with_decision(committee: dict, decision: dict) -> dict:
         committee["cio_confidence"] = min(int(committee.get("cio_confidence", 0) or 0), 60)
     return committee
 
+
+def build_if_i_were_you(
+    res: dict,
+    compass: dict,
+    decision: dict,
+    user_holding: bool,
+    user_cost: float,
+    capital_wan: float,
+    risk_pct: float,
+) -> dict:
+    """將 Decision Engine 翻成新手可以直接照著執行的今日操作。"""
+    current = float(res.get("current_price", 0) or 0)
+    entry = float(decision.get("entry", compass.get("entry", current)) or current)
+    stop = float(decision.get("stop", compass.get("stop", 0)) or 0)
+    target1 = float(decision.get("target1", compass.get("target1", 0)) or 0)
+    completed = int(decision.get("completed", 0) or 0)
+    total = int(decision.get("total", 0) or 0)
+    capital_ntd = max(float(capital_wan or 0), 0) * 10000
+    max_risk_ntd = capital_ntd * max(float(risk_pct or 0), 0) / 100
+    per_share_risk = max(entry - stop, 0)
+    max_shares = int(max_risk_ntd // per_share_risk) if per_share_risk > 0 else 0
+    first_batch_shares = int(max_shares * 0.30 // 1000 * 1000) if max_shares >= 1000 else 0
+    first_batch_amount = first_batch_shares * entry
+
+    actions = []
+    warnings = []
+    headline = decision.get("label", "🟡 等待")
+    color = decision.get("color", "#D97706")
+
+    if user_holding:
+        pnl_pct = ((current / user_cost) - 1) * 100 if user_cost > 0 else None
+        if decision.get("stop_broken"):
+            headline = "🔴 先處理風險，不要攤平"
+            color = "#DC2626"
+            actions = [
+                f"今天不要再買，也不要加碼。",
+                f"收盤若仍無法站回 {stop:.2f} 元，依原計畫減碼或退出。",
+                "不要因為帳面虧損就延後風險處理。",
+            ]
+        elif decision.get("add"):
+            headline = "🟢 續抱，可小量加碼"
+            color = "#16A34A"
+            actions = [
+                "原有部位先續抱。",
+                "加碼只用小部位，不要一次補滿。",
+                f"新增部位仍以 {stop:.2f} 元作為風險防線。",
+            ]
+        else:
+            headline = "🟡 續抱，但今天不要加碼"
+            color = "#D97706"
+            actions = [
+                "原有部位先續抱。",
+                "今天不要因為上漲就追著加碼。",
+                f"每日收盤確認是否仍守住 {stop:.2f} 元。",
+            ]
+        if pnl_pct is not None:
+            actions.insert(0, f"目前成本 {user_cost:.2f} 元、現價 {current:.2f} 元，帳面報酬 {pnl_pct:+.1f}%。")
+            if pnl_pct < 0 and not decision.get("buy"):
+                warnings.append("你目前處於虧損，而且進場條件尚未完成；不要用攤平來取代風險管理。")
+    else:
+        if decision.get("buy"):
+            headline = "🟢 可以開始第一筆布局"
+            color = "#16A34A"
+            actions = [
+                "只買第一筆，不要一次投入全部資金。",
+                f"第一筆以總計畫部位的 30% 為上限。",
+                f"買進後守住 {stop:.2f} 元風險防線。",
+            ]
+            if first_batch_shares >= 1000:
+                actions.append(f"依你設定的資金與風險，第一筆約 {first_batch_shares:,} 股，約 {first_batch_amount:,.0f} 元。")
+            else:
+                actions.append("依目前風險限制，整張股票部位可能過大；不要為了湊一張而超過風險上限。")
+        elif decision.get("stop_broken") or decision.get("hard_veto"):
+            headline = "🔴 今天不要買"
+            color = "#DC2626"
+            actions = [
+                "今天不進場。",
+                "不要猜反彈，也不要因為跌很多就覺得便宜。",
+                "等風控否決解除後，再重新評估。",
+            ]
+        else:
+            headline = "🟡 今天先不買"
+            color = "#D97706"
+            actions = [
+                "今天不進場，也不預先埋單。",
+                "等尚未完成的條件出現，再考慮第一筆。",
+                "盤中突破不算，必須以收盤確認。",
+            ]
+
+    if decision.get("overextended"):
+        warnings.append("現價已高於建議評估價超過 3%，現在最大的風險是追高。")
+    if decision.get("near_pressure"):
+        warnings.append(f"現價已接近第一目標區 {target1:.2f} 元，新的買進風險報酬較差。")
+    if completed < total and not decision.get("hard_veto"):
+        warnings.append(f"目前只完成 {completed}/{total} 項條件，還不是完整買點。")
+
+    return {
+        "headline": headline,
+        "color": color,
+        "actions": actions[:5],
+        "warnings": warnings[:3],
+    }
+
+
+def build_ai_forecast(res: dict, compass: dict, decision: dict) -> dict:
+    """告訴新手：哪些可觀察條件會讓 AI 升級、維持或轉為風控。"""
+    current = float(res.get("current_price", 0) or 0)
+    entry = float(decision.get("entry", compass.get("entry", current)) or current)
+    stop = float(decision.get("stop", compass.get("stop", 0)) or 0)
+    target1 = float(decision.get("target1", compass.get("target1", 0)) or 0)
+    checklist = decision.get("checklist", []) or []
+    failed = [item for item in checklist if not item.get("passed")]
+    passed = [item for item in checklist if item.get("passed")]
+
+    scenarios = []
+
+    if decision.get("stop_broken"):
+        scenarios.append({
+            "title": f"若收盤重新站回 {stop:.2f} 元以上",
+            "result": "🟠 由風控轉回觀察",
+            "detail": "只代表解除最急迫風險，仍需重新檢查其他進場條件。",
+            "color": "#F97316",
+        })
+    elif decision.get("buy"):
+        scenarios.append({
+            "title": f"若收盤持續站穩 {entry:.2f} 元，且五項條件不轉弱",
+            "result": "🟢 維持可分批布局",
+            "detail": "仍只執行第一筆，不因單日上漲改成一次買滿。",
+            "color": "#16A34A",
+        })
+    elif failed:
+        first = failed[0]
+        scenarios.append({
+            "title": f"若「{first.get('name', '下一項條件')}」完成",
+            "result": "🟡 AI 可能提高完成度",
+            "detail": f"目前狀態：{first.get('current', '資料不足')}。單一條件完成不保證立即轉為買進。",
+            "color": "#D97706",
+        })
+
+    if len(failed) >= 2:
+        second = failed[1]
+        scenarios.append({
+            "title": f"若再完成「{second.get('name', '另一項條件')}」",
+            "result": "🟢 更接近第一筆布局",
+            "detail": f"目前狀態：{second.get('current', '資料不足')}。",
+            "color": "#16A34A",
+        })
+    elif not failed and not decision.get("buy"):
+        scenarios.append({
+            "title": "若價格回到合理評估區，且風險報酬恢復",
+            "result": "🟢 才可能重新開放買進",
+            "detail": "技術條件完整不代表任何價格都值得買。",
+            "color": "#16A34A",
+        })
+
+    if stop > 0:
+        scenarios.append({
+            "title": f"若收盤跌至 {stop:.2f} 元或以下",
+            "result": "🔴 轉為風險處理",
+            "detail": "停止新增；已有持股則依原計畫減碼或退出，不用攤平。",
+            "color": "#DC2626",
+        })
+
+    if entry > 0 and not decision.get("overextended"):
+        chase_price = entry * 1.03
+        scenarios.append({
+            "title": f"若股價快速高於約 {chase_price:.2f} 元",
+            "result": "🟠 即使轉強也不追價",
+            "detail": "超出評估價太多時，AI 會優先保護風險報酬。",
+            "color": "#F97316",
+        })
+
+    return {"scenarios": scenarios[:4]}
+
+
 def build_today_action_board(res: dict, compass: dict, decision: dict, user_holding: bool = False) -> dict:
     """把 Decision Engine 濃縮成首頁四個可立即回答的行動問題。"""
     current = float(res.get("current_price", 0) or 0)
@@ -2017,8 +2192,8 @@ with st.sidebar:
     auto_refresh = st.checkbox("🔄 開啟盤中每 15 秒更新報價", value=False)
     show_evidence_default = st.checkbox("🔎 預設展開各項數據依據", value=False)
 
-st.markdown("## 🧭 Project Compass v61｜智慧決策追蹤版")
-st.caption("同一套 Decision Engine 驅動全站，並加入決策原因、昨日比較、近七日軌跡與 AI 資料品質自我檢查。")
+st.markdown("## 🧭 Project Compass v62｜小白決策助手")
+st.caption("把複雜分析翻成兩件事：如果我是你，今天會怎麼做；以及哪些條件會讓 AI 改變判斷。")
 stock_input = st.text_input("請輸入核心目標個股代碼：", value="3037")
 
 u_col1, u_col2 = st.columns(2)
@@ -2095,6 +2270,45 @@ if stock_input:
         data_quality_audit = build_data_quality_audit(res, decision_engine)
 
         today_board = build_today_action_board(res, compass, decision_engine, user_holding)
+        if_i_were_you = build_if_i_were_you(
+            res, compass, decision_engine, user_holding, user_cost, capital, risk_pct
+        )
+        ai_forecast = build_ai_forecast(res, compass, decision_engine)
+
+
+        st.markdown("### 👤 如果我是你｜今天直接照這樣做")
+        iw_col1, iw_col2 = st.columns([1.15, 0.85])
+        with iw_col1:
+            actions_html = "".join(
+                f"<div style='font-size:16px;color:#1E293B;line-height:1.9;'>✓ {action}</div>"
+                for action in if_i_were_you["actions"]
+            )
+            st.markdown(f"""
+            <div style="background:#FFFFFF;border:1px solid #E2E8F0;border-left:9px solid {if_i_were_you['color']};padding:22px;border-radius:14px;min-height:245px;box-shadow:0 3px 12px rgba(15,23,42,.06);">
+              <div style="font-size:12px;color:#64748B;font-weight:900;letter-spacing:.08em;">IF I WERE YOU</div>
+              <div style="font-size:27px;color:{if_i_were_you['color']};font-weight:950;margin:7px 0 13px 0;">{if_i_were_you['headline']}</div>
+              {actions_html}
+            </div>
+            """, unsafe_allow_html=True)
+        with iw_col2:
+            st.markdown("#### ⚠️ 今天特別不要犯")
+            if if_i_were_you["warnings"]:
+                for warning in if_i_were_you["warnings"]:
+                    st.warning(warning)
+            else:
+                st.success("目前沒有額外警示；照既定分批與風險防線執行即可。")
+
+        st.markdown("### 🔮 AI 預告｜什麼情況會改變判斷")
+        forecast_cols = st.columns(len(ai_forecast["scenarios"])) if ai_forecast["scenarios"] else []
+        for col, scenario in zip(forecast_cols, ai_forecast["scenarios"]):
+            with col:
+                st.markdown(f"""
+                <div style="background:#FFFFFF;border:1px solid #E2E8F0;border-top:6px solid {scenario['color']};padding:15px;border-radius:11px;min-height:205px;">
+                  <div style="font-size:13px;color:#475569;font-weight:900;line-height:1.55;">{scenario['title']}</div>
+                  <div style="font-size:19px;color:{scenario['color']};font-weight:950;margin:11px 0;">{scenario['result']}</div>
+                  <div style="font-size:13px;color:#64748B;line-height:1.65;">{scenario['detail']}</div>
+                </div>
+                """, unsafe_allow_html=True)
 
         st.markdown("### 🚦 AI 今日行動中心｜四個問題快速決策")
         st.caption("以下不是四套不同判斷，而是同一套 Decision Engine 對買進、加碼、停損與今日焦點的統一回答。")
