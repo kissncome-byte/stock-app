@@ -9,7 +9,7 @@ from urllib3.util.retry import Retry
 from FinMind.data import DataLoader
 
 # ============ 1. Page Config ============
-st.set_page_config(page_title="Project Compass v52.1｜AI 股票決策助手", layout="wide")
+st.set_page_config(page_title="Project Compass v60｜AI 股票決策平台", layout="wide")
 
 # ============ 2. Global Constants ============
 TZ = pytz.timezone("Asia/Taipei")
@@ -1019,8 +1019,8 @@ with st.sidebar:
     auto_refresh = st.checkbox("🔄 開啟盤中每 15 秒更新報價", value=False)
     show_evidence_default = st.checkbox("🔎 預設展開各項數據依據", value=False)
 
-st.markdown("## 🧭 Project Compass｜AI 股票決策助手（v52.1）")
-st.caption("先給決策，再看證據。所有建議都會顯示資料依據、信心與可能失準的原因。")
+st.markdown("## 🧭 Project Compass v60｜AI 股票決策平台")
+st.caption("先看 AI 決策，再看價格計畫與完整證據。第一階段只調整首頁，不改動原有分析核心。")
 stock_input = st.text_input("請輸入核心目標個股代碼：", value="3037")
 
 u_col1, u_col2 = st.columns(2)
@@ -1040,21 +1040,29 @@ if stock_input:
         compass = build_compass_home_summary(res, user_holding)
         decision_color = "#16A34A" if compass["decision"] in ["續抱", "分批評估"] else "#DC2626" if "減碼" in compass["decision"] else "#D97706"
         st.markdown(f"""
-        <div style="background:#0F172A;padding:22px;border-radius:12px;margin:8px 0 18px 0;color:white;">
-          <div style="font-size:13px;color:#94A3B8;font-weight:800;letter-spacing:.08em;">COMPASS DECISION</div>
-          <div style="display:flex;justify-content:space-between;align-items:flex-end;gap:12px;flex-wrap:wrap;">
-            <div><div style="font-size:34px;font-weight:900;color:{decision_color};">{compass['decision']}</div><div style="font-size:15px;color:#E2E8F0;">{compass['strategy']}｜{compass['action']}</div></div>
-            <div style="text-align:right;"><div style="font-size:12px;color:#94A3B8;">AI 信心</div><div style="font-size:30px;font-weight:900;">{compass['confidence']}%</div></div>
+        <div style="background:linear-gradient(135deg,#0F172A 0%,#1E293B 100%);padding:24px;border-radius:14px;margin:8px 0 18px 0;color:white;border:1px solid #334155;">
+          <div style="display:flex;justify-content:space-between;gap:16px;align-items:flex-start;flex-wrap:wrap;">
+            <div>
+              <div style="font-size:12px;color:#94A3B8;font-weight:800;letter-spacing:.10em;">AI DECISION CENTER</div>
+              <div style="font-size:21px;font-weight:900;margin-top:5px;">{res['stock_name']} <span style="color:#60A5FA;">({res['stock_id']})</span></div>
+              <div style="font-size:38px;font-weight:950;color:{decision_color};margin-top:6px;">{compass['decision']}</div>
+              <div style="font-size:15px;color:#E2E8F0;">{compass['strategy']}｜{compass['action']}</div>
+            </div>
+            <div style="text-align:right;min-width:140px;">
+              <div style="font-size:12px;color:#94A3B8;">AI 信心</div>
+              <div style="font-size:34px;font-weight:900;">{compass['confidence']}%</div>
+              <div style="font-size:12px;color:#CBD5E1;margin-top:3px;">資料完整度 {res['data_quality_score']:.0f}%</div>
+            </div>
           </div>
-          <div style="margin-top:16px;background:#1E293B;padding:14px;border-radius:8px;line-height:1.7;"><b>今日最重要的一句話：</b>{compass['today']}</div>
+          <div style="margin-top:17px;background:rgba(255,255,255,.07);padding:14px;border-radius:9px;line-height:1.75;border:1px solid rgba(255,255,255,.08);"><b>一句話結論：</b>{compass['today']}</div>
         </div>
         """, unsafe_allow_html=True)
 
         hc1, hc2, hc3, hc4 = st.columns(4)
-        with hc1: st.metric("建議評估價", f"{compass['entry']:.2f} 元")
-        with hc2: st.metric("趨勢失效價", f"{compass['stop']:.2f} 元")
-        with hc3: st.metric("第一目標區", f"{compass['target1']:.2f} 元")
-        with hc4: st.metric("風險報酬比", f"{compass['rr']:.2f}" if compass['rr'] is not None else "資料不足")
+        with hc1: st.metric("目前股價", f"{res['current_price']:.2f} 元")
+        with hc2: st.metric("建議評估價", f"{compass['entry']:.2f} 元")
+        with hc3: st.metric("趨勢失效價", f"{compass['stop']:.2f} 元")
+        with hc4: st.metric("第一目標區", f"{compass['target1']:.2f} 元")
 
         pcol, ccol = st.columns(2)
         with pcol:
