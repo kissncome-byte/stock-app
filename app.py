@@ -754,6 +754,23 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     swing = trend_analysis["structure"]
     structure_stop_raw = swing.get("last_swing_low") or float(hist_last.get("Sup_20D", current_price - 2*atr))
     structure_stop = floor_to_tick(min(structure_stop_raw, ma20_val - 0.5*atr) if trend_analysis["long_term"]=="長期多頭" else structure_stop_raw, t)
+
+    # 趨勢失效價必須位於目前股價下方。若波段資料、即時價與日線資料不同步，
+    # 原始 swing low 可能反而高於現價；此時改採現價下方最近的有效支撐候選。
+    stop_reference = max(float(current_price), 0.0)
+    stop_candidates = [
+        safe_float(swing.get("last_swing_low"), 0.0),
+        safe_float(hist_last.get("Sup_20D"), 0.0),
+        safe_float(ma60_val, 0.0),
+        safe_float(ma20_val - 0.5 * atr, 0.0),
+        safe_float(current_price - 2.0 * atr, 0.0),
+        safe_float(current_price * 0.97, 0.0),
+    ]
+    valid_stop_candidates = [x for x in stop_candidates if 0 < x < stop_reference]
+    if structure_stop <= 0 or structure_stop >= stop_reference:
+        fallback_stop = max(valid_stop_candidates) if valid_stop_candidates else current_price * 0.97
+        structure_stop = floor_to_tick(min(fallback_stop, current_price - t), t)
+
     trend_state_data = resolve_trend_state(stock_id, trend_analysis, current_price, structure_stop, ma20_val, ma60_val, trend_analysis["volume_ratio"])
     
     kd_status = "黃金交叉" if k9_now > d9_now else "死亡交叉"
@@ -966,6 +983,12 @@ def build_compass_home_summary(res: dict, is_holding: bool) -> dict:
     price = float(res.get("current_price", 0) or 0)
     entry = float(res.get("expected_entry_price", price) or price)
     stop = float(res.get("structure_stop", res.get("expected_stop_price", 0)) or 0)
+    # 首頁再做一次安全檢查：多方規劃的失效價不可高於現價或建議評估價。
+    stop_ceiling = min(x for x in [price, entry] if x > 0) if any(x > 0 for x in [price, entry]) else 0
+    if stop_ceiling > 0 and (stop <= 0 or stop >= stop_ceiling):
+        atr = float(res.get("atr", res.get("atr14", 0)) or 0)
+        fallback_gap = max(2.0 * atr, stop_ceiling * 0.03)
+        stop = max(0.0, stop_ceiling - fallback_gap)
     target1 = float(res.get("real_resistance", res.get("expected_target_price", 0)) or 0)
     target2 = float(res.get("expected_target_price", target1) or target1)
     risk = max(entry - stop, 0)
