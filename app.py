@@ -1306,6 +1306,89 @@ def build_ai_scenario_center(res: dict, compass: dict, committee: dict) -> list:
         },
     ]
 
+
+def build_ai_investment_coach(res: dict, compass: dict, committee: dict, user_holding: bool, user_cost: float, capital_wan: float, risk_pct: float) -> dict:
+    """依使用者是否持有，將既有價位與風險資料整理成可執行的個人化教練指令。"""
+    current = float(res.get("current_price", 0) or 0)
+    entry = float(compass.get("entry", current) or current)
+    stop = float(compass.get("stop", 0) or 0)
+    target1 = float(compass.get("target1", 0) or 0)
+    target2 = float(compass.get("target2", target1) or target1)
+    confidence = int(committee.get("cio_confidence", compass.get("confidence", 0)) or 0)
+    capital_ntd = max(float(capital_wan or 0), 0) * 10000
+    max_risk_ntd = capital_ntd * max(float(risk_pct or 0), 0) / 100
+    per_share_risk = max(entry - stop, 0)
+    shares_by_risk = int(max_risk_ntd // per_share_risk) if per_share_risk > 0 else 0
+    shares_by_cash = int(capital_ntd // entry) if entry > 0 else 0
+    suggested_shares = max(0, min(shares_by_risk, shares_by_cash))
+    suggested_lots = suggested_shares / 1000
+
+    if confidence >= 80:
+        pace = "可依條件分 3 筆執行，每筆約三分之一"
+    elif confidence >= 65:
+        pace = "先用小部位試單，確認後再增加"
+    else:
+        pace = "暫緩進場，等待訊號與資料完整度改善"
+
+    if user_holding:
+        pnl_pct = ((current / user_cost) - 1) * 100 if user_cost > 0 else None
+        if stop > 0 and current <= stop:
+            headline = "先處理風險，不預設反彈"
+            primary = "價格已到或跌破趨勢失效區，停止加碼，依原計畫減碼或退出。"
+            status = "風險處理"
+            color = "#DC2626"
+        elif target1 > 0 and current >= target1:
+            headline = "進入目標區，開始保護成果"
+            primary = "可分批停利並上移保護價；剩餘部位觀察是否有量能支持延伸。"
+            status = "保護獲利"
+            color = "#7C3AED"
+        else:
+            headline = "持有可以，但必須知道哪裡認錯"
+            primary = f"只要收盤仍守住 {stop:.2f} 元，可依原策略續抱；跌破則執行風險處理。" if stop > 0 else "目前失效價資料不足，暫不建議增加部位。"
+            status = "續抱觀察"
+            color = "#2563EB"
+        cost_text = f"成本 {user_cost:.2f} 元，目前報酬 {pnl_pct:+.1f}%" if pnl_pct is not None else "尚未輸入有效持股成本"
+        checklist = [
+            f"每日收盤確認是否守住 {stop:.2f} 元" if stop > 0 else "補齊趨勢失效價資料",
+            f"接近 {target1:.2f} 元時，先決定停利比例" if target1 > 0 else "等待有效目標價",
+            "不要因短線震盪任意放寬原本停損",
+        ]
+    else:
+        if current > entry * 1.03 and entry > 0:
+            headline = "不是不能買，而是不值得追高"
+            primary = f"現價明顯高於建議評估價 {entry:.2f} 元，等待拉回或突破後回測再分批。"
+            status = "等待買點"
+            color = "#D97706"
+        elif stop > 0 and current <= stop:
+            headline = "投資假設尚未恢復，先不要接刀"
+            primary = f"價格位於失效價 {stop:.2f} 元附近或下方，重新站回前不建立新部位。"
+            status = "暫停進場"
+            color = "#DC2626"
+        else:
+            headline = "先規劃，再下單"
+            primary = f"可在 {entry:.2f} 元附近觀察，符合量價與收盤條件後才分批執行。"
+            status = "條件式布局"
+            color = "#10B981"
+        cost_text = f"單筆風險上限約 {max_risk_ntd:,.0f} 元"
+        checklist = [
+            f"進場前先寫下失效價 {stop:.2f} 元" if stop > 0 else "失效價未確認前不下單",
+            f"第一筆只做小部位；{pace}",
+            f"第一目標先看 {target1:.2f} 元" if target1 > 0 else "目標價資料不足，暫不進場",
+        ]
+
+    sizing_note = "目前無法依風險計算建議股數。"
+    if suggested_shares > 0:
+        sizing_note = f"依資金與單筆風險上限估算，理論上限約 {suggested_shares:,} 股（{suggested_lots:.2f} 張）；實際仍應向下取整並分批。"
+
+    return {
+        "headline": headline, "primary": primary, "status": status, "color": color,
+        "cost_text": cost_text, "pace": pace, "checklist": checklist,
+        "max_risk_ntd": max_risk_ntd, "per_share_risk": per_share_risk,
+        "suggested_shares": suggested_shares, "suggested_lots": suggested_lots,
+        "sizing_note": sizing_note, "confidence": confidence,
+        "entry": entry, "stop": stop, "target1": target1, "target2": target2,
+    }
+
 # ============ 10. UI Presentation Layer ============
 with st.sidebar:
     st.header("🛡️ 全球資金池風控參數")
@@ -1317,7 +1400,7 @@ with st.sidebar:
     show_evidence_default = st.checkbox("🔎 預設展開各項數據依據", value=False)
 
 st.markdown("## 🧭 Project Compass v60｜AI 股票決策平台")
-st.caption("先看 AI 決策，再看投資委員會與情境劇本，最後查閱完整證據。第四階段完成 AI 情境中心；底層分析、API、快取與計算邏輯維持不變。")
+st.caption("先看 AI 決策，再看投資委員會、情境劇本與個人化教練，最後查閱完整證據。第五階段完成 AI 投資教練；底層分析、API、快取與計算邏輯維持不變。")
 stock_input = st.text_input("請輸入核心目標個股代碼：", value="3037")
 
 u_col1, u_col2 = st.columns(2)
@@ -1444,6 +1527,52 @@ if stock_input:
             - **上漲／下跌百分比是壓力測試，不是漲跌預測。**
             - 盤中觸價不等於確認，突破與跌破原則上仍要搭配收盤、量能及原始失效價。
             - 情境卡不會取代停損紀律；當價格跌破趨勢失效價時，應優先處理風險。
+            """)
+
+        # Phase 5：AI 投資教練（依持有狀態與風險預算，翻成今天可執行的步驟）
+        coach = build_ai_investment_coach(
+            res, compass, committee, user_holding, user_cost, capital, risk_pct
+        )
+        st.markdown("### 🧑‍🏫 AI 投資教練｜今天該做什麼")
+        st.markdown(f"""
+        <div style="background:#FFFFFF;border:1px solid #E2E8F0;border-left:8px solid {coach['color']};padding:21px;border-radius:12px;margin:8px 0 14px 0;box-shadow:0 2px 8px rgba(15,23,42,.05);">
+          <div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap;">
+            <div>
+              <div style="font-size:12px;color:#64748B;font-weight:900;letter-spacing:.08em;">PERSONAL ACTION COACH</div>
+              <div style="font-size:23px;color:#0F172A;font-weight:950;margin-top:5px;">{coach['headline']}</div>
+            </div>
+            <span style="background:{coach['color']}18;color:{coach['color']};border:1px solid {coach['color']}55;padding:5px 11px;border-radius:999px;font-size:12px;font-weight:900;">{coach['status']}</span>
+          </div>
+          <div style="font-size:15px;color:#334155;line-height:1.75;margin-top:13px;"><b>教練指令：</b>{coach['primary']}</div>
+          <div style="font-size:13px;color:#64748B;margin-top:9px;">{coach['cost_text']}｜投資委員會信心 {coach['confidence']}%</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        coach_col1, coach_col2 = st.columns([1.15, 0.85])
+        with coach_col1:
+            st.markdown("#### ✅ 今日行動清單")
+            for index, item in enumerate(coach["checklist"], start=1):
+                st.markdown(f"**{index}.** {item}")
+            st.info(f"執行節奏：{coach['pace']}")
+        with coach_col2:
+            st.markdown("#### 🧮 風險預算試算")
+            rc1, rc2 = st.columns(2)
+            with rc1:
+                st.metric("單筆風險上限", f"{coach['max_risk_ntd']:,.0f} 元")
+            with rc2:
+                st.metric("每股計畫風險", f"{coach['per_share_risk']:.2f} 元")
+            st.markdown(f"**建議評估價：** {coach['entry']:.2f} 元  ")
+            st.markdown(f"**趨勢失效價：** {coach['stop']:.2f} 元  ")
+            st.markdown(f"**第一目標區：** {coach['target1']:.2f} 元")
+            st.caption(coach["sizing_note"])
+
+        with st.expander("🔎 查看教練計算邏輯與限制", expanded=False):
+            st.markdown(f"""
+            - 核心資金池：**{capital:,.1f} 萬元**
+            - 單筆最大風險：**{risk_pct:.1f}%**，約 **{coach['max_risk_ntd']:,.0f} 元**
+            - 每股計畫風險：建議評估價減趨勢失效價，約 **{coach['per_share_risk']:.2f} 元**
+            - 理論股數同時受「風險預算」與「可用資金」限制，最後取較小值。
+            - 此試算未納入手續費、交易稅、流動性、跳空與個人其他持倉，不等同下單建議。
             """)
 
 
