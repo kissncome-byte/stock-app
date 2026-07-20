@@ -1389,6 +1389,68 @@ def build_ai_investment_coach(res: dict, compass: dict, committee: dict, user_ho
         "entry": entry, "stop": stop, "target1": target1, "target2": target2,
     }
 
+
+def build_ai_confidence_center(res: dict, compass: dict, committee: dict) -> dict:
+    """解釋 AI 總信心的來源、加分與扣分，讓總監結論可追溯。"""
+    members = committee.get("members", []) or []
+    quality = float(res.get("data_quality_score", 0) or 0)
+    confidences = [float(m.get("confidence", 0) or 0) for m in members]
+    avg_member = sum(confidences) / len(confidences) if confidences else 0.0
+    spread = (max(confidences) - min(confidences)) if confidences else 0.0
+    labels = [str(m.get("label", "")) for m in members]
+    bullish = int(committee.get("bullish", 0) or 0)
+    bearish = int(committee.get("bearish", 0) or 0)
+    cautious = int(committee.get("cautious", 0) or 0)
+    final_conf = int(committee.get("cio_confidence", compass.get("confidence", 0)) or 0)
+
+    drivers = []
+    if quality >= 80:
+        drivers.append(("資料完整度", f"{quality:.0f}%", "+", "主要資料齊全，結論可依賴度較高。"))
+    elif quality >= 60:
+        drivers.append(("資料完整度", f"{quality:.0f}%", "±", "資料可用，但仍有少數缺漏。"))
+    else:
+        drivers.append(("資料完整度", f"{quality:.0f}%", "−", "關鍵資料不足，總信心必須下修。"))
+
+    if bullish >= 3 and bearish == 0:
+        drivers.append(("分析師一致性", f"{bullish}/4 偏多或可控", "+", "多數分析面向互相支持。"))
+    elif bearish >= 2:
+        drivers.append(("分析師一致性", f"{bearish}/4 偏空", "−", "負面訊號集中，風險判斷較明確。"))
+    else:
+        drivers.append(("分析師一致性", f"{bullish} 多／{cautious} 中性保守／{bearish} 空", "±", "意見尚未完全一致，需保留安全邊際。"))
+
+    if spread <= 15:
+        drivers.append(("信心分歧", f"差距 {spread:.0f} 分", "+", "各分析師把握度接近，模型內部衝突較低。"))
+    elif spread <= 30:
+        drivers.append(("信心分歧", f"差距 {spread:.0f} 分", "±", "部分面向把握度不同，需要看價格確認。"))
+    else:
+        drivers.append(("信心分歧", f"差距 {spread:.0f} 分", "−", "分析面向分歧較大，不宜把單一結論視為確定答案。"))
+
+    missing = res.get("missing_data", []) or []
+    if missing:
+        drivers.append(("缺漏資料", "、".join(missing[:3]), "−", "缺漏項目會直接降低結論可信度。"))
+    else:
+        drivers.append(("缺漏資料", "無重大缺漏", "+", "目前沒有偵測到重大缺漏。"))
+
+    if final_conf >= 80:
+        level, color, headline = "高信心", "#10B981", "多數證據彼此支持，但仍須遵守失效價。"
+    elif final_conf >= 65:
+        level, color, headline = "中高信心", "#2563EB", "方向具有參考價值，執行仍應分批。"
+    elif final_conf >= 50:
+        level, color, headline = "中等信心", "#F59E0B", "訊號尚未完全一致，等待確認比搶先更重要。"
+    else:
+        level, color, headline = "低信心", "#EF4444", "證據不足或互相衝突，暫不適合積極決策。"
+
+    member_rows = [
+        {"role": m.get("role", "分析師"), "label": m.get("label", "中性"), "confidence": int(m.get("confidence", 0) or 0), "color": m.get("color", "#64748B")}
+        for m in members
+    ]
+    return {
+        "score": final_conf, "level": level, "color": color, "headline": headline,
+        "average_member": avg_member, "quality": quality, "spread": spread,
+        "drivers": drivers, "members": member_rows,
+        "formula": f"分析師平均 {avg_member:.0f}% × 75% ＋ 資料完整度 {quality:.0f}% × 25%",
+    }
+
 # ============ 10. UI Presentation Layer ============
 with st.sidebar:
     st.header("🛡️ 全球資金池風控參數")
@@ -1400,7 +1462,7 @@ with st.sidebar:
     show_evidence_default = st.checkbox("🔎 預設展開各項數據依據", value=False)
 
 st.markdown("## 🧭 Project Compass v60｜AI 股票決策平台")
-st.caption("先看 AI 決策，再看投資委員會、情境劇本與個人化教練，最後查閱完整證據。第五階段完成 AI 投資教練；底層分析、API、快取與計算邏輯維持不變。")
+st.caption("先看 AI 決策，再看投資委員會、情境劇本與個人化教練，最後查閱完整證據。第六階段新增 AI 信心解釋中心；底層分析、API、快取與計算邏輯維持不變。")
 stock_input = st.text_input("請輸入核心目標個股代碼：", value="3037")
 
 u_col1, u_col2 = st.columns(2)
@@ -1573,6 +1635,51 @@ if stock_input:
             - 每股計畫風險：建議評估價減趨勢失效價，約 **{coach['per_share_risk']:.2f} 元**
             - 理論股數同時受「風險預算」與「可用資金」限制，最後取較小值。
             - 此試算未納入手續費、交易稅、流動性、跳空與個人其他持倉，不等同下單建議。
+            """)
+
+
+        # Phase 6：AI 信心解釋中心（說明總信心從哪裡來，以及哪些因素正在扣分）
+        confidence_center = build_ai_confidence_center(res, compass, committee)
+        st.markdown("### 🔍 AI 信心解釋｜為什麼是這個分數？")
+        st.markdown(f"""
+        <div style="background:#FFFFFF;border:1px solid #E2E8F0;border-left:8px solid {confidence_center['color']};padding:20px;border-radius:12px;margin:8px 0 14px 0;box-shadow:0 2px 8px rgba(15,23,42,.05);">
+          <div style="display:flex;justify-content:space-between;gap:16px;align-items:center;flex-wrap:wrap;">
+            <div>
+              <div style="font-size:12px;color:#64748B;font-weight:900;letter-spacing:.08em;">EXPLAINABLE CONFIDENCE</div>
+              <div style="font-size:22px;color:#0F172A;font-weight:950;margin-top:5px;">{confidence_center['level']}｜{confidence_center['score']}%</div>
+              <div style="font-size:14px;color:#475569;line-height:1.7;margin-top:8px;">{confidence_center['headline']}</div>
+            </div>
+            <div style="min-width:190px;">
+              <div style="font-size:12px;color:#64748B;font-weight:800;margin-bottom:6px;">AI 總信心</div>
+              <div style="height:12px;background:#E2E8F0;border-radius:999px;overflow:hidden;">
+                <div style="width:{confidence_center['score']}%;height:100%;background:{confidence_center['color']};"></div>
+              </div>
+              <div style="font-size:12px;color:#64748B;margin-top:6px;text-align:right;">{confidence_center['score']} / 100</div>
+            </div>
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        conf_col1, conf_col2 = st.columns([1.05, 0.95])
+        with conf_col1:
+            st.markdown("#### 影響總信心的關鍵因素")
+            for name, value, sign, desc in confidence_center["drivers"]:
+                icon = "🟢" if sign == "+" else "🔴" if sign == "−" else "🟡"
+                st.markdown(f"**{icon} {name}｜{value}**  \n{desc}")
+        with conf_col2:
+            st.markdown("#### 四位分析師信心分布")
+            for row in confidence_center["members"]:
+                st.markdown(f"**{row['role']}｜{row['label']}｜{row['confidence']}%**")
+                st.progress(max(0, min(100, row["confidence"])))
+
+        with st.expander("🧮 查看 AI 總信心計算方式", expanded=False):
+            st.markdown(f"**目前公式：** {confidence_center['formula']}")
+            st.markdown(f"""
+            - 四位分析師平均信心：**{confidence_center['average_member']:.1f}%**
+            - 資料完整度：**{confidence_center['quality']:.1f}%**
+            - 分析師最高與最低信心差距：**{confidence_center['spread']:.1f} 分**
+            - 最終 AI 信心：**{confidence_center['score']}%**
+            - 信心代表「現有證據的一致程度」，**不代表未來上漲機率，也不保證報酬**。
             """)
 
 
