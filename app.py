@@ -70,11 +70,11 @@ def plain_structure_explanation(structure: dict) -> dict:
     if structure.get("higher_high") and structure.get("higher_low"):
         return {"title":"🟢 波段趨勢健康向上", "meaning":"最近上漲能創更高價格，拉回也守在前一次低點之上，代表買方仍掌握波段。", "impact":"短線回檔較可能是整理，而不是立即反轉。", "action":"未持有者等量縮拉回；已持有者可續抱並守前波低點。"}
     if structure.get("lower_high") and structure.get("lower_low"):
-        return {"title":"🔴 波段趨勢持續轉弱", "meaning":"最近每次反彈都低於前高，而且每次下跌又創更低點，代表空方仍占優勢。", "impact":"現在低價不一定等於便宜，仍可能繼續下跌。", "action":"未持有者先不要急著接；已持有者觀察趨勢失效價與放量跌破。"}
+        return {"title":"🔴 波段趨勢持續轉弱", "meaning":"最近每次反彈都低於前高，而且每次下跌又創更低點，代表空方仍占優勢。", "impact":"現在低價不一定等於便宜，仍可能繼續下跌。", "action":"未持有者先不要急著接；已持有者觀察趨勢失效價（風險防線）是否遭收盤有效跌破。"}
     if structure.get("lower_high") and structure.get("higher_low"):
         return {"title":"🟡 波段收斂整理", "meaning":"高點下降、低點抬高，價格波動範圍正在縮小，市場等待新方向。", "impact":"容易來回震盪，突破前不適合追價。", "action":"等待突破壓力或跌破支撐後再判斷。"}
     if structure.get("higher_high") and structure.get("lower_low"):
-        return {"title":"🟠 波動擴大、方向不穩", "meaning":"高點創高但低點也破低，代表多空拉扯劇烈。", "impact":"上下洗盤風險高，停損距離會變大。", "action":"降低部位，等待波動收斂或方向確認。"}
+        return {"title":"🟠 波動擴大、方向不穩", "meaning":"高點創高但低點也破低，代表多空拉扯劇烈。", "impact":"上下洗盤風險高，風險防線距離會變大。", "action":"降低部位，等待波動收斂或方向確認。"}
     return {"title":"🟡 波段方向尚未明朗", "meaning":"目前高低點沒有形成一致的上升或下降規律。", "impact":"單一轉折容易是假訊號。", "action":"搭配均線斜率、量價與法人連續性一起判斷。"}
 
 def plain_trend_strength(adx: float) -> dict:
@@ -656,7 +656,7 @@ def resolve_trend_state(stock_id: str, analysis: dict, current_price: float, str
     elif analysis["entry_model"]=="築底轉強": state="趨勢轉強"
     elif analysis["medium_term"]=="築底": state="築底"
     else: state="觀察"
-    reason = f"長期={analysis['long_term']}；中期={analysis['medium_term']}；短期={analysis['short_term']}；量比={volume_ratio:.2f}；結構停損={structure_stop:.2f}"
+    reason = f"長期={analysis['long_term']}；中期={analysis['medium_term']}；短期={analysis['short_term']}；量比={volume_ratio:.2f}；原始結構停損價={structure_stop:.2f}"
     now={"state":state,"weak_days":weak_days,"break_days":break_days,"reason":reason}
     if prev.get("state") != state:
         log_key=f"trend_log_{stock_id}"
@@ -1207,9 +1207,9 @@ def build_ai_investment_committee(res: dict, compass: dict) -> dict:
     if pressure_pct is not None and pressure_pct <= 5:
         risk_score -= 12; risk_breakdown.append(("距離壓力區過近", -12))
     if stop_pct is not None and stop_pct > 12:
-        risk_score -= 10; risk_breakdown.append(("停損距離過大", -10))
+        risk_score -= 10; risk_breakdown.append(("風險防線距離過大", -10))
     elif stop_pct is not None and stop_pct <= 8:
-        risk_score += 7; risk_breakdown.append(("停損距離可控", +7))
+        risk_score += 7; risk_breakdown.append(("風險防線距離可控", +7))
     risk_conf = clamp(100 - risk_score + 35)  # 數字代表對風控立場的把握度
     if risk_score >= 72:
         risk_label, risk_color, risk_icon = "可控", "#10B981", "🟢"
@@ -1222,11 +1222,11 @@ def build_ai_investment_committee(res: dict, compass: dict) -> dict:
     if risk_label == "保守":
         risk_summary = f"距離壓力區約 {pressure_text}，風險報酬比 {rr_text}；目前不建議一次重押或追高。"
     else:
-        risk_summary = f"評估價 {entry:.2f}、失效價 {stop:.2f}，風險報酬比 {rr_text}；仍應採分批與明確停損。"
+        risk_summary = f"評估價 {entry:.2f}、趨勢失效價（風險防線）{stop:.2f}，風險報酬比 {rr_text}；仍應採分批，並遵守風險防線。"
     risk_evidence = [
-        ("ATR14", fmt_num(atr)), ("結構停損", fmt_num(res.get("structure_stop", stop))),
+        ("ATR14", fmt_num(atr)), ("趨勢失效價（風險防線）", fmt_num(stop)),
         ("MA60", fmt_num(res.get("ma60_val", 0))), ("距離壓力區", pressure_text),
-        ("風險報酬比", rr_text), ("停損距離", f"{stop_pct:.1f}%" if stop_pct is not None else "資料不足"),
+        ("風險報酬比", rr_text), ("風險防線距離", f"{stop_pct:.1f}%" if stop_pct is not None else "資料不足"),
         ("資料完整度", f"{quality:.0f}%"), ("大盤風險", str(res.get("m_desc", "資料不足"))),
         ("族群風險", str(res.get("peer_resonance_text", "資料不足"))),
     ]
@@ -1257,7 +1257,7 @@ def build_ai_investment_committee(res: dict, compass: dict) -> dict:
         quote = "現在不是不能買，而是不值得追高。"
     elif bullish >= 3:
         cio = decision
-        cio_desc = "多數分析面向相互支持，可依既定失效價採分批執行，避免一次重押。"
+        cio_desc = "多數分析面向相互支持，可依既定趨勢失效價（風險防線）採分批執行，避免一次重押。"
         quote = "可以布局，但不要一次重押。"
     else:
         cio = f"有條件執行：{decision}"
@@ -1304,23 +1304,23 @@ def build_ai_scenario_center(res: dict, compass: dict, committee: dict) -> list:
         up_tag, up_color = "續抱不追高", "#10B981"
 
     if stop > 0 and down_price <= stop:
-        down_title = "下跌 2% 並逼近趨勢失效價"
-        down_action = "停止新增部位；若收盤跌破失效價，依紀律減碼或退出，不用急著攤平。"
-        down_watch = f"關鍵防線 {failure_line:.2f} 元，盤中跌破後仍要看收盤是否收回。"
+        down_title = "下跌 2% 並逼近趨勢失效價（風險防線）"
+        down_action = "停止新增部位；若收盤有效跌破趨勢失效價（風險防線），依紀律減碼或退出，不用急著攤平。"
+        down_watch = f"趨勢失效價（風險防線）{failure_line:.2f} 元，盤中跌破後仍要看收盤是否收回。"
         down_tag, down_color = "風險優先", "#EF4444"
     else:
         down_title = "下跌 2%，仍在風險界線之上"
         down_action = "先確認是否量縮與支撐有效；符合原計畫才小量分批，不因跌幅自動抄底。"
-        down_watch = f"建議評估價 {entry:.2f} 元、趨勢失效價 {failure_line:.2f} 元。"
+        down_watch = f"建議評估價 {entry:.2f} 元、趨勢失效價（風險防線）{failure_line:.2f} 元。"
         down_tag, down_color = "觀察支撐", "#F59E0B"
 
-    breakout_action = "收盤站穩後可分批建立或增加部位，第一筆仍以小部位為主，失效價不向下放寬。"
+    breakout_action = "收盤站穩後可分批建立或增加部位，第一筆仍以小部位為主，趨勢失效價（風險防線）不向下放寬。"
     if committee.get("cio", "").startswith("等待"):
         breakout_action = "這是原本等待策略的轉折條件；確認站穩後再由等待改為分批布局。"
     breakout_watch = f"確認價約 {breakout_confirm:.2f} 元；第一目標 {target1:.2f} 元，延伸目標 {target2:.2f} 元。"
 
     failure_action = "停止買進並執行風險處理；已有部位依原設定減碼或退出，重新站回前不預設反彈。"
-    failure_watch = f"失效價 {failure_line:.2f} 元；跌破後觀察是否伴隨放量與 MA60 轉弱。"
+    failure_watch = f"趨勢失效價（風險防線）{failure_line:.2f} 元；收盤有效跌破後，再確認是否伴隨放量與 MA60 轉弱。"
 
     return [
         {
@@ -1339,16 +1339,93 @@ def build_ai_scenario_center(res: dict, compass: dict, committee: dict) -> list:
             "action": breakout_action, "watch": breakout_watch,
         },
         {
-            "icon": "🛑", "name": "跌破趨勢失效價", "price": failure_line,
-            "title": "原投資假設失效", "tag": "停止新增／執行退出", "color": "#DC2626",
+            "icon": "🛑", "name": "收盤有效跌破趨勢失效價（風險防線）", "price": failure_line,
+            "title": "原投資假設失效", "tag": "停止新增／依計畫減碼或退出", "color": "#DC2626",
             "action": failure_action, "watch": failure_watch,
         },
     ]
 
 
-def build_ai_investment_coach(res: dict, compass: dict, committee: dict, user_holding: bool, user_cost: float, capital_wan: float, risk_pct: float) -> dict:
+
+def build_decision_engine(res: dict, compass: dict, committee: dict, user_holding: bool = False) -> dict:
+    """Project Compass 單一決策引擎：集中產生買進、加碼、風險與 Checklist 判斷。
+
+    所有條件都使用程式既有資料；資料不足時不會自動視為通過。
+    """
+    ta = res.get("trend_analysis", {}) or {}
+    current = float(res.get("current_price", 0) or 0)
+    entry = float(compass.get("entry", current) or current)
+    stop = float(compass.get("stop", 0) or 0)
+    target1 = float(compass.get("target1", 0) or 0)
+    ma20 = float(res.get("ma20_val", ta.get("ma20", 0)) or 0)
+    ma60 = float(res.get("ma60_val", ta.get("ma60", 0)) or 0)
+    slope20 = float(ta.get("slope20", 0) or 0)
+    adx = float(ta.get("adx", 0) or 0)
+    vol_ratio = float(ta.get("volume_ratio", 0) or 0)
+    accumulation = str(ta.get("accumulation", "資料不足"))
+    trend_state = str(res.get("trend_state", "觀察"))
+
+    price_ok = current >= entry if current > 0 and entry > 0 else False
+    volume_ok = vol_ratio >= 1.20
+    ma20_ok = slope20 > 0 and current >= ma20 if ma20 > 0 else False
+    adx_ok = adx >= 25
+    obv_ok = any(k in accumulation for k in ["累積", "流入", "吸籌"])
+
+    checklist = [
+        {"key":"price", "name":f"收盤站上建議評估價 {entry:.2f} 元", "passed":price_ok,
+         "current":f"目前 {current:.2f} 元", "why":"收盤站上評估價，代表價格已回到策略可執行區；盤中觸價不算確認。"},
+        {"key":"volume", "name":"成交量達近 20 日均量 1.20 倍", "passed":volume_ok,
+         "current":f"目前 {vol_ratio:.2f} 倍", "why":"量能高於近期均量，較能降低無量突破或短暫反彈的風險。"},
+        {"key":"ma20", "name":"MA20 上揚且收盤位於 MA20 之上", "passed":ma20_ok,
+         "current":f"MA20 {ma20:.2f} 元｜20日線斜率 {slope20:+.2f}%", "why":"同時要求均線方向向上與價格站上均線，避免只看單日反彈。"},
+        {"key":"adx", "name":"ADX 至少 25", "passed":adx_ok,
+         "current":f"目前 ADX {adx:.1f}", "why":"ADX 達 25 通常表示趨勢較明確；低於此值時較容易處於盤整。"},
+        {"key":"obv", "name":"資金累積／OBV 未轉弱", "passed":obv_ok,
+         "current":accumulation, "why":"價格上漲若沒有資金累積支持，突破延續性通常較差。"},
+    ]
+    completed = sum(1 for item in checklist if item["passed"])
+    total = len(checklist)
+    missing = [item["name"] for item in checklist if not item["passed"]]
+
+    stop_broken = stop > 0 and current <= stop
+    near_pressure = target1 > 0 and current >= target1 * 0.95
+    if stop_broken:
+        status, label, color = "STOP", "🔴 風險處理", "#DC2626"
+        buy, add, reduce_or_exit = False, False, True
+        summary = f"目前價格已到或跌破 {stop:.2f} 元風險防線，停止新增並依紀律處理部位。"
+    elif completed == total:
+        status, label, color = "BUY", "🟢 可分批布局", "#16A34A"
+        buy, add, reduce_or_exit = True, not near_pressure, False
+        summary = "五項進場條件皆已達成，可開始第一筆分批布局，但不要一次押滿。"
+    elif completed >= 3:
+        status, label, color = "WAIT", "🟡 觀察中", "#D97706"
+        buy, add, reduce_or_exit = False, False, False
+        short_missing = "、".join([m.split(" ")[0] for m in missing[:2]])
+        summary = f"目前完成 {completed}/{total}，還差 {short_missing} 等條件，今天先不要急著執行。"
+    elif completed == 2:
+        status, label, color = "WAIT", "🟠 再等等", "#F97316"
+        buy, add, reduce_or_exit = False, False, False
+        summary = f"目前只完成 {completed}/{total}，量價或趨勢確認不足，暫不進場。"
+    else:
+        status, label, color = "AVOID", "🔴 不建議進場", "#DC2626"
+        buy, add, reduce_or_exit = False, False, False
+        summary = f"目前只完成 {completed}/{total}，證據不足，保留資金比搶先進場重要。"
+
+    if user_holding and not stop_broken:
+        add = completed == total and not near_pressure
+
+    return {
+        "status": status, "label": label, "color": color, "summary": summary,
+        "buy": buy, "add": add, "reduce_or_exit": reduce_or_exit,
+        "completed": completed, "total": total, "missing": missing,
+        "checklist": checklist, "stop_broken": stop_broken, "near_pressure": near_pressure,
+        "entry": entry, "stop": stop, "target1": target1, "trend_state": trend_state,
+    }
+
+def build_ai_investment_coach(res: dict, compass: dict, committee: dict, user_holding: bool, user_cost: float, capital_wan: float, risk_pct: float, decision_engine: dict = None) -> dict:
     """依使用者是否持有，將既有價位與風險資料整理成可執行的個人化教練指令。"""
     current = float(res.get("current_price", 0) or 0)
+    decision_engine = decision_engine or build_decision_engine(res, compass, committee, user_holding)
     entry = float(compass.get("entry", current) or current)
     stop = float(compass.get("stop", 0) or 0)
     target1 = float(compass.get("target1", 0) or 0)
@@ -1383,12 +1460,12 @@ def build_ai_investment_coach(res: dict, compass: dict, committee: dict, user_ho
             color = "#7C3AED"
         else:
             headline = "持有可以，但必須知道哪裡認錯"
-            primary = f"只要收盤仍守住 {stop:.2f} 元，可依原策略續抱；跌破則執行風險處理。" if stop > 0 else "目前失效價資料不足，暫不建議增加部位。"
+            primary = f"只要收盤仍守住 {stop:.2f} 元，可依原策略續抱；跌破則執行風險處理。" if stop > 0 else "目前趨勢失效價（風險防線）資料不足，暫不建議增加部位。"
             status = "續抱觀察"
             color = "#2563EB"
         cost_text = f"成本 {user_cost:.2f} 元，目前報酬 {pnl_pct:+.1f}%" if pnl_pct is not None else "尚未輸入有效持股成本"
         checklist = [
-            f"每日收盤確認是否守住 {stop:.2f} 元" if stop > 0 else "補齊趨勢失效價資料",
+            f"每日收盤確認是否守住 {stop:.2f} 元" if stop > 0 else "補齊趨勢失效價（風險防線）資料",
             f"接近 {target1:.2f} 元時，先決定停利比例" if target1 > 0 else "等待有效目標價",
             "不要因短線震盪任意放寬原本停損",
         ]
@@ -1400,17 +1477,17 @@ def build_ai_investment_coach(res: dict, compass: dict, committee: dict, user_ho
             color = "#D97706"
         elif stop > 0 and current <= stop:
             headline = "投資假設尚未恢復，先不要接刀"
-            primary = f"價格位於失效價 {stop:.2f} 元附近或下方，重新站回前不建立新部位。"
+            primary = f"價格位於趨勢失效價（風險防線）{stop:.2f} 元附近或下方，重新站回前不建立新部位。"
             status = "暫停進場"
             color = "#DC2626"
         else:
             headline = "先規劃，再下單"
-            primary = f"可在 {entry:.2f} 元附近觀察，符合量價與收盤條件後才分批執行。"
-            status = "條件式布局"
-            color = "#10B981"
+            primary = decision_engine["summary"]
+            status = decision_engine["label"]
+            color = decision_engine["color"]
         cost_text = f"單筆風險上限約 {max_risk_ntd:,.0f} 元"
         checklist = [
-            f"進場前先寫下失效價 {stop:.2f} 元" if stop > 0 else "失效價未確認前不下單",
+            f"進場前先寫下趨勢失效價（風險防線）{stop:.2f} 元" if stop > 0 else "趨勢失效價（風險防線）未確認前不下單",
             f"第一筆只做小部位；{pace}",
             f"第一目標先看 {target1:.2f} 元" if target1 > 0 else "目標價資料不足，暫不進場",
         ]
@@ -1426,6 +1503,7 @@ def build_ai_investment_coach(res: dict, compass: dict, committee: dict, user_ho
         "suggested_shares": suggested_shares, "suggested_lots": suggested_lots,
         "sizing_note": sizing_note, "confidence": confidence,
         "entry": entry, "stop": stop, "target1": target1, "target2": target2,
+        "decision_engine": decision_engine,
     }
 
 
@@ -1471,7 +1549,7 @@ def build_ai_confidence_center(res: dict, compass: dict, committee: dict) -> dic
         drivers.append(("缺漏資料", "無重大缺漏", "+", "目前沒有偵測到重大缺漏。"))
 
     if final_conf >= 80:
-        level, color, headline = "高信心", "#10B981", "多數證據彼此支持，但仍須遵守失效價。"
+        level, color, headline = "高信心", "#10B981", "多數證據彼此支持，但仍須遵守趨勢失效價（風險防線）。"
     elif final_conf >= 65:
         level, color, headline = "中高信心", "#2563EB", "方向具有參考價值，執行仍應分批。"
     elif final_conf >= 50:
@@ -1501,7 +1579,7 @@ with st.sidebar:
     show_evidence_default = st.checkbox("🔎 預設展開各項數據依據", value=False)
 
 st.markdown("## 🧭 Project Compass v60｜AI 股票決策平台")
-st.caption("先看 AI 決策，再看投資委員會、情境劇本與個人化教練；需要時再展開完整專業分析。第七階段將底層分析集中收合，API、快取與計算邏輯維持不變。")
+st.caption("先看 AI 決策，再看投資委員會、情境劇本與個人化教練；需要時再展開完整專業分析。Phase 11 已建立單一 Decision Engine，AI 教練會直接顯示可執行的收盤、量能、均線、ADX 與資金條件。")
 stock_input = st.text_input("請輸入核心目標個股代碼：", value="3037")
 
 u_col1, u_col2 = st.columns(2)
@@ -1542,8 +1620,9 @@ if stock_input:
         hc1, hc2, hc3, hc4 = st.columns(4)
         with hc1: st.metric("目前股價", f"{res['current_price']:.2f} 元")
         with hc2: st.metric("建議評估價", f"{compass['entry']:.2f} 元")
-        with hc3: st.metric("趨勢失效價", f"{compass['stop']:.2f} 元")
+        with hc3: st.metric("趨勢失效價（風險防線）", f"{compass['stop']:.2f} 元")
         with hc4: st.metric("第一目標區", f"{compass['target1']:.2f} 元")
+        st.caption("趨勢失效價（風險防線）：原本看多／續抱理由可能失效的價位。原則上以收盤有效跌破，或跌破同時伴隨明顯放量，作為重新評估、減碼或退出的訊號；不是預測最低價。")
 
         pcol, ccol = st.columns(2)
         with pcol:
@@ -1626,13 +1705,14 @@ if stock_input:
         with st.expander("📌 情境中心使用說明", expanded=False):
             st.markdown("""
             - **上漲／下跌百分比是壓力測試，不是漲跌預測。**
-            - 盤中觸價不等於確認，突破與跌破原則上仍要搭配收盤、量能及原始失效價。
-            - 情境卡不會取代停損紀律；當價格跌破趨勢失效價時，應優先處理風險。
+            - 盤中觸價不等於確認，突破與跌破原則上仍要搭配收盤、量能及原始技術防線。
+            - 情境卡不會取代風險紀律；當價格收盤有效跌破趨勢失效價（風險防線）時，應優先處理風險。
             """)
 
         # Phase 5：AI 投資教練（依持有狀態與風險預算，翻成今天可執行的步驟）
+        decision_engine = build_decision_engine(res, compass, committee, user_holding)
         coach = build_ai_investment_coach(
-            res, compass, committee, user_holding, user_cost, capital, risk_pct
+            res, compass, committee, user_holding, user_cost, capital, risk_pct, decision_engine
         )
         st.markdown("### 🧑‍🏫 AI 投資教練｜今天該做什麼")
         st.markdown(f"""
@@ -1651,9 +1731,17 @@ if stock_input:
 
         coach_col1, coach_col2 = st.columns([1.15, 0.85])
         with coach_col1:
-            st.markdown("#### ✅ 今日行動清單")
-            for index, item in enumerate(coach["checklist"], start=1):
-                st.markdown(f"**{index}.** {item}")
+            st.markdown("#### ✅ AI 進場 Checklist")
+            st.markdown(f"**完成度：{decision_engine['completed']} / {decision_engine['total']}｜{decision_engine['label']}**")
+            for item in decision_engine["checklist"]:
+                mark = "✅" if item["passed"] else "❌"
+                st.markdown(f"{mark} **{item['name']}**  \n{item['current']}")
+                with st.expander(f"為什麼要看：{item['name']}", expanded=False):
+                    st.write(item["why"])
+            if decision_engine["missing"]:
+                st.warning("尚未達成：" + "、".join(decision_engine["missing"]))
+            else:
+                st.success("五項條件皆已達成，可依風險預算開始第一筆分批布局。")
             st.info(f"執行節奏：{coach['pace']}")
         with coach_col2:
             st.markdown("#### 🧮 風險預算試算")
@@ -1663,7 +1751,7 @@ if stock_input:
             with rc2:
                 st.metric("每股計畫風險", f"{coach['per_share_risk']:.2f} 元")
             st.markdown(f"**建議評估價：** {coach['entry']:.2f} 元  ")
-            st.markdown(f"**趨勢失效價：** {coach['stop']:.2f} 元  ")
+            st.markdown(f"**趨勢失效價（風險防線）：** {coach['stop']:.2f} 元  ")
             st.markdown(f"**第一目標區：** {coach['target1']:.2f} 元")
             st.caption(coach["sizing_note"])
 
@@ -1671,7 +1759,7 @@ if stock_input:
             st.markdown(f"""
             - 核心資金池：**{capital:,.1f} 萬元**
             - 單筆最大風險：**{risk_pct:.1f}%**，約 **{coach['max_risk_ntd']:,.0f} 元**
-            - 每股計畫風險：建議評估價減趨勢失效價，約 **{coach['per_share_risk']:.2f} 元**
+            - 每股計畫風險：建議評估價減趨勢失效價（風險防線），約 **{coach['per_share_risk']:.2f} 元**
             - 理論股數同時受「風險預算」與「可用資金」限制，最後取較小值。
             - 此試算未納入手續費、交易稅、流動性、跳空與個人其他持倉，不等同下單建議。
             """)
