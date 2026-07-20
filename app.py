@@ -1231,6 +1231,81 @@ def build_ai_investment_committee(res: dict, compass: dict) -> dict:
         "cio": cio, "cio_desc": cio_desc, "cio_confidence": cio_conf, "quote": quote,
     }
 
+
+
+def build_ai_scenario_center(res: dict, compass: dict, committee: dict) -> list:
+    """以既有價格計畫建立四種操作情境，不新增資料來源、不改動原始評分模型。"""
+    current = float(res.get("current_price", 0) or 0)
+    entry = float(compass.get("entry", current) or current)
+    stop = float(compass.get("stop", 0) or 0)
+    target1 = float(compass.get("target1", current) or current)
+    target2 = float(compass.get("target2", target1) or target1)
+    resistance = float(res.get("real_resistance", target1) or target1)
+    atr = float(res.get("atr", 0) or 0)
+    tick = tick_size(current) if current > 0 else 0.01
+
+    def px(value):
+        return round_to_tick(max(0, value), tick)
+
+    up_price = px(current * 1.03)
+    down_price = px(current * 0.98)
+    breakout_line = px(max(resistance, target1))
+    breakout_confirm = px(breakout_line + max(atr * 0.25, tick))
+    failure_line = px(stop)
+
+    if up_price >= breakout_line > 0:
+        up_title = "上漲 3% 並接近／突破壓力"
+        up_action = "不要直接追價；先看收盤能否站穩壓力區，已有部位可續抱並上移保護。"
+        up_watch = f"收盤是否站穩 {breakout_line:.2f} 元，且成交量至少不低於近期均量。"
+        up_tag, up_color = "確認後再加碼", "#2563EB"
+    else:
+        up_title = "上漲 3%，但尚未完成突破"
+        up_action = "已有部位續抱；未持有者避免因單日上漲追高，等待突破確認或回測。"
+        up_watch = f"上方壓力約 {breakout_line:.2f} 元，先觀察是否放量靠近。"
+        up_tag, up_color = "續抱不追高", "#10B981"
+
+    if stop > 0 and down_price <= stop:
+        down_title = "下跌 2% 並逼近趨勢失效價"
+        down_action = "停止新增部位；若收盤跌破失效價，依紀律減碼或退出，不用急著攤平。"
+        down_watch = f"關鍵防線 {failure_line:.2f} 元，盤中跌破後仍要看收盤是否收回。"
+        down_tag, down_color = "風險優先", "#EF4444"
+    else:
+        down_title = "下跌 2%，仍在風險界線之上"
+        down_action = "先確認是否量縮與支撐有效；符合原計畫才小量分批，不因跌幅自動抄底。"
+        down_watch = f"建議評估價 {entry:.2f} 元、趨勢失效價 {failure_line:.2f} 元。"
+        down_tag, down_color = "觀察支撐", "#F59E0B"
+
+    breakout_action = "收盤站穩後可分批建立或增加部位，第一筆仍以小部位為主，失效價不向下放寬。"
+    if committee.get("cio", "").startswith("等待"):
+        breakout_action = "這是原本等待策略的轉折條件；確認站穩後再由等待改為分批布局。"
+    breakout_watch = f"確認價約 {breakout_confirm:.2f} 元；第一目標 {target1:.2f} 元，延伸目標 {target2:.2f} 元。"
+
+    failure_action = "停止買進並執行風險處理；已有部位依原設定減碼或退出，重新站回前不預設反彈。"
+    failure_watch = f"失效價 {failure_line:.2f} 元；跌破後觀察是否伴隨放量與 MA60 轉弱。"
+
+    return [
+        {
+            "icon": "📈", "name": "明天上漲 3%", "price": up_price,
+            "title": up_title, "tag": up_tag, "color": up_color,
+            "action": up_action, "watch": up_watch,
+        },
+        {
+            "icon": "📉", "name": "明天下跌 2%", "price": down_price,
+            "title": down_title, "tag": down_tag, "color": down_color,
+            "action": down_action, "watch": down_watch,
+        },
+        {
+            "icon": "🚀", "name": "突破確認", "price": breakout_confirm,
+            "title": "價格與收盤共同確認突破", "tag": "分批執行", "color": "#7C3AED",
+            "action": breakout_action, "watch": breakout_watch,
+        },
+        {
+            "icon": "🛑", "name": "跌破趨勢失效價", "price": failure_line,
+            "title": "原投資假設失效", "tag": "停止新增／執行退出", "color": "#DC2626",
+            "action": failure_action, "watch": failure_watch,
+        },
+    ]
+
 # ============ 10. UI Presentation Layer ============
 with st.sidebar:
     st.header("🛡️ 全球資金池風控參數")
@@ -1242,7 +1317,7 @@ with st.sidebar:
     show_evidence_default = st.checkbox("🔎 預設展開各項數據依據", value=False)
 
 st.markdown("## 🧭 Project Compass v60｜AI 股票決策平台")
-st.caption("先看 AI 決策，再看價格計畫與完整證據。第三階段完成 AI 投資委員會正式版；底層分析、API、快取與計算邏輯維持不變。")
+st.caption("先看 AI 決策，再看投資委員會與情境劇本，最後查閱完整證據。第四階段完成 AI 情境中心；底層分析、API、快取與計算邏輯維持不變。")
 stock_input = st.text_input("請輸入核心目標個股代碼：", value="3037")
 
 u_col1, u_col2 = st.columns(2)
@@ -1339,6 +1414,37 @@ if stock_input:
           <div style="font-size:18px;color:#0F172A;font-weight:950;margin-top:4px;">{committee['quote']}</div>
         </div>
         """, unsafe_allow_html=True)
+
+        # Phase 4：AI 情境中心（把「發生什麼」直接翻成「下一步怎麼做」）
+        scenarios = build_ai_scenario_center(res, compass, committee)
+        st.markdown("### 🎬 AI 操作劇本｜情境中心")
+        st.caption("以下不是預測明天漲跌，而是預先設定：當價格真的走到該情境時，應該採取什麼行動。")
+
+        srow1 = st.columns(2)
+        srow2 = st.columns(2)
+        for col, scenario in zip(srow1 + srow2, scenarios):
+            with col:
+                st.markdown(f"""
+                <div style="background:#FFFFFF;border:1px solid #E2E8F0;border-left:7px solid {scenario['color']};padding:18px;border-radius:12px;min-height:235px;margin-bottom:14px;box-shadow:0 2px 8px rgba(15,23,42,.05);">
+                  <div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;">
+                    <div>
+                      <div style="font-size:18px;font-weight:950;color:#0F172A;">{scenario['icon']} {scenario['name']}</div>
+                      <div style="font-size:13px;color:#64748B;margin-top:3px;">參考價格：<b>{scenario['price']:.2f} 元</b></div>
+                    </div>
+                    <span style="background:{scenario['color']}18;color:{scenario['color']};border:1px solid {scenario['color']}55;padding:4px 9px;border-radius:999px;font-size:12px;font-weight:900;white-space:nowrap;">{scenario['tag']}</span>
+                  </div>
+                  <div style="font-size:16px;font-weight:900;color:#1E293B;margin-top:15px;">{scenario['title']}</div>
+                  <div style="font-size:14px;color:#334155;line-height:1.7;margin-top:10px;"><b>AI 建議：</b>{scenario['action']}</div>
+                  <div style="font-size:13px;color:#64748B;line-height:1.65;margin-top:10px;padding-top:10px;border-top:1px dashed #CBD5E1;"><b>需要確認：</b>{scenario['watch']}</div>
+                </div>
+                """, unsafe_allow_html=True)
+
+        with st.expander("📌 情境中心使用說明", expanded=False):
+            st.markdown("""
+            - **上漲／下跌百分比是壓力測試，不是漲跌預測。**
+            - 盤中觸價不等於確認，突破與跌破原則上仍要搭配收盤、量能及原始失效價。
+            - 情境卡不會取代停損紀律；當價格跌破趨勢失效價時，應優先處理風險。
+            """)
 
 
         # 1. 綜合結論卡片
