@@ -146,6 +146,31 @@ def get_api():
     return api
 
 # ============ 5. Live Data Streaming Engine ============
+def format_market_timestamp(value):
+    """將秒／毫秒／微秒／奈秒 Unix timestamp 或字串轉為台北時間。"""
+    if value in (None, "", 0, "0"):
+        return None
+    try:
+        number = float(value)
+        absolute = abs(number)
+        if absolute >= 1e17:      # 奈秒
+            number /= 1_000_000_000
+        elif absolute >= 1e14:    # 微秒
+            number /= 1_000_000
+        elif absolute >= 1e11:    # 毫秒
+            number /= 1_000
+        dt = datetime.fromtimestamp(number, tz=timezone.utc).astimezone(TZ)
+        return dt.strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:
+        text = str(value).strip()
+        try:
+            dt = pd.to_datetime(text, utc=True)
+            if pd.isna(dt):
+                return text
+            return dt.tz_convert(TZ).strftime("%Y-%m-%d %H:%M:%S")
+        except Exception:
+            return text
+
 def compute_live_data(stock_id: str, market_type: str, hist_last_close: float, hist_last_vol: float):
     """回傳統一單位：成交量一律為張，並附前收與資料時間。"""
     hist_lots = hist_last_vol / 1000.0 if hist_last_vol > 0 else 0.0
@@ -163,14 +188,17 @@ def compute_live_data(stock_id: str, market_type: str, hist_last_close: float, h
                 data = r.json().get("data", r.json())
                 price = safe_float(data.get("closePrice")) or safe_float(data.get("referencePrice"))
                 prev = safe_float(data.get("previousClose")) or safe_float(data.get("referencePrice")) or hist_last_close
-                raw_volume = data.get("total", {}).get("tradeVolume", None)
-                vol_shares = safe_float(raw_volume)
-                volume_valid = vol_shares > 0
-                quote_time = data.get("lastUpdated") or data.get("closeTime") or data.get("date")
+                total_data = data.get("total", {}) or {}
+                raw_volume = total_data.get("tradeVolume", None)
+                # Fugle 台股即時行情的累計成交量以「張」呈現，直接統一為 lots。
+                vol_lots = safe_float(raw_volume)
+                volume_valid = vol_lots > 0
+                raw_quote_time = total_data.get("time") or data.get("lastUpdated") or data.get("closeTime") or data.get("date")
+                quote_time = format_market_timestamp(raw_quote_time)
                 if price > 0:
                     return {"open": safe_float(data.get("openPrice")) or price, "high": safe_float(data.get("highPrice")) or price,
                             "low": safe_float(data.get("lowPrice")) or price, "close": price,
-                            "volume_lots": vol_shares / 1000.0 if volume_valid else 0.0,
+                            "volume_lots": vol_lots if volume_valid else 0.0,
                             "previous_close": prev, "success": True, "source": "Fugle 即時行情",
                             "quote_time": quote_time, "is_stale": False,
                             "volume_valid": volume_valid, "raw_volume": raw_volume,
@@ -810,9 +838,21 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     quote = compute_live_data(stock_id, market_type, float(hist_last_raw["close"]), float(hist_last_raw["vol"]))
     rt_open, rt_high, rt_low, rt_close = quote["open"], quote["high"], quote["low"], quote["close"]
     rt_vol_lots, rt_success, rt_source = quote["volume_lots"], quote["success"], quote["source"]
-    volume_valid = bool(quote.get("volume_valid", rt_vol_lots > 0)) and USE_INTRADAY_VOLUME_RATIO
+    quote_volume_valid = bool(quote.get("volume_valid", rt_vol_lots > 0))
+    volume_ratio_enabled = bool(USE_INTRADAY_VOLUME_RATIO)
+    volume_valid = quote_volume_valid and volume_ratio_enabled
     previous_close = quote["previous_close"]
-    current_price, current_vol = rt_close, rt_vol_lots 
+    current_price, current_vol = rt_close, rt_vol_lots
+    market_data = {
+        "price": current_price,
+        "volume_lots": current_vol,
+        "timestamp": quote.get("quote_time"),
+        "source": rt_source,
+        "price_valid": bool(rt_success and current_price > 0),
+        "volume_valid": quote_volume_valid,
+        "volume_ratio_enabled": volume_ratio_enabled,
+        "raw_volume": quote.get("raw_volume"),
+    }
     t = tick_size(current_price)
     df_for_indicators = df_raw.copy().sort_values("date").reset_index(drop=True)
     
@@ -978,7 +1018,10 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     res_dict["quote_success"] = rt_success
     res_dict["quote_time"] = quote.get("quote_time")
     res_dict["quote_is_stale"] = quote.get("is_stale", not rt_success)
-    res_dict["volume_valid"] = volume_valid
+    res_dict["volume_valid"] = quote_volume_valid
+    res_dict["volume_ratio_enabled"] = volume_ratio_enabled
+    res_dict["volume_used_in_ai"] = volume_valid
+    res_dict["market_data"] = market_data
     res_dict["raw_volume"] = quote.get("raw_volume")
     res_dict["volume_note"] = quote.get("volume_note", "未提供成交量診斷")
     res_dict["volume_ma20_shares"] = vol_ma20_val
@@ -1030,7 +1073,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     res_dict["ma240_val"] = trend_analysis["ma240"]
 
     quality_flags = {
-        "價格": current_price > 0, "成交量": volume_valid and current_vol > 0, "大盤": macro_bull is not None,
+        "價格": current_price > 0, "成交量": quote_volume_valid and current_vol > 0, "大盤": macro_bull is not None,
         "財報": not fin_df.empty, "法人": not institutional_df.empty,
         "同業": peer_corr_val is not None, "新聞": bool(raw_news_list)
     }
@@ -2349,6 +2392,11 @@ if stock_input:
             <div>
               <div style="font-size:12px;color:#94A3B8;font-weight:800;letter-spacing:.10em;">AI DECISION CENTER</div>
               <div style="font-size:21px;font-weight:900;margin-top:5px;">{res['stock_name']} <span style="color:#60A5FA;">({res['stock_id']})</span></div>
+              <div style="display:flex;align-items:baseline;gap:10px;margin-top:8px;flex-wrap:wrap;">
+                <span style="font-size:13px;color:#94A3B8;font-weight:800;">現行價格</span>
+                <span style="font-size:34px;font-weight:950;color:#F8FAFC;">{res['current_price']:.2f}</span>
+                <span style="font-size:14px;color:#CBD5E1;">元</span>
+              </div>
               <div style="font-size:38px;font-weight:950;color:{decision_color};margin-top:6px;">{compass['decision']}</div>
               <div style="font-size:15px;color:#E2E8F0;">{compass['strategy']}｜{compass['action']}</div>
             </div>
@@ -2820,14 +2868,17 @@ if stock_input:
             with st.expander("🛠 成交量資料診斷", expanded=True):
                 ta_debug = res.get("trend_analysis", {}) or {}
                 volume_valid_debug = bool(res.get("volume_valid", False))
+                volume_ratio_enabled_debug = bool(res.get("volume_ratio_enabled", False))
                 today_lots = float(res.get("current_vol", 0) or 0)
                 avg20_lots = float(res.get("volume_ma20_lots", 0) or 0)
                 ratio_debug = float(ta_debug.get("volume_ratio", 0) or 0)
 
                 if volume_valid_debug:
-                    st.success("即時成交量有效，可以用來計算今日量比。")
+                    st.success("即時成交量已成功取得。")
                 else:
-                    st.info("即時成交量比率功能目前已停用；原始成交量僅供診斷，不參與畫面與 AI 決策。")
+                    st.warning("即時成交量尚未取得或欄位無效。")
+                if volume_valid_debug and not volume_ratio_enabled_debug:
+                    st.info("成交量資料有效，但盤中量比功能目前停用，因此不納入 AI 的量比判斷。")
 
                 d1, d2, d3, d4 = st.columns(4)
                 with d1: st.metric("行情來源", str(res.get("rt_source", "未知")))
@@ -2838,21 +2889,30 @@ if stock_input:
                 v1, v2, v3 = st.columns(3)
                 with v1: st.metric("今日累計成交量", f"{today_lots:,.0f} 張" if volume_valid_debug else "尚未取得")
                 with v2: st.metric("近20日平均成交量", f"{avg20_lots:,.0f} 張" if avg20_lots > 0 else "資料不足")
-                with v3: st.metric("今日量比", "已停用")
+                with v3:
+                    if volume_valid_debug and volume_ratio_enabled_debug and avg20_lots > 0:
+                        st.metric("今日量比", f"{ratio_debug:.2f} 倍")
+                    elif not volume_ratio_enabled_debug:
+                        st.metric("今日量比", "已停用")
+                    else:
+                        st.metric("今日量比", "資料不足")
 
                 st.markdown("**計算過程**")
-                if volume_valid_debug and avg20_lots > 0:
+                if volume_valid_debug and volume_ratio_enabled_debug and avg20_lots > 0:
                     st.code(f"{today_lots:,.0f} 張 ÷ {avg20_lots:,.0f} 張 = {ratio_debug:.4f} 倍")
                     if ratio_debug >= 1.20:
                         st.success(f"成交量條件成立：{ratio_debug:.2f} ≥ 1.20")
                     else:
                         st.info(f"成交量條件尚未成立：{ratio_debug:.2f} < 1.20")
+                elif not volume_ratio_enabled_debug:
+                    st.code("成交量已取得，但即時成交量比率功能已停用，不計算 volume_ratio。")
                 else:
-                    st.code("即時成交量比率已停用，不計算 volume_ratio。")
+                    st.code("成交量或近20日平均成交量不足，無法計算 volume_ratio。")
 
                 st.markdown("**API 原始成交量欄位**")
                 st.code(repr(res.get("raw_volume")))
                 st.caption(str(res.get("volume_note", "未提供診斷說明")))
+                st.caption(f"統一資料層：price={res.get('market_data', {}).get('price')}｜volume_lots={res.get('market_data', {}).get('volume_lots')}｜volume_valid={res.get('market_data', {}).get('volume_valid')}｜AI量比啟用={res.get('market_data', {}).get('volume_ratio_enabled')}")
 
 if auto_refresh:
     time.sleep(15)
