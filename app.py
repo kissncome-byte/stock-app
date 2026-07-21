@@ -1,9 +1,10 @@
-import os, time, math, json, sqlite3, requests, certifi, pytz, urllib.parse
+import os, time, math, json, sqlite3, requests, certifi, pytz, urllib.parse, shutil
 import pandas as pd
 import numpy as np
 import streamlit as st
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
+from pathlib import Path
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from FinMind.data import DataLoader
@@ -230,17 +231,76 @@ def get_stock_info_df():
 
 @st.cache_data(ttl=900)
 def get_daily_df(stock_id: str, market_type: str = "TSE", days: int = 450):
+    """取得日線資料：Yahoo 正確市場 → Yahoo 另一市場 → FinMind。
+
+    台股代碼有時會因股票清單或市場別辨識不完整而套錯 .TW/.TWO；
+    Yahoo 也可能暫時限流，因此不能在單一來源失敗時直接判定股票無資料。
+    """
+    stock_id = str(stock_id).strip()
     session = get_requests_session()
-    suffix = ".TWO" if any(x in str(market_type).upper() for x in ["OTC", "TWO", "櫃", "上櫃"]) else ".TW"
-    p1, p2 = int((datetime.now(TZ)-timedelta(days=days)).timestamp()), int(datetime.now(TZ).timestamp())
+    is_otc = any(x in str(market_type).upper() for x in ["OTC", "TWO", "櫃", "上櫃"])
+    suffixes = [".TWO", ".TW"] if is_otc else [".TW", ".TWO"]
+    p1 = int((datetime.now(TZ) - timedelta(days=days)).timestamp())
+    p2 = int((datetime.now(TZ) + timedelta(days=1)).timestamp())
+
+    # 第一、二層：Yahoo，先試推定市場，再試另一市場。
+    for suffix in suffixes:
+        try:
+            url = f"https://query2.finance.yahoo.com/v8/finance/chart/{stock_id}{suffix}?period1={p1}&period2={p2}&interval=1d&events=history"
+            r = session.get(url, timeout=8)
+            payload = r.json() if r.status_code == 200 else {}
+            results = payload.get("chart", {}).get("result") or []
+            if results:
+                res = results[0]
+                timestamps = res.get("timestamp", []) or []
+                quotes = (res.get("indicators", {}).get("quote") or [{}])[0]
+                if timestamps:
+                    raw = pd.DataFrame({
+                        "date": [datetime.fromtimestamp(ts, TZ).strftime("%Y-%m-%d") for ts in timestamps],
+                        "open": quotes.get("open", []),
+                        "high": quotes.get("high", []),
+                        "low": quotes.get("low", []),
+                        "close": quotes.get("close", []),
+                        "vol": quotes.get("volume", []),
+                    })
+                    raw = raw.dropna(subset=["close"]).sort_values("date").drop_duplicates("date")
+                    if len(raw) >= 30:
+                        raw["amount"] = pd.to_numeric(raw["close"], errors="coerce") * pd.to_numeric(raw["vol"], errors="coerce").fillna(0)
+                        raw.attrs["source"] = f"Yahoo Finance {stock_id}{suffix}"
+                        return raw.reset_index(drop=True).copy()
+        except Exception as exc:
+            log_error(f"Yahoo daily {stock_id}{suffix}", exc)
+
+    # 第三層：FinMind。Yahoo 限流、空資料或市場別異常時仍可繼續分析。
     try:
-        r = session.get(f"https://query2.finance.yahoo.com/v8/finance/chart/{stock_id}{suffix}?period1={p1}&period2={p2}&interval=1d", timeout=5)
-        if r.status_code == 200 and r.json().get("chart", {}).get("result"):
-            res = r.json()["chart"]["result"][0]
-            raw = pd.DataFrame({"date": [datetime.fromtimestamp(ts, TZ).strftime("%Y-%m-%d") for ts in res.get("timestamp", [])], "open": res["indicators"]["quote"][0].get("open", []), "high": res["indicators"]["quote"][0].get("high", []), "low": res["indicators"]["quote"][0].get("low", []), "close": res["indicators"]["quote"][0].get("close", []), "vol": res["indicators"]["quote"][0].get("volume", [])}).dropna(subset=["close"])
-            raw["amount"] = raw["close"] * raw["vol"]
-            return raw.copy()
-    except Exception: pass
+        start_date = (datetime.now(TZ) - timedelta(days=days)).strftime("%Y-%m-%d")
+        fdf = get_api().taiwan_stock_daily(stock_id=stock_id, start_date=start_date)
+        if fdf is not None and not fdf.empty:
+            rename_map = {
+                "Trading_Volume": "vol",
+                "Trading_money": "amount",
+                "open": "open",
+                "max": "high",
+                "min": "low",
+                "close": "close",
+                "date": "date",
+            }
+            raw = fdf.rename(columns=rename_map).copy()
+            needed = ["date", "open", "high", "low", "close", "vol"]
+            if all(c in raw.columns for c in needed):
+                for c in ["open", "high", "low", "close", "vol"]:
+                    raw[c] = pd.to_numeric(raw[c], errors="coerce")
+                raw = raw.dropna(subset=["close"]).sort_values("date").drop_duplicates("date")
+                if "amount" not in raw.columns:
+                    raw["amount"] = raw["close"] * raw["vol"].fillna(0)
+                else:
+                    raw["amount"] = pd.to_numeric(raw["amount"], errors="coerce").fillna(raw["close"] * raw["vol"].fillna(0))
+                if len(raw) >= 30:
+                    raw.attrs["source"] = "FinMind 台股日線"
+                    return raw[needed + ["amount"]].reset_index(drop=True).copy()
+    except Exception as exc:
+        log_error(f"FinMind daily {stock_id}", exc)
+
     return None
 
 @st.cache_data(ttl=1800)
@@ -307,8 +367,13 @@ def get_institutional_trading_df(stock_id: str, days: int = 30):
             name_map = {"Foreign_Investor": "外資(張)", "Investment_Trust": "投信(張)", "Dealer": "自營商總計(張)"}
             df['name'] = df['name'].map(name_map).fillna(df['name'])
             pdf = df.pivot_table(index="date", columns="name", values="net", aggfunc="sum").reset_index()
-            cols = ["date", "外資(張)", "投信(張)", "自營商總計(張)"]
-            return pdf[[c for c in cols if c in pdf.columns]].sort_values("date", ascending=False).reset_index(drop=True)
+            inst_cols = ["外資(張)", "投信(張)", "自營商總計(張)"]
+            for col in inst_cols:
+                if col not in pdf.columns:
+                    pdf[col] = 0.0
+            pdf["三大法人合計(張)"] = pdf[inst_cols].sum(axis=1)
+            cols = ["date", *inst_cols, "三大法人合計(張)"]
+            return pdf[cols].sort_values("date", ascending=False).reset_index(drop=True)
     except Exception: pass
     return pd.DataFrame()
 
@@ -2012,10 +2077,41 @@ def build_ai_confidence_center(res: dict, compass: dict, committee: dict, decisi
 
 
 # ============ 9.5 Decision History & Explainability ============
-HISTORY_DB = os.getenv("PROJECT_COMPASS_DB", "project_compass_history.db")
+def resolve_history_db_path() -> str:
+    """
+    將歷史紀錄固定存到使用者資料夾，避免因為從不同目錄啟動程式而讀不到舊資料。
+    可用環境變數 PROJECT_COMPASS_DB 指定完整資料庫路徑。
+    """
+    configured = os.getenv("PROJECT_COMPASS_DB", "").strip()
+    if configured:
+        db_path = Path(configured).expanduser().resolve()
+    else:
+        data_dir = Path(os.getenv("PROJECT_COMPASS_DATA_DIR", Path.home() / ".project_compass")).expanduser()
+        data_dir.mkdir(parents=True, exist_ok=True)
+        db_path = data_dir / "project_compass_history.db"
+
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # 舊版資料庫位於程式啟動目錄。若新版固定位置尚無資料，自動搬移舊資料。
+    legacy_candidates = [
+        Path.cwd() / "project_compass_history.db",
+        Path(__file__).resolve().parent / "project_compass_history.db",
+    ]
+    if not db_path.exists():
+        for legacy in legacy_candidates:
+            try:
+                if legacy.exists() and legacy.resolve() != db_path.resolve():
+                    shutil.copy2(legacy, db_path)
+                    break
+            except Exception as exc:
+                log_error("migrate_decision_history_db", exc)
+
+    return str(db_path)
+
+HISTORY_DB = resolve_history_db_path()
 
 def init_decision_history_db() -> None:
-    """建立每日決策快照資料表。Streamlit Cloud 重新部署後本機資料可能重置。"""
+    """建立每日決策快照資料表。紀錄固定保存在使用者資料夾。"""
     try:
         with sqlite3.connect(HISTORY_DB, timeout=5) as conn:
             conn.execute("""
@@ -2226,7 +2322,7 @@ with st.sidebar:
 
 st.markdown("## 🧭 Project Compass v64.2｜成交量診斷版")
 st.caption("即時成交量比率因資料來源不穩定，已暫停顯示並排除於 AI 決策之外。")
-stock_input = st.text_input("請輸入核心目標個股代碼：", value="3037")
+stock_input = st.text_input("請輸入核心目標個股代碼：", value="3037").strip()
 
 u_col1, u_col2 = st.columns(2)
 with u_col1: user_holding = st.checkbox("📊 我手中「已持有」此個股", value=False)
@@ -2234,7 +2330,9 @@ with u_col2: user_cost = st.number_input("每股真實持股成本 (元)", value
 
 if stock_input:
     res = evaluate_stock(stock_input, capital, risk_pct, slip_input, is_holding=user_holding, entry_cost=user_cost, sector_panic=sector_panic_toggle)
-    if res is None: st.error("該個股代碼數據獲取失敗。")
+    if res is None:
+        st.error("無法取得這檔股票的日線資料。程式已依序嘗試 Yahoo 上市、Yahoo 上櫃與 FinMind；請確認代碼，或稍後再重新整理。")
+        st.caption(f"本次查詢代碼：{stock_input}。3274 為上櫃股，程式會優先查詢 3274.TWO。")
     else:
         bp_data = res["tactical_blueprint"]
         bp = bp_data["blueprint"]
@@ -2403,6 +2501,46 @@ if stock_input:
                 for member in committee.get("members", []):
                     with st.expander(f"{member['avatar']} {member['role']}｜{member['label']}｜信心 {member['confidence']}%", expanded=False):
                         st.write(member.get("summary", ""))
+
+                        if member.get("role") == "籌碼分析師":
+                            inst_df_show = res.get("institutional_df", pd.DataFrame())
+                            if inst_df_show is not None and not inst_df_show.empty:
+                                latest = inst_df_show.iloc[0]
+                                latest_date = str(latest.get("date", "—"))
+                                st.markdown(f"**最近一個交易日三大法人實際買賣超｜{latest_date}**")
+                                f_col, t_col, d_col, sum_col = st.columns(4)
+                                f_val = float(latest.get("外資(張)", 0) or 0)
+                                t_val = float(latest.get("投信(張)", 0) or 0)
+                                d_val = float(latest.get("自營商總計(張)", 0) or 0)
+                                total_val = float(latest.get("三大法人合計(張)", f_val + t_val + d_val) or 0)
+                                f_col.metric("外資", f"{f_val:+,.0f} 張")
+                                t_col.metric("投信", f"{t_val:+,.0f} 張")
+                                d_col.metric("自營商", f"{d_val:+,.0f} 張")
+                                sum_col.metric("三大法人合計", f"{total_val:+,.0f} 張")
+
+                                display_days = st.radio(
+                                    "顯示期間",
+                                    options=[5, 10, 20, 30],
+                                    index=1,
+                                    horizontal=True,
+                                    key=f"institutional_days_{res.get('stock_id','stock')}"
+                                )
+                                inst_view = inst_df_show.head(display_days).copy()
+                                st.dataframe(
+                                    inst_view.style.format({
+                                        "外資(張)": "{:+,.0f}",
+                                        "投信(張)": "{:+,.0f}",
+                                        "自營商總計(張)": "{:+,.0f}",
+                                        "三大法人合計(張)": "{:+,.0f}",
+                                    }),
+                                    use_container_width=True,
+                                    hide_index=True,
+                                )
+                                st.caption("正數代表買超，負數代表賣超；單位為張。資料依公開三大法人日報整理。")
+                            else:
+                                st.warning("目前無法取得這檔個股的三大法人每日買賣超資料。")
+
+                        st.markdown("**分析摘要**")
                         for label, value in member.get("evidence", []):
                             st.markdown(f"**{label}**｜{value}")
 
@@ -2416,6 +2554,7 @@ if stock_input:
                     st.info(decision_change.get("headline", "目前沒有前一交易日資料。"))
 
                 st.markdown("#### 近七日決策")
+                st.caption(f"歷史紀錄位置：{HISTORY_DB}")
                 if decision_timeline:
                     for row in decision_timeline:
                         st.markdown(
