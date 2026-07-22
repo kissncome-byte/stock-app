@@ -1857,9 +1857,17 @@ def build_today_action_board(
             ]
         }
 
+    # 持股成本與現價的帳面損益，必須在本函式內先建立，
+    # 避免依賴其他函式的區域變數而產生 NameError。
+    pnl_pct = (
+        ((current / float(user_cost)) - 1) * 100
+        if user_cost is not None and float(user_cost or 0) > 0 and current > 0
+        else None
+    )
+
     cost_context = ""
     if pnl_pct is not None:
-        cost_context = f"你的成本為 {user_cost:.2f} 元，目前帳面報酬 {pnl_pct:+.1f}%。"
+        cost_context = f"你的成本為 {float(user_cost):.2f} 元，目前帳面報酬 {pnl_pct:+.1f}%。"
 
     # 1. 續抱判斷
     if decision.get("stop_broken"):
