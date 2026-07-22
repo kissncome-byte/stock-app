@@ -1662,6 +1662,7 @@ def build_if_i_were_you(
     target1 = float(decision.get("target1", compass.get("target1", 0)) or 0)
     completed = int(decision.get("completed", 0) or 0)
     total = int(decision.get("total", 0) or 0)
+    pnl_pct = ((current / user_cost) - 1) * 100 if user_holding and user_cost > 0 and current > 0 else None
     capital_ntd = max(float(capital_wan or 0), 0) * 10000
     max_risk_ntd = capital_ntd * max(float(risk_pct or 0), 0) / 100
     per_share_risk = max(entry - stop, 0)
@@ -1832,7 +1833,13 @@ def build_ai_forecast(res: dict, compass: dict, decision: dict) -> dict:
     return {"scenarios": scenarios[:4]}
 
 
-def build_today_action_board(res: dict, compass: dict, decision: dict, user_holding: bool = False) -> dict:
+def build_today_action_board(
+    res: dict,
+    compass: dict,
+    decision: dict,
+    user_holding: bool = False,
+    user_cost: float = 0.0,
+) -> dict:
     """固定同時回答續抱、減碼、加碼與最後動作，避免建議只偏向買方。"""
     current = float(res.get("current_price", 0) or 0)
     stop = float(decision.get("stop", compass.get("stop", 0)) or 0)
@@ -1850,6 +1857,10 @@ def build_today_action_board(res: dict, compass: dict, decision: dict, user_hold
             ]
         }
 
+    cost_context = ""
+    if pnl_pct is not None:
+        cost_context = f"你的成本為 {user_cost:.2f} 元，目前帳面報酬 {pnl_pct:+.1f}%。"
+
     # 1. 續抱判斷
     if decision.get("stop_broken"):
         hold_answer, hold_color = "🔴 不建議續抱原部位", "#DC2626"
@@ -1859,7 +1870,9 @@ def build_today_action_board(res: dict, compass: dict, decision: dict, user_hold
         hold_reason = "目前有重大風控否決條件，不適合只用原本的看多理由繼續抱住全部部位。"
     else:
         hold_answer, hold_color = "🟢 可以續抱", "#16A34A"
-        hold_reason = f"趨勢尚未失效，現價仍在 {stop:.2f} 元風險防線之上。" if stop > 0 else "目前尚未出現明確趨勢失效訊號。"
+        hold_reason = (f"趨勢尚未失效，現價仍在 {stop:.2f} 元風險防線之上。" if stop > 0 else "目前尚未出現明確趨勢失效訊號。")
+        if cost_context:
+            hold_reason = cost_context + " " + hold_reason
 
     # 2. 減碼判斷（獨立於加碼）
     if decision.get("stop_broken"):
@@ -1870,7 +1883,15 @@ def build_today_action_board(res: dict, compass: dict, decision: dict, user_hold
         reduce_reason = "重大風險條件已出現，可先降低曝險，不必等到所有指標同時轉空。"
     elif decision.get("near_pressure") and target1 > 0:
         reduce_answer, reduce_color = "🟠 可分批停利", "#F97316"
-        reduce_reason = f"現價接近第一目標區 {target1:.2f} 元，可依計畫分批調節；但不建議只因單日上漲就一次全部賣出。"
+        if pnl_pct is not None and pnl_pct >= 20:
+            reduce_reason = f"{cost_context} 現價接近第一目標區 {target1:.2f} 元，已有明顯獲利，可依計畫分批落袋；但不建議只因單日上漲就一次全部賣出。"
+        elif pnl_pct is not None and pnl_pct < 0:
+            reduce_reason = f"{cost_context} 雖然接近第一目標區 {target1:.2f} 元，但仍應以趨勢與風險防線判斷，不因短線反彈就情緒性砍在低檔。"
+        else:
+            reduce_reason = f"現價接近第一目標區 {target1:.2f} 元，可依計畫分批調節；但不建議只因單日上漲就一次全部賣出。"
+    elif pnl_pct is not None and pnl_pct >= 30 and target1 > 0:
+        reduce_answer, reduce_color = "🟠 可先鎖定部分獲利", "#F97316"
+        reduce_reason = f"{cost_context} 雖尚未出現趨勢失效，但獲利幅度已大，可考慮小比例調節並保留核心部位。"
     else:
         reduce_answer, reduce_color = "🟢 暫時不用減碼", "#16A34A"
         reduce_reason = "目前沒有觸發停利、趨勢失效或重大轉弱條件，不應只因今天上漲就急著減碼。"
@@ -1880,8 +1901,15 @@ def build_today_action_board(res: dict, compass: dict, decision: dict, user_hold
         add_answer, add_color = "🔴 不可加碼", "#DC2626"
         add_reason = "風險條件未解除前，不增加曝險，也不要用加碼攤平。"
     elif decision.get("add"):
-        add_answer, add_color = "🟢 可小量加碼", "#16A34A"
-        add_reason = "條件完整且尚未逼近目標區，但只適合小部位，不要因上漲追著買。"
+        if pnl_pct is not None and pnl_pct < -8:
+            add_answer, add_color = "🟠 不因虧損直接攤平", "#F97316"
+            add_reason = f"{cost_context} 即使技術條件允許，也不能只為降低成本而加碼；需確認趨勢完整且新增部位風險可獨立承受。"
+        elif pnl_pct is not None and pnl_pct > 15:
+            add_answer, add_color = "🟡 不追價加碼", "#D97706"
+            add_reason = f"{cost_context} 已有不小獲利，優先保護既有部位，不因上漲擴大追價風險。"
+        else:
+            add_answer, add_color = "🟢 可小量加碼", "#16A34A"
+            add_reason = "條件完整且尚未逼近目標區，但只適合小部位，不要因上漲追著買。"
     elif decision.get("near_pressure"):
         add_answer, add_color = "🔴 不建議追高", "#DC2626"
         add_reason = f"已接近第一目標區 {target1:.2f} 元，現在新增部位的風險報酬較差。"
@@ -1898,7 +1926,13 @@ def build_today_action_board(res: dict, compass: dict, decision: dict, user_hold
         final_reason = "重大風控條件出現，先降低曝險並等待重新確認。"
     elif decision.get("near_pressure"):
         final_answer, final_color = "🟠 續抱＋分批停利", "#F97316"
-        final_reason = "保留核心部位，接近目標區才依計畫分批調節，不因一天上漲全部賣掉。"
+        final_reason = (cost_context + " " if cost_context else "") + "保留核心部位，接近目標區才依計畫分批調節，不因一天上漲全部賣掉。"
+    elif decision.get("add") and pnl_pct is not None and pnl_pct > 15:
+        final_answer, final_color = "🟢 續抱，不追價加碼", "#16A34A"
+        final_reason = f"{cost_context} 趨勢仍可持有，但已有獲利時不必為了上漲再追著擴大部位。"
+    elif decision.get("add") and pnl_pct is not None and pnl_pct < -8:
+        final_answer, final_color = "🟡 續抱觀察，不攤平", "#D97706"
+        final_reason = f"{cost_context} 加碼不能只為降低成本，先確認原持股風險仍在可控範圍。"
     elif decision.get("add"):
         final_answer, final_color = "🟢 續抱＋小量加碼", "#16A34A"
         final_reason = "原有部位續抱；新增部位必須小量並遵守風險防線。"
@@ -2437,7 +2471,7 @@ if stock_input:
         """, unsafe_allow_html=True)
 
         # 持股四向決策卡：固定同時回答續抱、減碼、加碼與最終動作
-        top_action_board = build_today_action_board(res, compass, build_decision_engine(res, compass, build_ai_investment_committee(res, compass), user_holding), user_holding)
+        top_action_board = build_today_action_board(res, compass, build_decision_engine(res, compass, build_ai_investment_committee(res, compass), user_holding), user_holding, user_cost)
         board_cols = st.columns(4)
         for idx, card in enumerate(top_action_board.get("cards", [])):
             with board_cols[idx]:
@@ -2488,7 +2522,7 @@ if stock_input:
         )
         data_quality_audit = build_data_quality_audit(res, decision_engine)
 
-        today_board = build_today_action_board(res, compass, decision_engine, user_holding)
+        today_board = build_today_action_board(res, compass, decision_engine, user_holding, user_cost)
         if_i_were_you = build_if_i_were_you(
             res, compass, decision_engine, user_holding, user_cost, capital, risk_pct
         )
@@ -2528,12 +2562,12 @@ if stock_input:
 
         st.markdown("### 📌 今日判斷")
         st.markdown(f"""
-        <div style="background:#FFFFFF;border:1px solid #E2E8F0;border-left:9px solid {decision_engine['color']};padding:22px;border-radius:14px;box-shadow:0 3px 12px rgba(15,23,42,.06);">
+        <div style="background:#FFFFFF;border:1px solid #E2E8F0;border-left:9px solid {if_i_were_you['color']};padding:22px;border-radius:14px;box-shadow:0 3px 12px rgba(15,23,42,.06);">
           <div style="font-size:12px;color:#64748B;font-weight:900;letter-spacing:.08em;">CURRENT VIEW</div>
-          <div style="font-size:28px;color:{decision_engine['color']};font-weight:950;margin:7px 0 9px 0;">{decision_engine['label']}</div>
-          <div style="font-size:15px;color:#334155;line-height:1.75;">{decision_engine['summary']}</div>
+          <div style="font-size:28px;color:{if_i_were_you['color']};font-weight:950;margin:7px 0 9px 0;">{if_i_were_you['headline']}</div>
+          <div style="font-size:15px;color:#334155;line-height:1.75;">{' '.join(list(if_i_were_you.get('actions', []) or [])[:2])}</div>
           <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:15px;">
-            <span style="background:{decision_engine['color']}18;color:{decision_engine['color']};border:1px solid {decision_engine['color']}55;padding:6px 11px;border-radius:999px;font-size:12px;font-weight:900;">條件 {int(decision_engine.get('completed',0) or 0)} / {int(decision_engine.get('total',0) or 0)}</span>
+            <span style="background:{if_i_were_you['color']}18;color:{if_i_were_you['color']};border:1px solid {if_i_were_you['color']}55;padding:6px 11px;border-radius:999px;font-size:12px;font-weight:900;">條件 {int(decision_engine.get('completed',0) or 0)} / {int(decision_engine.get('total',0) or 0)}</span>
             <span style="background:#F8FAFC;color:#334155;border:1px solid #CBD5E1;padding:6px 11px;border-radius:999px;font-size:12px;font-weight:900;">判斷信心 {int(committee.get('cio_confidence',0) or 0)}%</span>
             <span style="background:#F8FAFC;color:#334155;border:1px solid #CBD5E1;padding:6px 11px;border-radius:999px;font-size:12px;font-weight:900;">資料完整度 {data_quality_audit['score']}%</span>
           </div>
