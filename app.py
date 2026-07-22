@@ -1754,30 +1754,119 @@ def build_ai_forecast(res: dict, compass: dict, decision: dict) -> dict:
 
 
 def build_today_action_board(res: dict, compass: dict, decision: dict, user_holding: bool = False, user_cost: float = 0.0) -> dict:
-    """Portfolio Engine：市場方向只來自 Market Engine；成本只調整執行。"""
-    current=float(res.get("current_price",0) or 0); stop=float(decision.get("stop",compass.get("stop",0)) or 0)
-    score=int(decision.get("market_score",0) or 0); status=str(decision.get("status","HOLD"))
-    pnl=((current/float(user_cost))-1)*100 if user_holding and float(user_cost or 0)>0 and current>0 else None
-    cost_note=f"成本 {float(user_cost):.2f} 元、帳面報酬 {pnl:+.1f}%；只影響執行節奏，不改變市場評級 {score}/100。" if pnl is not None else ""
+    """Portfolio Engine：輸出可觀察、可驗證、可執行的價格事件；成本只調整執行節奏。"""
+    current = float(res.get("current_price", 0) or 0)
+    stop = float(decision.get("stop", compass.get("stop", 0)) or 0)
+    entry = float(decision.get("entry", compass.get("entry", current)) or current)
+    target1 = float(decision.get("target1", compass.get("target1", 0)) or 0)
+    target2 = float(compass.get("target2", target1) or target1)
+    score = int(decision.get("market_score", 0) or 0)
+    status = str(decision.get("status", "HOLD"))
+    ta = res.get("trend_analysis", {}) or {}
+    ma20 = float(res.get("ma20_val", ta.get("ma20", 0)) or 0)
+    resistance = float(res.get("real_resistance", 0) or 0)
+    pnl = ((current / float(user_cost)) - 1) * 100 if user_holding and float(user_cost or 0) > 0 and current > 0 else None
+    cost_note = (
+        f"成本 {float(user_cost):.2f} 元、帳面報酬 {pnl:+.1f}%；只影響執行節奏，不改變市場評級 {score}/100。"
+        if pnl is not None else ""
+    )
+
+    # 下一個確認價：依目前位置選擇最近、真正可驗證的技術事件。
+    candidates = []
+    if ma20 > current:
+        candidates.append((ma20, "收盤重新站上 MA20"))
+    if entry > current:
+        candidates.append((entry, "收盤重新站上合理評估價"))
+    if resistance > current:
+        candidates.append((resistance, "收盤突破最近壓力"))
+    if not candidates:
+        breakout = max(current * 1.02, resistance if resistance > 0 else 0, entry if entry > current else 0)
+        candidates.append((breakout, "收盤突破短線確認價"))
+    confirm_price, confirm_event = min(candidates, key=lambda x: x[0])
+
+    hold_target = target1 if target1 > current else (target2 if target2 > current else max(current * 1.06, confirm_price))
+    failure_price = stop if stop > 0 else (ma20 * 0.98 if ma20 > 0 else current * 0.93)
+    add_zone_low = min(entry, ma20) if entry > 0 and ma20 > 0 else (entry if entry > 0 else ma20)
+    add_zone_high = max(entry, ma20) if entry > 0 and ma20 > 0 else add_zone_low
+
+    events = {
+        "confirm_price": confirm_price,
+        "confirm_event": confirm_event,
+        "success_action": "確認成功後維持續抱；若市場評級仍達 75 分以上，才評估小量加碼。",
+        "failure_price": failure_price,
+        "failure_action": "收盤跌破後停止加碼，重新評估並依市場轉弱程度減碼或退出。",
+        "target_price": hold_target,
+        "target_action": "接近目標價時分批停利，不因單日上漲一次全部賣出。",
+    }
+
     if not user_holding:
-        act="🟢 可分批建立首筆" if status=="STRONG" else "🔴 暫不進場" if status in ["REDUCE","EXIT"] else "🟡 等待價格或訊號"
-        cards=[
-          {"question":"市場值得持有嗎？","answer":decision["label"],"reason":decision["summary"],"color":decision["color"]},
-          {"question":"現在應該減碼嗎？","answer":"⚪ 尚未持有","reason":"沒有部位，不適用減碼。","color":"#64748B"},
-          {"question":"現在應該買進嗎？","answer":act,"reason":"首筆進場依市場評級、價格位置與風險防線判斷。","color":decision["color"]},
-          {"question":"最後建議動作","answer":act,"reason":decision["summary"],"color":decision["color"]}]
-        return {"cards":cards,"headline":act,"color":decision["color"],"actions":[decision["summary"]],"warnings":decision.get("veto_reasons",[]),"portfolio_score":score}
-    if status=="EXIT":
-        hold=("🔴 不續抱原策略","市場持有理由已失效；收盤不能站回風險防線就應退出。","#DC2626"); reduce=("🔴 應減碼或退出",f"趨勢失效優先於成本。{cost_note}","#DC2626"); add=("🔴 禁止加碼","市場轉弱時，降低成本不是加碼理由。","#DC2626"); final=("🔴 先處理風險","停止新增，依失效條件處理持股。","#DC2626")
-    elif status=="REDUCE":
-        hold=("🟠 僅保留觀察部位","市場偏弱，不適合抱住全部部位。","#F97316"); reduce=("🟠 反彈可分批減碼",f"減碼原因是趨勢轉弱，不是你的損益。{cost_note}","#F97316"); add=("🔴 不加碼","等待市場引擎重新轉強。","#DC2626"); final=("🟠 降低曝險","反彈優先調整風險。","#F97316")
-    elif status=="STRONG":
-        hold=("🟢 可以續抱","趨勢、籌碼與動能仍支持持有。","#16A34A"); reduce=("🟢 暫無趨勢性減碼訊號","除非接近目標或失效，不因單日漲跌急賣。","#16A34A"); add=("🟢 可小量加碼","理由來自市場結構與價格位置，不是帳面損益。","#16A34A"); final=("🟢 續抱＋條件式加碼","只在風險防線明確時小量執行。","#16A34A")
+        if status == "STRONG":
+            act = "🟢 突破確認後分批進場"
+            buy_reason = f"等待收盤站上 {confirm_price:.2f} 元；確認後先建立小部位。"
+        elif status in ["REDUCE", "EXIT"]:
+            act = "🔴 暫不進場"
+            buy_reason = f"市場偏弱；至少要先重新站上 {confirm_price:.2f} 元，才重新評估。"
+        else:
+            act = "🟡 等待明確價格事件"
+            buy_reason = f"先看收盤能否站上 {confirm_price:.2f} 元；未確認前不提前重押。"
+        cards = [
+            {"question":"市場值得持有嗎？","answer":decision["label"],"reason":decision["summary"],"color":decision["color"]},
+            {"question":"現在應該減碼嗎？","answer":"⚪ 尚未持有","reason":"沒有部位，不適用減碼。","color":"#64748B"},
+            {"question":"現在應該買進嗎？","answer":act,"reason":buy_reason,"color":decision["color"]},
+            {"question":"最後建議動作","answer":act,"reason":f"確認價 {confirm_price:.2f} 元；失敗價 {failure_price:.2f} 元。","color":decision["color"]},
+        ]
+        actions = [
+            f"確認事件：{confirm_event} {confirm_price:.2f} 元。",
+            f"確認成功：{buy_reason}",
+            f"確認失敗：收盤跌破 {failure_price:.2f} 元，取消進場計畫。",
+        ]
+        return {"cards":cards,"headline":act,"color":decision["color"],"actions":actions,"warnings":decision.get("veto_reasons",[]),"portfolio_score":score,"events":events}
+
+    if status == "EXIT":
+        hold = ("🔴 原續抱理由已失效", f"收盤若不能站回 {failure_price:.2f} 元，不再用續抱等待取代風險處理。", "#DC2626")
+        reduce = ("🔴 應減碼或退出", f"執行條件是收盤位於 {failure_price:.2f} 元以下；原因是趨勢失效，不是你的成本。{cost_note}", "#DC2626")
+        add = ("🔴 禁止加碼", f"至少重新站上 {confirm_price:.2f} 元並讓市場評級恢復後才重評。", "#DC2626")
+        final = ("🔴 收盤未站回即處理風險", f"先盯 {failure_price:.2f} 元；站不回就依計畫減碼或退出。", "#DC2626")
+        events["success_action"] = f"若收盤重新站上 {confirm_price:.2f} 元，只先回到觀察，不立即加碼。"
+    elif status == "REDUCE":
+        hold = ("🟠 僅保留觀察部位", f"反彈能否收盤站上 {confirm_price:.2f} 元，是持續保留部位的確認事件。", "#F97316")
+        reduce = ("🟠 反彈未站上就分批減碼", f"若反彈仍無法站上 {confirm_price:.2f} 元，或再跌破 {failure_price:.2f} 元，降低曝險。{cost_note}", "#F97316")
+        add = ("🔴 不加碼", f"市場引擎重新轉強且收盤站上 {confirm_price:.2f} 元前，不新增。", "#DC2626")
+        final = ("🟠 觀察反彈確認價", f"確認價 {confirm_price:.2f} 元；失敗價 {failure_price:.2f} 元。", "#F97316")
+        events["success_action"] = "站上確認價後先保留部位，等待市場評級恢復至偏多再考慮新增。"
+    elif status == "STRONG":
+        hold = ("🟢 續抱至目標區", f"目前趨勢仍支持持有；第一目標看 {hold_target:.2f} 元。", "#16A34A")
+        reduce = ("🟢 暫無趨勢性減碼", f"接近 {hold_target:.2f} 元才分批停利；若跌破 {failure_price:.2f} 元則改為風險處理。", "#16A34A")
+        add = ("🟢 價格確認後才小量加碼", f"收盤站上 {confirm_price:.2f} 元可評估；若拉回，僅在 {add_zone_low:.2f}～{add_zone_high:.2f} 元守穩時考慮。", "#16A34A")
+        final = ("🟢 續抱，目標與失效價都已明確", f"目標 {hold_target:.2f} 元；確認 {confirm_price:.2f} 元；失效 {failure_price:.2f} 元。", "#16A34A")
     else:
-        hold=("🔵 續抱觀察","市場尚未失效，但證據不足以積極增加曝險。","#2563EB"); reduce=("🟢 暫不必減碼","尚無明確趨勢失效。","#16A34A"); add=("🟡 暫不加碼","等待趨勢、籌碼或價格位置改善。","#D97706"); final=("🔵 續抱等待確認","不因虧損攤平，也不因反彈急賣。","#2563EB")
-    cards=[{"question":q,"answer":v[0],"reason":v[1],"color":v[2]} for q,v in zip(["現在應該續抱嗎？","現在應該減碼嗎？","現在應該加碼嗎？","最後建議動作"],[hold,reduce,add,final])]
-    actions=[f"市場評級 {score}/100：{decision['label']}。"]+([cost_note] if cost_note else [])+[hold[1],reduce[1],add[1]]
-    return {"cards":cards,"headline":final[0],"color":final[2],"actions":actions,"warnings":decision.get("veto_reasons",[]) or [f"收盤是否守住 {stop:.2f} 元趨勢失效價" if stop>0 else "趨勢失效價資料不足"],"portfolio_score":max(0,min(100,score+(5 if pnl is not None and pnl>0 else -5 if pnl is not None and pnl<0 else 0)))}
+        hold = ("🔵 續抱至下一個價格事件", f"不是空泛等待：先看收盤能否{confirm_event.replace('收盤','')} {confirm_price:.2f} 元；第一目標 {hold_target:.2f} 元。", "#2563EB")
+        reduce = ("🟢 未跌破失效價前暫不減碼", f"只要收盤仍在 {failure_price:.2f} 元以上，尚無明確趨勢性減碼訊號；跌破才重新處理。", "#16A34A")
+        add = ("🟡 確認前不加碼", f"收盤站上 {confirm_price:.2f} 元且市場評級改善後才考慮；不是因帳面虧損攤平。", "#D97706")
+        final = ("🔵 續抱，盯確認價與目標價", f"確認價 {confirm_price:.2f} 元；第一目標 {hold_target:.2f} 元；失效價 {failure_price:.2f} 元。", "#2563EB")
+
+    cards = [
+        {"question":q,"answer":v[0],"reason":v[1],"color":v[2]}
+        for q,v in zip(["現在應該續抱嗎？","現在應該減碼嗎？","現在應該加碼嗎？","最後建議動作"],[hold,reduce,add,final])
+    ]
+    actions = [
+        f"市場評級 {score}/100：{decision['label']}。",
+        f"確認事件：{confirm_event} {confirm_price:.2f} 元；成功後：{events['success_action']}",
+        f"續抱目標：{hold_target:.2f} 元；接近時分批停利。",
+        f"失敗條件：收盤跌破 {failure_price:.2f} 元；{events['failure_action']}",
+    ]
+    if cost_note:
+        actions.insert(1, cost_note)
+    warnings = decision.get("veto_reasons", []) or [
+        f"確認價：{confirm_price:.2f} 元",
+        f"趨勢失效價：{failure_price:.2f} 元",
+        f"第一目標價：{hold_target:.2f} 元",
+    ]
+    return {
+        "cards":cards,"headline":final[0],"color":final[2],"actions":actions,"warnings":warnings,
+        "portfolio_score":max(0,min(100,score+(5 if pnl is not None and pnl>0 else -5 if pnl is not None and pnl<0 else 0))),
+        "events":events,
+    }
 
 
 def build_today_brief(res: dict, compass: dict, decision: dict, user_holding: bool = False) -> dict:
@@ -1806,14 +1895,14 @@ def build_today_brief(res: dict, compass: dict, decision: dict, user_holding: bo
         headline = "進場條件已齊，可以開始第一筆，但不要一次押滿。"
     elif failed:
         first = short_name(failed[0])
-        headline = f"趨勢尚未完全確認，今天先等 {first} 補上最後證據。"
+        headline = f"下一個確認事件是 {first}；請依下方具體價位與條件執行。"
     else:
         headline = decision.get("summary", "今天先依既定風險計畫執行。")
 
     priorities = []
     for item in failed[:3]:
         priorities.append({
-            "title": item.get("name", "等待條件確認"),
+            "title": item.get("name", "下一個確認事件"),
             "current": item.get("current", "目前資料不足"),
             "state": "尚未達成",
             "icon": "○",
@@ -1842,7 +1931,7 @@ def build_today_brief(res: dict, compass: dict, decision: dict, user_holding: bo
         can_do = ["先執行第一筆小部位", f"將 {stop:.2f} 元寫入交易計畫" if stop > 0 else "先確認風險防線", "保留後續加碼資金"]
         avoid = ["不要一次買滿", "不要因盤中急漲追價", "不要在未設定風險前下單"]
     elif user_holding:
-        can_do = ["依收盤確認原趨勢是否維持", f"接近 {target1:.2f} 元時規劃停利" if target1 > 0 else "等待有效目標區", "只在條件完整時考慮加碼"]
+        can_do = [f"收盤守住 {stop:.2f} 元才維持續抱" if stop > 0 else "先補齊趨勢失效價", f"接近 {target1:.2f} 元時分批停利" if target1 > 0 else "目標價資料不足時不新增", f"收盤站上 {entry:.2f} 元且市場評級改善後才考慮加碼" if entry > 0 else "條件完整後才考慮加碼"]
         avoid = ["不要在條件未齊時加碼", "不要因短線震盪隨意改計畫", "不要忽略風險防線"]
     else:
         first_missing = short_name(failed[0]) if failed else "進場條件"
@@ -1992,7 +2081,7 @@ def build_ai_confidence_center(res: dict, compass: dict, committee: dict, decisi
     elif final_conf >= 65:
         level, color, headline = "中高信心", "#2563EB", "方向具有參考價值，執行仍應分批。"
     elif final_conf >= 50:
-        level, color, headline = "中等信心", "#F59E0B", "訊號尚未完全一致，等待確認比搶先更重要。"
+        level, color, headline = "中等信心", "#F59E0B", "訊號尚未完全一致，先等明確價格事件發生，再執行比搶先更重要。"
     else:
         level, color, headline = "低信心", "#EF4444", "證據不足或互相衝突，暫不適合積極決策。"
 
@@ -2410,7 +2499,7 @@ if stock_input:
               <div style="font-size:16px;color:#0F172A;font-weight:950;">判斷依據</div>
               {reasons_html}
               <div style="font-size:16px;color:#0F172A;font-weight:950;margin-top:16px;padding-top:12px;border-top:1px dashed #CBD5E1;">目前策略</div>
-              {actions_html or '<div style="font-size:14px;color:#64748B;margin-top:7px;">目前以等待確認為主。</div>'}
+              {actions_html or '<div style="font-size:14px;color:#64748B;margin-top:7px;">請依確認價、目標價與失效價執行。</div>'}
             </div>
             """, unsafe_allow_html=True)
         with overview_col2:
