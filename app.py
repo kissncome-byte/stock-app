@@ -1452,237 +1452,85 @@ def build_ai_investment_committee(res: dict, compass: dict) -> dict:
 
 
 
-def build_ai_scenario_center(
-    res: dict,
-    compass: dict,
-    committee: dict,
-    decision: dict = None,
-    user_holding: bool = False,
-    user_cost: float = 0.0,
-) -> list:
-    """依每個假設價格重新評估，而不是沿用今日結論換句話說。"""
-    decision = decision or {}
-    ta = res.get("trend_analysis", {}) or {}
-    current = float(res.get("current_price", 0) or 0)
-    entry = float(compass.get("entry", current) or current)
-    stop = float(compass.get("stop", 0) or 0)
-    target1 = float(compass.get("target1", current) or current)
-    resistance = float(res.get("real_resistance", target1) or target1)
-    ma20 = float(res.get("ma20_val", ta.get("ma20", 0)) or 0)
-    atr = float(res.get("atr", 0) or 0)
-    slope20 = float(ta.get("slope20", 0) or 0)
-    adx = float(ta.get("adx", 0) or 0)
-    trend_state = str(res.get("trend_state", "觀察"))
-    accumulation = str(ta.get("accumulation", "資料不足"))
-    price_volume = str(ta.get("price_volume", "資料不足"))
-    quality = float(res.get("data_quality_score", 0) or 0)
-    tick = tick_size(current) if current > 0 else 0.01
-
-    def px(value: float) -> float:
-        return round_to_tick(max(0, value), tick)
-
-    breakout_price = px(max(resistance, target1, current + max(atr * 0.5, tick)))
-    consolidation_price = px(current)
-    pullback_anchor = max(x for x in [ma20, entry, current - max(atr, current * 0.025)] if x > 0)
-    pullback_price = px(min(current, pullback_anchor))
-    failure_price = px(stop if stop > 0 else current - max(atr * 2, current * 0.06))
-
-    trend_base_ok = slope20 > 0 and not any(k in trend_state for k in ["空頭", "趨勢破壞", "下跌段"])
-    chip_ok = any(k in accumulation for k in ["偏累積", "流入", "吸籌"]) and "流出" not in accumulation
-    pv_ok = "價跌量增" not in price_volume and "賣壓" not in price_volume
-
-    def evaluate(name: str, scenario_price: float, mode: str) -> dict:
-        score = 50
-        reasons = []
-
-        above_ma20 = ma20 > 0 and scenario_price >= ma20
-        above_entry = entry > 0 and scenario_price >= entry
-        stop_broken = stop > 0 and scenario_price <= stop
-        near_target = target1 > 0 and scenario_price >= target1 * 0.97
-        overextended = entry > 0 and scenario_price > entry * 1.05
-
-        if trend_base_ok:
-            score += 14; reasons.append("MA20 斜率與中期趨勢仍偏多")
-        else:
-            score -= 18; reasons.append("中期趨勢尚未形成明確支撐")
-        if above_ma20:
-            score += 10; reasons.append("假設價格仍守在 MA20 之上")
-        else:
-            score -= 15; reasons.append("假設價格落到 MA20 之下")
-        if chip_ok:
-            score += 8; reasons.append("籌碼未出現明顯流出")
-        if pv_ok:
-            score += 6; reasons.append("價量結構未出現明顯賣壓")
-        if adx >= 25:
-            score += 5; reasons.append("趨勢強度足夠")
-        if quality < 60:
-            score -= 12; reasons.append("資料完整度不足，降低決策信心")
-        if stop_broken:
-            score = min(score, 20); reasons.append("已觸及或跌破趨勢失效價")
-        if near_target:
-            score -= 8; reasons.append("接近第一目標區，新增部位報酬空間縮小")
-        if overextended:
-            score -= 12; reasons.append("高於評估價過多，追價風險提高")
-
-        score = int(max(0, min(100, round(score))))
-
-        if stop_broken:
-            action = "停止新增；已有持股依紀律減碼或退出"
-            tag, color = "風險失效", "#DC2626"
-        elif mode == "breakout":
-            if score >= 70 and not overextended:
-                action = "收盤站穩突破價後，可先建立或增加小部位；不一次買滿"
-                tag, color = "突破可執行", "#7C3AED"
-            elif user_holding:
-                action = "原部位續抱並上移保護；尚不建議追價加碼"
-                tag, color = "續抱確認", "#2563EB"
-            else:
-                action = "等待收盤確認與回測，不因盤中突破直接追價"
-                tag, color = "等待確認", "#D97706"
-        elif mode == "pullback":
-            healthy = above_ma20 and not stop_broken and trend_base_ok
-            if healthy and score >= 65:
-                action = "視為健康拉回，可分批執行第一筆或小量加碼"
-                tag, color = "拉回買點", "#16A34A"
-            else:
-                action = "先觀察支撐，不能只因價格變低就自動買進"
-                tag, color = "支撐待驗證", "#D97706"
-        else:
-            if user_holding:
-                action = "續抱觀察；不急著減碼，也不在盤整中反覆加碼"
-                tag, color = "盤整續抱", "#0F766E"
-            elif score >= 65 and above_entry:
-                action = "可等待整理完成後，以小部位試單"
-                tag, color = "整理待突破", "#2563EB"
-            else:
-                action = "維持觀察，等價格或趨勢條件改善"
-                tag, color = "繼續等待", "#64748B"
-
-        cost_note = ""
-        if user_holding and user_cost and user_cost > 0:
-            scenario_pnl = (scenario_price / float(user_cost) - 1) * 100
-            cost_note = f"；以你的成本估算，該情境帳面報酬約 {scenario_pnl:+.1f}%"
-
-        return {
-            "name": name,
-            "price": scenario_price,
-            "score": score,
-            "tag": tag,
-            "color": color,
-            "action": action,
-            "reasons": reasons[:4],
-            "cost_note": cost_note,
-        }
-
-    return [
-        evaluate("突破續攻", breakout_price, "breakout"),
-        evaluate("高檔／現價整理", consolidation_price, "consolidation"),
-        evaluate("健康拉回", pullback_price, "pullback"),
-        evaluate("跌破失效", failure_price, "failure"),
-    ]
-
-
-
-def build_decision_engine(res: dict, compass: dict, committee: dict, user_holding: bool = False) -> dict:
-    """全站單一 Decision Engine；風控否決權高於所有進場條件。"""
-    ta = res.get("trend_analysis", {}) or {}
-    current = float(res.get("current_price", 0) or 0)
-    entry = float(compass.get("entry", current) or current)
-    stop = float(compass.get("stop", 0) or 0)
-    target1 = float(compass.get("target1", 0) or 0)
-    ma20 = float(res.get("ma20_val", ta.get("ma20", 0)) or 0)
-    slope20 = float(ta.get("slope20", 0) or 0)
-    adx = float(ta.get("adx", 0) or 0)
-    vol_ratio = float(ta.get("volume_ratio", 0) or 0)
-    volume_valid = bool(res.get("volume_valid", ta.get("volume_valid", False)))
-    accumulation = str(ta.get("accumulation", "資料不足"))
-    price_volume = str(ta.get("price_volume", "資料不足"))
-    trend_state = str(res.get("trend_state", "觀察"))
-    long_term = str(ta.get("long_term", "資料不足"))
-    medium_term = str(ta.get("medium_term", "資料不足"))
-    quality = float(res.get("data_quality_score", 0) or 0)
-    rr = compass.get("rr")
-
-    price_ok = current >= entry if current > 0 and entry > 0 else False
-    volume_direction_ok = "價跌量增" not in price_volume and "賣壓" not in price_volume
-    volume_ok = True  # 即時成交量比率已停用，不作為進場必要條件
-    ma20_ok = ma20 > 0 and slope20 > 0 and current >= ma20
-    direction_ok = not any(k in trend_state + long_term + medium_term for k in ["空頭", "趨勢破壞", "下跌段"])
-    adx_ok = adx >= 25 and direction_ok
-    obv_ok = any(k in accumulation for k in ["偏累積", "流入", "吸籌"]) and "流出" not in accumulation
-
-    checklist = [
-        {"key":"price", "name":f"收盤站上建議評估價 {entry:.2f} 元", "passed":price_ok,
-         "current":f"目前 {current:.2f} 元｜{compass.get('entry_zone_text','')}", "why":"收盤站上評估價才算價格確認；盤中觸價不算。若高於評估價太多，風控仍可否決追價。"},
-        {"key":"ma20", "name":"MA20 上揚且收盤位於 MA20 之上", "passed":ma20_ok,
-         "current":f"MA20 {ma20:.2f} 元｜20日線斜率 {slope20:+.2f}%", "why":"同時要求均線方向向上與價格站上均線，避免把單日反彈誤認為趨勢恢復。"},
-        {"key":"adx", "name":"ADX 至少 25，且主要趨勢方向不是空方", "passed":adx_ok,
-         "current":f"目前 ADX {adx:.1f}｜{long_term}／{medium_term}", "why":"ADX 只代表趨勢強度，不代表上漲；空頭趨勢中的高 ADX 不能當作多方加分。"},
-        {"key":"obv", "name":"資金累積／OBV 明確偏多", "passed":obv_ok,
-         "current":accumulation, "why":"『未轉弱』只代表中性，必須出現明確資金累積，才列為完整進場條件。"},
-    ]
-    completed = sum(1 for item in checklist if item["passed"])
-    total = len(checklist)
-    missing = [item["name"] for item in checklist if not item["passed"]]
-
-    stop_broken = stop > 0 and current <= stop
-    overextended = entry > 0 and current > entry * 1.03
-    near_pressure = target1 > 0 and current >= target1 * 0.95
-    data_veto = quality < 60
-    plan_veto = not bool(compass.get("plan_valid", False))
-    rr_veto = rr is None or rr < 1.0
-    trend_veto = any(k in trend_state for k in ["趨勢破壞", "空頭"])
-    veto_reasons = []
-    if stop_broken: veto_reasons.append(f"價格已到或跌破 {stop:.2f} 元風險防線")
-    if data_veto: veto_reasons.append(f"資料完整度僅 {quality:.0f}%")
-    if plan_veto: veto_reasons.append("價格計畫未形成有效的評估價、風險防線與目標")
-    if rr_veto: veto_reasons.append("近端風險報酬比不足 1.0")
-    if trend_veto: veto_reasons.append(f"目前趨勢狀態為 {trend_state}")
-    if overextended: veto_reasons.append("現價高於建議評估價超過 3%，避免追高")
-
-    hard_veto = stop_broken or data_veto or plan_veto or trend_veto
-    buy_ready = completed == total and not hard_veto and not rr_veto and not overextended and not near_pressure
-    if stop_broken:
-        status, label, color = "STOP", "🔴 風險處理", "#DC2626"
-        buy, add, reduce_or_exit = False, False, True
-        summary = f"目前價格已到或跌破 {stop:.2f} 元風險防線，停止新增並依紀律處理部位。"
-    elif hard_veto:
-        status, label, color = "VETO", "🔴 風控否決", "#DC2626"
-        buy, add, reduce_or_exit = False, False, False
-        summary = "風控條件尚未通過：" + "；".join(veto_reasons[:2]) + "。"
-    elif buy_ready:
-        status, label, color = "BUY", "🟢 可分批布局", "#16A34A"
-        buy, add, reduce_or_exit = True, user_holding, False
-        summary = "五項進場條件與風控條件皆已達成，可開始第一筆分批布局，但不要一次押滿。"
-    elif completed == total and (overextended or near_pressure or rr_veto):
-        status, label, color = "WAIT", "🟠 條件達標但不追價", "#F97316"
-        buy, add, reduce_or_exit = False, False, False
-        summary = "技術條件雖完整，但買點或風險報酬不合格；現在不是不能看多，而是不值得追價。"
-    elif completed >= 3:
-        status, label, color = "WAIT", "🟡 觀察中", "#D97706"
-        buy, add, reduce_or_exit = False, False, False
-        summary = f"目前完成 {completed}/{total}，還有 {total-completed} 項條件未確認，今天先等待。"
-    elif completed == 2:
-        status, label, color = "WAIT", "🟠 再等等", "#F97316"
-        buy, add, reduce_or_exit = False, False, False
-        summary = f"目前只完成 {completed}/{total}，量價或趨勢確認不足，暫不進場。"
-    else:
-        status, label, color = "AVOID", "🔴 不建議進場", "#DC2626"
-        buy, add, reduce_or_exit = False, False, False
-        summary = f"目前只完成 {completed}/{total}，證據不足，保留資金比搶先進場重要。"
-
-    if user_holding and not stop_broken:
-        add = buy_ready and not near_pressure
-
-    return {
-        "status": status, "label": label, "color": color, "summary": summary,
-        "buy": buy, "add": add, "reduce_or_exit": reduce_or_exit,
-        "completed": completed, "total": total, "missing": missing,
-        "checklist": checklist, "stop_broken": stop_broken, "near_pressure": near_pressure,
-        "overextended": overextended, "hard_veto": hard_veto, "veto_reasons": veto_reasons,
-        "entry": entry, "stop": stop, "target1": target1, "trend_state": trend_state,
-        "quality": quality, "rr": rr,
+def build_ai_scenario_center(res: dict, compass: dict, committee: dict, decision: dict, user_holding: bool, user_cost: float):
+    """Scenario Engine：每個假設價格重新跑 Market Engine，再交給 Portfolio Engine。"""
+    current=float(res.get("current_price",0) or 0)
+    entry=float(compass.get("entry",current) or current)
+    stop=float(compass.get("stop",0) or 0)
+    target=float(compass.get("target1",0) or 0)
+    ta=res.get("trend_analysis",{}) or {}
+    ma20=float(res.get("ma20_val",ta.get("ma20",current)) or current)
+    prices={
+        "突破續攻": max(current*1.03, target*0.98 if target>0 else current*1.03),
+        "高檔／現價整理": current,
+        "健康拉回": max(stop*1.03 if stop>0 else current*.94, min(current*.97, ma20*1.01 if ma20>0 else current*.97, entry if entry>0 else current)),
+        "跌破失效": stop*.99 if stop>0 else current*.90,
     }
+    result=[]
+    for name,price in prices.items():
+        scenario_res=dict(res); scenario_res["current_price"]=float(price)
+        market=build_decision_engine(scenario_res,compass,committee,False)
+        portfolio=build_today_action_board(scenario_res,compass,market,user_holding,user_cost)
+        result.append({
+            "name":name,"price":price,"score":market["market_score"],"tag":market["label"],"color":market["color"],
+            "action":portfolio["headline"],"reasons":[
+                f"趨勢 {market['components']['trend']:.0f}／100",
+                f"籌碼 {market['components']['chips']:.0f}／100",
+                f"動能 {market['components']['momentum']:.0f}／100",
+                f"價格位置 {market['components']['price_position']:.0f}／100",
+            ],
+            "cost_note": (f"；該情境帳面報酬約 {(price/float(user_cost)-1)*100:+.1f}%（只影響執行，不改變市場分數）" if user_holding and float(user_cost or 0)>0 else ""),
+        })
+    return result
+
+
+def build_decision_engine(res: dict, compass: dict, committee: dict = None, user_holding: bool = False) -> dict:
+    """Market Engine：只分析市場，不使用持股成本或帳面損益。"""
+    ta=res.get("trend_analysis",{}) or {}
+    current=float(res.get("current_price",0) or 0); entry=float(compass.get("entry",current) or current)
+    stop=float(compass.get("stop",0) or 0); target1=float(compass.get("target1",0) or 0)
+    ma20=float(res.get("ma20_val",ta.get("ma20",0)) or 0); slope20=float(ta.get("slope20",0) or 0)
+    adx=float(ta.get("adx",0) or 0); accumulation=str(ta.get("accumulation","資料不足")); price_volume=str(ta.get("price_volume","資料不足"))
+    trend_state=str(res.get("trend_state","觀察")); long_term=str(ta.get("long_term","資料不足")); medium_term=str(ta.get("medium_term","資料不足"))
+    quality=float(res.get("data_quality_score",0) or 0); rr=compass.get("rr")
+    direction_text=f"{trend_state} {long_term} {medium_term}"; bearish=["空頭","趨勢破壞","下跌段","轉弱"]
+    bullish=["多頭","偏多","上升","強勢"]; direction_ok=not any(k in direction_text for k in bearish)
+    ma20_ok=ma20>0 and slope20>0 and current>=ma20; adx_ok=adx>=25 and direction_ok
+    chip_positive=any(k in accumulation for k in ["偏累積","流入","吸籌","買超"]) and "流出" not in accumulation
+    chip_neutral="流出" not in accumulation and "賣超" not in accumulation
+    pv_ok="價跌量增" not in price_volume and "賣壓" not in price_volume
+    components={
+      "trend":max(0,min(100,50+(20 if ma20_ok else -22)+(12 if any(k in direction_text for k in bullish) else 0)+(8 if adx_ok else -4))),
+      "chips":max(0,min(100,50+(25 if chip_positive else 5 if chip_neutral else -25))),
+      "momentum":max(0,min(100,50+(18 if adx_ok else -5)+(10 if pv_ok else -20))),
+      "price_position":max(0,min(100,60+(10 if current>=entry else -8)-(22 if entry>0 and current>entry*1.05 else 0)-(12 if target1>0 and current>=target1*.95 else 0))),
+      "risk":max(0,min(100,70-(65 if stop>0 and current<=stop else 0)-(20 if quality<60 else 0)-(15 if not direction_ok else 0))),
+      "data":max(0,min(100,quality)),
+    }
+    weights={"trend":.35,"chips":.20,"momentum":.15,"price_position":.10,"risk":.15,"data":.05}
+    market_score=int(round(sum(components[k]*weights[k] for k in weights)))
+    stop_broken=stop>0 and current<=stop; trend_veto=any(k in direction_text for k in ["空頭","趨勢破壞","下跌段"])
+    data_veto=quality<50; hard_veto=stop_broken or trend_veto or data_veto; overextended=entry>0 and current>entry*1.05; near_pressure=target1>0 and current>=target1*.95
+    checklist=[
+      {"key":"trend","name":"中期趨勢維持","passed":direction_ok and ma20_ok,"current":f"{long_term}／{medium_term}｜MA20 {ma20:.2f}、斜率 {slope20:+.2f}%","why":"方向與均線共同決定是否值得持有。"},
+      {"key":"chips","name":"籌碼沒有明顯惡化","passed":chip_neutral,"current":accumulation,"why":"市場資金是否撤退比使用者成本重要。"},
+      {"key":"momentum","name":"動能與價量未轉空","passed":adx_ok and pv_ok,"current":f"ADX {adx:.1f}｜{price_volume}","why":"確認趨勢強度與賣壓。"},
+      {"key":"price","name":"價格位置仍具合理風險報酬","passed":not overextended and not near_pressure and not stop_broken,"current":f"現價 {current:.2f}｜評估價 {entry:.2f}｜目標 {target1:.2f}","why":"避免接近壓力或過度延伸時新增。"},
+    ]
+    completed=sum(bool(x["passed"]) for x in checklist); veto=[]
+    if stop_broken: veto.append(f"收盤價已到或跌破 {stop:.2f} 元趨勢失效價")
+    if trend_veto: veto.append(f"市場趨勢已轉弱：{trend_state}")
+    if data_veto: veto.append(f"核心資料完整度只有 {quality:.0f}%")
+    if stop_broken or market_score<35: status,label,color,summary="EXIT","🔴 市場轉弱／風險處理","#DC2626","市場結構已明顯轉弱，持有理由失效；停止新增並優先處理風險。"
+    elif market_score<50 or trend_veto: status,label,color,summary="REDUCE","🟠 市場偏弱","#F97316","趨勢或籌碼已轉弱，反彈不等於恢復；應降低曝險並等待重新確認。"
+    elif market_score>=75 and not overextended and not near_pressure: status,label,color,summary="STRONG","🟢 市場偏多","#16A34A","趨勢、籌碼與動能大致一致，市場本身仍值得持有；新增部位仍需看價格位置。"
+    elif near_pressure or overextended: status,label,color,summary="HOLD","🟡 趨勢可持有但價格不宜追","#D97706","市場結構尚未轉壞，但現價位置壓縮新增部位的風險報酬。"
+    else: status,label,color,summary="HOLD","🔵 市場中性偏多／觀察","#2563EB","市場尚未出現明確失效，但證據未完全一致，適合持有觀察而非積極增加曝險。"
+    buy=status=="STRONG" and not hard_veto
+    return {"engine":"market","market_score":market_score,"components":components,"weights":weights,"status":status,"label":label,"color":color,"summary":summary,
+      "buy":buy,"add":buy,"reduce_or_exit":status in ["REDUCE","EXIT"],"completed":completed,"total":len(checklist),"missing":[x["name"] for x in checklist if not x["passed"]],
+      "checklist":checklist,"stop_broken":stop_broken,"near_pressure":near_pressure,"overextended":overextended,"hard_veto":hard_veto,"veto_reasons":veto,
+      "entry":entry,"stop":stop,"target1":target1,"trend_state":trend_state,"quality":quality,"rr":rr}
 
 
 def align_committee_with_decision(committee: dict, decision: dict) -> dict:
@@ -1760,14 +1608,31 @@ def build_if_i_were_you(
                     f"每日收盤確認是否仍守住 {stop:.2f} 元。",
                 ]
             else:
-                headline = "🟡 續抱，暫不加碼也不急著減碼"
-                color = "#D97706"
-                actions = [
-                    "原有部位先續抱。",
-                    "今天不要因為上漲就追著加碼。",
-                    "目前沒有觸發減碼或退出條件，也不要只因今天上漲就急著減碼。",
-                    f"每日收盤確認是否仍守住 {stop:.2f} 元。",
-                ]
+                # 一般持股情境也必須同時回答「減碼」與「加碼」，不能只給買方建議。
+                if pnl_pct is not None and pnl_pct <= -15:
+                    headline = "🟠 虧損偏深，續抱觀察但禁止攤平"
+                    color = "#F97316"
+                    actions = [
+                        f"減碼判斷：目前尚未跌破 {stop:.2f} 元風險防線，不必立刻全部賣出；但若收盤跌破，應減碼或退出。",
+                        "加碼判斷：目前不符合加碼條件，不要因虧損而攤平，也不要因單日反彈追價。",
+                        "執行策略：反彈若仍無法改善趨勢，只續抱等待並不夠，應依風險計畫降低部位。",
+                    ]
+                elif pnl_pct is not None and pnl_pct < 0:
+                    headline = "🟡 續抱觀察，不攤平"
+                    color = "#D97706"
+                    actions = [
+                        f"減碼判斷：目前尚未觸發 {stop:.2f} 元風險防線，暫不因單日漲跌急著賣出。",
+                        "加碼判斷：現階段不符合加碼條件，不要用攤平來降低帳面成本。",
+                        f"執行策略：收盤跌破 {stop:.2f} 元就減碼或退出；未跌破前持續觀察趨勢是否改善。",
+                    ]
+                else:
+                    headline = "🟡 續抱，暫不加碼也不急著減碼"
+                    color = "#D97706"
+                    actions = [
+                        "減碼判斷：目前沒有觸發停利、趨勢失效或重大轉弱條件，不需只因今天上漲急著賣出。",
+                        "加碼判斷：目前也沒有新的加碼訊號，不要追價。",
+                        f"執行策略：每日收盤確認是否仍守住 {stop:.2f} 元。",
+                    ]
         if pnl_pct is not None:
             actions.insert(0, f"目前成本 {user_cost:.2f} 元、現價 {current:.2f} 元，帳面報酬 {pnl_pct:+.1f}%。")
             if pnl_pct < 0 and not decision.get("buy"):
@@ -1888,130 +1753,31 @@ def build_ai_forecast(res: dict, compass: dict, decision: dict) -> dict:
     return {"scenarios": scenarios[:4]}
 
 
-def build_today_action_board(
-    res: dict,
-    compass: dict,
-    decision: dict,
-    user_holding: bool = False,
-    user_cost: float = 0.0,
-) -> dict:
-    """固定同時回答續抱、減碼、加碼與最後動作，避免建議只偏向買方。"""
-    current = float(res.get("current_price", 0) or 0)
-    stop = float(decision.get("stop", compass.get("stop", 0)) or 0)
-    target1 = float(decision.get("target1", compass.get("target1", 0)) or 0)
-    completed = int(decision.get("completed", 0) or 0)
-    total = int(decision.get("total", 0) or 0)
-
+def build_today_action_board(res: dict, compass: dict, decision: dict, user_holding: bool = False, user_cost: float = 0.0) -> dict:
+    """Portfolio Engine：市場方向只來自 Market Engine；成本只調整執行。"""
+    current=float(res.get("current_price",0) or 0); stop=float(decision.get("stop",compass.get("stop",0)) or 0)
+    score=int(decision.get("market_score",0) or 0); status=str(decision.get("status","HOLD"))
+    pnl=((current/float(user_cost))-1)*100 if user_holding and float(user_cost or 0)>0 and current>0 else None
+    cost_note=f"成本 {float(user_cost):.2f} 元、帳面報酬 {pnl:+.1f}%；只影響執行節奏，不改變市場評級 {score}/100。" if pnl is not None else ""
     if not user_holding:
-        return {
-            "cards": [
-                {"question": "現在應該續抱嗎？", "answer": "⚪ 尚未持有", "reason": "目前沒有持股，續抱與減碼問題不適用。", "color": "#64748B"},
-                {"question": "現在應該減碼嗎？", "answer": "⚪ 無需判斷", "reason": "尚未建立部位，沒有可減碼的持股。", "color": "#64748B"},
-                {"question": "現在應該加碼嗎？", "answer": "⚪ 先判斷首筆", "reason": "尚未持有時應先判斷是否適合第一筆進場，不把買進與加碼混在一起。", "color": "#64748B"},
-                {"question": "最後建議動作", "answer": "🟢 分批買進" if decision.get("buy") else "🔴 暫不進場" if decision.get("stop_broken") or decision.get("hard_veto") else "🟡 等待確認", "reason": decision.get("summary", "依進場條件與風險防線執行。"), "color": "#16A34A" if decision.get("buy") else "#DC2626" if decision.get("stop_broken") or decision.get("hard_veto") else "#D97706"},
-            ]
-        }
-
-    # 持股成本與現價的帳面損益，必須在本函式內先建立，
-    # 避免依賴其他函式的區域變數而產生 NameError。
-    pnl_pct = (
-        ((current / float(user_cost)) - 1) * 100
-        if user_cost is not None and float(user_cost or 0) > 0 and current > 0
-        else None
-    )
-
-    cost_context = ""
-    if pnl_pct is not None:
-        cost_context = f"你的成本為 {float(user_cost):.2f} 元，目前帳面報酬 {pnl_pct:+.1f}%。"
-
-    # 1. 續抱判斷
-    if decision.get("stop_broken"):
-        hold_answer, hold_color = "🔴 不建議續抱原部位", "#DC2626"
-        hold_reason = f"趨勢失效價 {stop:.2f} 元已失守；若收盤仍無法站回，應優先處理風險。"
-    elif decision.get("hard_veto"):
-        hold_answer, hold_color = "🟠 降低持股風險", "#F97316"
-        hold_reason = "目前有重大風控否決條件，不適合只用原本的看多理由繼續抱住全部部位。"
+        act="🟢 可分批建立首筆" if status=="STRONG" else "🔴 暫不進場" if status in ["REDUCE","EXIT"] else "🟡 等待價格或訊號"
+        cards=[
+          {"question":"市場值得持有嗎？","answer":decision["label"],"reason":decision["summary"],"color":decision["color"]},
+          {"question":"現在應該減碼嗎？","answer":"⚪ 尚未持有","reason":"沒有部位，不適用減碼。","color":"#64748B"},
+          {"question":"現在應該買進嗎？","answer":act,"reason":"首筆進場依市場評級、價格位置與風險防線判斷。","color":decision["color"]},
+          {"question":"最後建議動作","answer":act,"reason":decision["summary"],"color":decision["color"]}]
+        return {"cards":cards,"headline":act,"color":decision["color"],"actions":[decision["summary"]],"warnings":decision.get("veto_reasons",[]),"portfolio_score":score}
+    if status=="EXIT":
+        hold=("🔴 不續抱原策略","市場持有理由已失效；收盤不能站回風險防線就應退出。","#DC2626"); reduce=("🔴 應減碼或退出",f"趨勢失效優先於成本。{cost_note}","#DC2626"); add=("🔴 禁止加碼","市場轉弱時，降低成本不是加碼理由。","#DC2626"); final=("🔴 先處理風險","停止新增，依失效條件處理持股。","#DC2626")
+    elif status=="REDUCE":
+        hold=("🟠 僅保留觀察部位","市場偏弱，不適合抱住全部部位。","#F97316"); reduce=("🟠 反彈可分批減碼",f"減碼原因是趨勢轉弱，不是你的損益。{cost_note}","#F97316"); add=("🔴 不加碼","等待市場引擎重新轉強。","#DC2626"); final=("🟠 降低曝險","反彈優先調整風險。","#F97316")
+    elif status=="STRONG":
+        hold=("🟢 可以續抱","趨勢、籌碼與動能仍支持持有。","#16A34A"); reduce=("🟢 暫無趨勢性減碼訊號","除非接近目標或失效，不因單日漲跌急賣。","#16A34A"); add=("🟢 可小量加碼","理由來自市場結構與價格位置，不是帳面損益。","#16A34A"); final=("🟢 續抱＋條件式加碼","只在風險防線明確時小量執行。","#16A34A")
     else:
-        hold_answer, hold_color = "🟢 可以續抱", "#16A34A"
-        hold_reason = (f"趨勢尚未失效，現價仍在 {stop:.2f} 元風險防線之上。" if stop > 0 else "目前尚未出現明確趨勢失效訊號。")
-        if cost_context:
-            hold_reason = cost_context + " " + hold_reason
-
-    # 2. 減碼判斷（獨立於加碼）
-    if decision.get("stop_broken"):
-        reduce_answer, reduce_color = "🔴 應減碼或退出", "#DC2626"
-        reduce_reason = f"若收盤無法站回 {stop:.2f} 元，依原計畫執行減碼或退出，不要用攤平延後處理。"
-    elif decision.get("hard_veto"):
-        reduce_answer, reduce_color = "🟠 考慮降低部位", "#F97316"
-        reduce_reason = "重大風險條件已出現，可先降低曝險，不必等到所有指標同時轉空。"
-    elif decision.get("near_pressure") and target1 > 0:
-        reduce_answer, reduce_color = "🟠 可分批停利", "#F97316"
-        if pnl_pct is not None and pnl_pct >= 20:
-            reduce_reason = f"{cost_context} 現價接近第一目標區 {target1:.2f} 元，已有明顯獲利，可依計畫分批落袋；但不建議只因單日上漲就一次全部賣出。"
-        elif pnl_pct is not None and pnl_pct < 0:
-            reduce_reason = f"{cost_context} 雖然接近第一目標區 {target1:.2f} 元，但仍應以趨勢與風險防線判斷，不因短線反彈就情緒性砍在低檔。"
-        else:
-            reduce_reason = f"現價接近第一目標區 {target1:.2f} 元，可依計畫分批調節；但不建議只因單日上漲就一次全部賣出。"
-    elif pnl_pct is not None and pnl_pct >= 30 and target1 > 0:
-        reduce_answer, reduce_color = "🟠 可先鎖定部分獲利", "#F97316"
-        reduce_reason = f"{cost_context} 雖尚未出現趨勢失效，但獲利幅度已大，可考慮小比例調節並保留核心部位。"
-    else:
-        reduce_answer, reduce_color = "🟢 暫時不用減碼", "#16A34A"
-        reduce_reason = "目前沒有觸發停利、趨勢失效或重大轉弱條件，不應只因今天上漲就急著減碼。"
-
-    # 3. 加碼判斷
-    if decision.get("stop_broken") or decision.get("hard_veto"):
-        add_answer, add_color = "🔴 不可加碼", "#DC2626"
-        add_reason = "風險條件未解除前，不增加曝險，也不要用加碼攤平。"
-    elif decision.get("add"):
-        if pnl_pct is not None and pnl_pct < -8:
-            add_answer, add_color = "🟠 不因虧損直接攤平", "#F97316"
-            add_reason = f"{cost_context} 即使技術條件允許，也不能只為降低成本而加碼；需確認趨勢完整且新增部位風險可獨立承受。"
-        elif pnl_pct is not None and pnl_pct > 15:
-            add_answer, add_color = "🟡 不追價加碼", "#D97706"
-            add_reason = f"{cost_context} 已有不小獲利，優先保護既有部位，不因上漲擴大追價風險。"
-        else:
-            add_answer, add_color = "🟢 可小量加碼", "#16A34A"
-            add_reason = "條件完整且尚未逼近目標區，但只適合小部位，不要因上漲追著買。"
-    elif decision.get("near_pressure"):
-        add_answer, add_color = "🔴 不建議追高", "#DC2626"
-        add_reason = f"已接近第一目標區 {target1:.2f} 元，現在新增部位的風險報酬較差。"
-    else:
-        add_answer, add_color = "🟡 暫不加碼", "#D97706"
-        add_reason = f"目前條件完成 {completed}/{total}，先續抱觀察，不因單日上漲追著加碼。"
-
-    # 4. 最終動作
-    if decision.get("stop_broken"):
-        final_answer, final_color = "🔴 減碼／退出", "#DC2626"
-        final_reason = "先執行風險管理，停止新增部位。"
-    elif decision.get("hard_veto"):
-        final_answer, final_color = "🟠 降低部位", "#F97316"
-        final_reason = "重大風控條件出現，先降低曝險並等待重新確認。"
-    elif decision.get("near_pressure"):
-        final_answer, final_color = "🟠 續抱＋分批停利", "#F97316"
-        final_reason = (cost_context + " " if cost_context else "") + "保留核心部位，接近目標區才依計畫分批調節，不因一天上漲全部賣掉。"
-    elif decision.get("add") and pnl_pct is not None and pnl_pct > 15:
-        final_answer, final_color = "🟢 續抱，不追價加碼", "#16A34A"
-        final_reason = f"{cost_context} 趨勢仍可持有，但已有獲利時不必為了上漲再追著擴大部位。"
-    elif decision.get("add") and pnl_pct is not None and pnl_pct < -8:
-        final_answer, final_color = "🟡 續抱觀察，不攤平", "#D97706"
-        final_reason = f"{cost_context} 加碼不能只為降低成本，先確認原持股風險仍在可控範圍。"
-    elif decision.get("add"):
-        final_answer, final_color = "🟢 續抱＋小量加碼", "#16A34A"
-        final_reason = "原有部位續抱；新增部位必須小量並遵守風險防線。"
-    else:
-        final_answer, final_color = "🟢 續抱觀察", "#16A34A"
-        final_reason = "目前不需要減碼，也不適合追高加碼；最合理的動作是續抱等待。"
-
-    return {
-        "cards": [
-            {"question": "現在應該續抱嗎？", "answer": hold_answer, "reason": hold_reason, "color": hold_color},
-            {"question": "現在應該減碼嗎？", "answer": reduce_answer, "reason": reduce_reason, "color": reduce_color},
-            {"question": "現在應該加碼嗎？", "answer": add_answer, "reason": add_reason, "color": add_color},
-            {"question": "最後建議動作", "answer": final_answer, "reason": final_reason, "color": final_color},
-        ]
-    }
-
+        hold=("🔵 續抱觀察","市場尚未失效，但證據不足以積極增加曝險。","#2563EB"); reduce=("🟢 暫不必減碼","尚無明確趨勢失效。","#16A34A"); add=("🟡 暫不加碼","等待趨勢、籌碼或價格位置改善。","#D97706"); final=("🔵 續抱等待確認","不因虧損攤平，也不因反彈急賣。","#2563EB")
+    cards=[{"question":q,"answer":v[0],"reason":v[1],"color":v[2]} for q,v in zip(["現在應該續抱嗎？","現在應該減碼嗎？","現在應該加碼嗎？","最後建議動作"],[hold,reduce,add,final])]
+    actions=[f"市場評級 {score}/100：{decision['label']}。"]+([cost_note] if cost_note else [])+[hold[1],reduce[1],add[1]]
+    return {"cards":cards,"headline":final[0],"color":final[2],"actions":actions,"warnings":decision.get("veto_reasons",[]) or [f"收盤是否守住 {stop:.2f} 元趨勢失效價" if stop>0 else "趨勢失效價資料不足"],"portfolio_score":max(0,min(100,score+(5 if pnl is not None and pnl>0 else -5 if pnl is not None and pnl<0 else 0)))}
 
 
 def build_today_brief(res: dict, compass: dict, decision: dict, user_holding: bool = False) -> dict:
@@ -2508,7 +2274,15 @@ if stock_input:
 
         # 0. Project Compass 首頁：先回答該怎麼做，再展開證據
         compass = build_compass_home_summary(res, user_holding)
-        decision_color = "#16A34A" if compass["decision"] in ["續抱", "分批評估"] else "#DC2626" if "減碼" in compass["decision"] else "#D97706"
+        committee_seed = build_ai_investment_committee(res, compass)
+        decision_engine = build_decision_engine(res, compass, committee_seed, False)
+        portfolio_engine = build_today_action_board(res, compass, decision_engine, user_holding, user_cost)
+        compass["decision"] = portfolio_engine["headline"]
+        compass["strategy"] = decision_engine["label"]
+        compass["action"] = decision_engine["summary"]
+        compass["today"] = portfolio_engine["actions"][0] + " " + portfolio_engine["headline"]
+        compass["confidence"] = decision_engine["market_score"]
+        decision_color = portfolio_engine["color"]
         st.markdown(f"""
         <div style="background:linear-gradient(135deg,#0F172A 0%,#1E293B 100%);padding:24px;border-radius:14px;margin:8px 0 18px 0;color:white;border:1px solid #334155;">
           <div style="display:flex;justify-content:space-between;gap:16px;align-items:flex-start;flex-wrap:wrap;">
@@ -2534,7 +2308,7 @@ if stock_input:
         """, unsafe_allow_html=True)
 
         # 持股四向決策卡：固定同時回答續抱、減碼、加碼與最終動作
-        top_action_board = build_today_action_board(res, compass, build_decision_engine(res, compass, build_ai_investment_committee(res, compass), user_holding), user_holding, user_cost)
+        top_action_board = portfolio_engine
         board_cols = st.columns(4)
         for idx, card in enumerate(top_action_board.get("cards", [])):
             with board_cols[idx]:
@@ -2569,8 +2343,7 @@ if stock_input:
 
 
         # Phase 3：AI 投資委員會正式版（第一層摘要＋分析依據＋信心計算）
-        committee = build_ai_investment_committee(res, compass)
-        decision_engine = build_decision_engine(res, compass, committee, user_holding)
+        committee = committee_seed
         committee = align_committee_with_decision(committee, decision_engine)
 
         # 「前一交易日比較」已移除：本機 SQLite 只能記錄實際開啟分析的日期，
@@ -2580,10 +2353,8 @@ if stock_input:
             res, compass, committee, decision_engine, user_holding, user_cost
         )
 
-        today_board = build_today_action_board(res, compass, decision_engine, user_holding, user_cost)
-        if_i_were_you = build_if_i_were_you(
-            res, compass, decision_engine, user_holding, user_cost, capital, risk_pct
-        )
+        today_board = portfolio_engine
+        if_i_were_you = portfolio_engine
         ai_forecast = build_ai_forecast(res, compass, decision_engine)
 
 
@@ -2625,8 +2396,8 @@ if stock_input:
           <div style="font-size:28px;color:{if_i_were_you['color']};font-weight:950;margin:7px 0 9px 0;">{if_i_were_you['headline']}</div>
           <div style="font-size:15px;color:#334155;line-height:1.75;">{' '.join(list(if_i_were_you.get('actions', []) or [])[:2])}</div>
           <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:15px;">
-            <span style="background:{if_i_were_you['color']}18;color:{if_i_were_you['color']};border:1px solid {if_i_were_you['color']}55;padding:6px 11px;border-radius:999px;font-size:12px;font-weight:900;">條件 {int(decision_engine.get('completed',0) or 0)} / {int(decision_engine.get('total',0) or 0)}</span>
-            <span style="background:#F8FAFC;color:#334155;border:1px solid #CBD5E1;padding:6px 11px;border-radius:999px;font-size:12px;font-weight:900;">判斷信心 {int(committee.get('cio_confidence',0) or 0)}%</span>
+            <span style="background:{if_i_were_you['color']}18;color:{if_i_were_you['color']};border:1px solid {if_i_were_you['color']}55;padding:6px 11px;border-radius:999px;font-size:12px;font-weight:900;">市場分數 {int(decision_engine.get('market_score',0) or 0)} / 100</span>
+            <span style="background:#F8FAFC;color:#334155;border:1px solid #CBD5E1;padding:6px 11px;border-radius:999px;font-size:12px;font-weight:900;">操作分數 {int(portfolio_engine.get('portfolio_score',0) or 0)} / 100</span>
             <span style="background:#F8FAFC;color:#334155;border:1px solid #CBD5E1;padding:6px 11px;border-radius:999px;font-size:12px;font-weight:900;">資料完整度 {data_quality_audit['score']}%</span>
           </div>
         </div>
