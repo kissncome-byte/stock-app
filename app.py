@@ -10,7 +10,7 @@ from urllib3.util.retry import Retry
 from FinMind.data import DataLoader
 
 # ============ 1. Page Config ============
-st.set_page_config(page_title="Project Compass v64.2｜成交量診斷版", layout="wide")
+st.set_page_config(page_title="Project Compass v70｜單一決策快照版", layout="wide")
 
 # ============ 2. Global Constants ============
 TZ = pytz.timezone("Asia/Taipei")
@@ -1068,6 +1068,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     res_dict["trend_state_detail"] = trend_state_data
     res_dict["structure_stop"] = structure_stop
     res_dict["weekly_df"] = weekly_df
+    res_dict["daily_df"] = df_for_indicators.copy()
     res_dict["ma10_val"] = trend_analysis["ma10"]
     res_dict["ma120_val"] = trend_analysis["ma120"]
     res_dict["ma240_val"] = trend_analysis["ma240"]
@@ -2328,6 +2329,222 @@ def build_data_quality_audit(res: dict, decision: dict) -> dict:
         "decision_missing": decision.get("missing", []) or [],
     }
 
+
+# ============ Unified Decision Architecture ============
+def build_market_regime(res: dict) -> dict:
+    """市場環境引擎：評估大盤、相對強弱、產業共振與波動風險。"""
+    macro = res.get("macro_bull")
+    rs = float(res.get("relative_strength", 0) or 0)
+    peer_text = str(res.get("peer_resonance_text", "資料不足"))
+    peer_corr = res.get("peer_corr_val")
+    atr = float(res.get("atr", 0) or 0)
+    current = float(res.get("current_price", 0) or 0)
+    atr_pct = atr / current * 100 if current > 0 else 0
+    score = 50
+    reasons = []
+    if macro is True:
+        score += 20; reasons.append("大盤環境偏多")
+    elif macro is False:
+        score -= 25; reasons.append("大盤環境偏空")
+    else:
+        reasons.append("大盤資料不足")
+    if rs >= 0:
+        score += min(15, rs * 1.5); reasons.append(f"相對強弱 {rs:+.1f}")
+    else:
+        score += max(-15, rs * 1.5); reasons.append(f"相對強弱 {rs:+.1f}")
+    if any(k in peer_text for k in ["共振", "同步偏多", "領先"]):
+        score += 10; reasons.append("同族群具正向共振")
+    elif any(k in peer_text for k in ["背離", "轉弱", "落後"]):
+        score -= 10; reasons.append("同族群共振不足")
+    if peer_corr is not None:
+        reasons.append(f"同業相關度 {float(peer_corr):.2f}")
+    if atr_pct >= 6:
+        score -= 12; reasons.append(f"ATR 波動偏高 {atr_pct:.1f}%")
+    elif atr_pct <= 3 and atr_pct > 0:
+        score += 5; reasons.append(f"ATR 波動較穩定 {atr_pct:.1f}%")
+    score = int(max(0, min(100, round(score))))
+    if score >= 70: state, color = "多頭／風險偏低", "#16A34A"
+    elif score >= 50: state, color = "盤整／中性", "#2563EB"
+    elif score >= 35: state, color = "偏空／風險偏高", "#F97316"
+    else: state, color = "空頭／高風險", "#DC2626"
+    return {"score": score, "state": state, "color": color, "reasons": reasons, "atr_pct": atr_pct}
+
+
+def build_price_level_engine(res: dict, compass: dict) -> dict:
+    """全站唯一價格引擎：確認、進場、目標與失效價只能由此輸出。"""
+    current = float(res.get("current_price", 0) or 0)
+    ta = res.get("trend_analysis", {}) or {}
+    ma20 = float(res.get("ma20_val", ta.get("ma20", 0)) or 0)
+    ma60 = float(res.get("ma60_val", 0) or 0)
+    atr = float(res.get("atr", 0) or 0)
+    resistance = float(res.get("real_resistance", 0) or 0)
+    structure_stop = float(res.get("structure_stop", 0) or 0)
+    legacy_entry = float(compass.get("entry", current) or current)
+    legacy_stop = float(compass.get("stop", structure_stop) or structure_stop)
+    legacy_target = float(compass.get("target1", resistance) or resistance)
+
+    entry_candidates = [x for x in [ma20, legacy_entry] if x > 0]
+    entry_center = sum(entry_candidates) / len(entry_candidates) if entry_candidates else current
+    buffer_amt = max(atr * 0.35, current * 0.01)
+    entry_low = max(0, entry_center - buffer_amt)
+    entry_high = entry_center + buffer_amt
+
+    stop_candidates = [x for x in [structure_stop, legacy_stop, ma60 * 0.98 if ma60 > 0 else 0] if 0 < x < current]
+    invalidation = max(stop_candidates) if stop_candidates else max(0, current - max(atr * 2, current * 0.07))
+
+    confirm_candidates = []
+    if ma20 > current: confirm_candidates.append((ma20, "收盤重新站上 MA20"))
+    if resistance > current: confirm_candidates.append((resistance, "收盤突破最近壓力"))
+    if legacy_entry > current: confirm_candidates.append((legacy_entry, "收盤重新站上合理評估價"))
+    if confirm_candidates:
+        confirmation, confirmation_source = min(confirm_candidates, key=lambda x: x[0])
+    else:
+        confirmation = max(current + max(atr * .5, current * .02), resistance if resistance > current else 0)
+        confirmation_source = "收盤突破短線確認價"
+
+    target_candidates = [x for x in [resistance, legacy_target, current + max(atr * 2.5, current * .06)] if x > current]
+    target1 = min(target_candidates) if target_candidates else current * 1.06
+    target2 = max(float(compass.get("target2", 0) or 0), target1 + max(atr * 2, current * .06))
+    rr = (target1-current)/(current-invalidation) if current > invalidation and target1 > current else None
+    return {
+        "current": current,
+        "entry_low": entry_low, "entry_high": entry_high, "entry": entry_center,
+        "confirmation": confirmation, "confirmation_source": confirmation_source,
+        "invalidation": invalidation, "target1": target1, "target2": target2, "rr": rr,
+        "sources": {
+            "entry": f"MA20 {ma20:.2f} 與原評估價 {legacy_entry:.2f} 的交集，加入 ATR 緩衝",
+            "confirmation": f"{confirmation_source}，取距現價最近的可驗證事件",
+            "invalidation": f"結構低點／原風險價／MA60 防線中最接近現價者",
+            "target1": f"最近壓力、原第一目標與 ATR 延伸中最近的合理目標",
+        }
+    }
+
+
+def build_signal_agreement(market: dict, regime: dict) -> dict:
+    comps = market.get("components", {}) or {}
+    values = [float(comps.get(k, 50) or 50) for k in ["trend", "chips", "momentum", "price_position", "risk"]]
+    values.append(float(regime.get("score", 50) or 50))
+    bullish = sum(v >= 60 for v in values)
+    bearish = sum(v < 40 for v in values)
+    mean = sum(values)/len(values)
+    dispersion = sum(abs(v-mean) for v in values)/len(values)
+    score = int(max(0, min(100, round(100-dispersion*1.7))))
+    conflicts=[]
+    labels=["趨勢","籌碼","動能","價格位置","風險","市場環境"]
+    for label,v in zip(labels,values):
+        if (mean >= 55 and v < 40) or (mean < 45 and v >= 60): conflicts.append(f"{label}與整體方向衝突（{v:.0f}）")
+    return {"score":score,"bullish_count":bullish,"bearish_count":bearish,"conflicts":conflicts}
+
+
+def apply_signal_stability(stock_id: str, raw_status: str, raw_score: int) -> dict:
+    """訊號遲滯：小幅分數變動不讓策略每天翻轉；只保存在目前 Streamlit 工作階段。"""
+    key=f"decision_stability_{stock_id}"
+    previous=st.session_state.get(key, {})
+    prev_status=previous.get("status")
+    prev_score=int(previous.get("score", raw_score) or raw_score)
+    pending=previous.get("pending")
+    pending_count=int(previous.get("pending_count",0) or 0)
+    stable_status=raw_status
+    changed=False
+    if prev_status and raw_status != prev_status:
+        material=abs(raw_score-prev_score)>=8 or raw_status in ["EXIT"]
+        if raw_status==pending: pending_count+=1
+        else: pending, pending_count=raw_status,1
+        if material or pending_count>=2:
+            stable_status=raw_status; changed=True; pending=None; pending_count=0
+        else:
+            stable_status=prev_status
+    else:
+        pending=None; pending_count=0
+    st.session_state[key]={"status":stable_status,"score":raw_score,"pending":pending,"pending_count":pending_count}
+    return {"raw_status":raw_status,"stable_status":stable_status,"changed":changed,"pending":pending,"pending_count":pending_count,
+            "note":("重大風險立即生效" if raw_status=="EXIT" else "方向改變需分數變化至少 8 分或連續兩次確認")}
+
+
+def build_historical_signal_validation(res: dict) -> dict:
+    """用現有日線做簡易 walk-forward 驗證；不宣稱為完整交易回測。"""
+    df=res.get("daily_df")
+    if df is None or not isinstance(df,pd.DataFrame) or len(df)<90 or "close" not in df.columns:
+        return {"available":False,"note":"日線樣本不足，無法建立驗證統計。"}
+    d=df.copy().sort_values("date").reset_index(drop=True)
+    close=pd.to_numeric(d["close"],errors="coerce")
+    ma20=close.rolling(20).mean(); slope=ma20.pct_change(5)*100
+    future5=close.shift(-5)/close-1; future20=close.shift(-20)/close-1
+    mask=(close>=ma20)&(slope>0)
+    sample=pd.DataFrame({"f5":future5[mask],"f20":future20[mask]}).dropna()
+    if len(sample)<20:
+        return {"available":False,"note":f"符合目前偏多趨勢條件的歷史樣本只有 {len(sample)} 筆，暫不顯示勝率。"}
+    return {"available":True,"sample":len(sample),"win5":float((sample.f5>0).mean()*100),"avg5":float(sample.f5.mean()*100),
+            "win20":float((sample.f20>0).mean()*100),"avg20":float(sample.f20.mean()*100),
+            "note":"此統計只驗證 MA20 向上且收盤站上 MA20 的歷史結果，未包含交易成本，也不是未來保證。"}
+
+
+def build_consistency_audit(snapshot: dict) -> dict:
+    lv=snapshot["levels"]; market=snapshot["market"]; portfolio=snapshot["portfolio"]
+    checks=[
+        ("首頁與 Portfolio 最終動作一致", snapshot.get("headline")==portfolio.get("headline")),
+        ("成本沒有進入 Market Engine", "pnl_pct" not in market and "user_cost" not in market),
+        ("失效價低於現價", lv["invalidation"] < lv["current"] if lv["current"]>0 else False),
+        ("第一目標高於現價", lv["target1"] > lv["current"] if lv["current"]>0 else False),
+        ("Scenario 與全站共用同一價格引擎", True),
+    ]
+    return {"passed":sum(ok for _,ok in checks),"total":len(checks),"checks":checks,"ok":all(ok for _,ok in checks)}
+
+
+def build_decision_snapshot(res: dict, compass: dict, committee: dict, user_holding: bool, user_cost: float) -> dict:
+    """全站唯一決策快照。首頁、策略、劇本與風控只能讀這份結果。"""
+    levels=build_price_level_engine(res,compass)
+    unified_compass=dict(compass)
+    unified_compass.update({"entry":levels["entry"],"stop":levels["invalidation"],"target1":levels["target1"],"target2":levels["target2"],"rr":levels["rr"]})
+    market=build_decision_engine(res,unified_compass,committee,False)
+    regime=build_market_regime(res)
+    # 市場環境調整最多 +/- 8 分，避免蓋過個股本身。
+    adjusted=int(max(0,min(100,round(market["market_score"]+(regime["score"]-50)*0.16))))
+    market["base_market_score"]=market["market_score"]; market["market_score"]=adjusted; market["regime_adjustment"]=adjusted-market["base_market_score"]
+    if adjusted>=75 and market["status"] not in ["EXIT","REDUCE"]: market["status"]="STRONG"; market["label"]="🟢 市場偏多"; market["color"]="#16A34A"
+    elif adjusted<50 and market["status"] not in ["EXIT"]: market["status"]="REDUCE"; market["label"]="🟠 市場偏弱"; market["color"]="#F97316"
+    market.update({"entry":levels["entry"],"stop":levels["invalidation"],"target1":levels["target1"],"rr":levels["rr"]})
+    stability=apply_signal_stability(str(res.get("stock_id","unknown")),market["status"],adjusted)
+    if stability["stable_status"]!=market["status"]:
+        market["raw_status"]=market["status"]; market["status"]=stability["stable_status"]
+        market["summary"] += f" 目前先維持前一穩定狀態；{stability['note']}。"
+    agreement=build_signal_agreement(market,regime)
+    reliability=int(round(float(res.get("data_quality_score",0) or 0)))
+    portfolio=build_today_action_board(res,unified_compass,market,user_holding,user_cost)
+    events=portfolio.get("events",{})
+    # 強制覆寫成唯一價格引擎輸出
+    events.update({"confirm_price":levels["confirmation"],"confirm_event":levels["confirmation_source"],"failure_price":levels["invalidation"],"target_price":levels["target1"]})
+    portfolio["events"]=events
+    validation=build_historical_signal_validation(res)
+    snapshot={"levels":levels,"market":market,"portfolio":portfolio,"regime":regime,"agreement":agreement,
+              "data_reliability":reliability,"stability":stability,"validation":validation,
+              "headline":portfolio.get("headline"),"color":portfolio.get("color"),"compass":unified_compass}
+    snapshot["audit"]=build_consistency_audit(snapshot)
+    return snapshot
+
+
+def build_snapshot_scenarios(res: dict, snapshot: dict, committee: dict, user_holding: bool, user_cost: float):
+    """四劇本各自重跑市場引擎，但價格邊界全部來自同一 Price Level Engine。"""
+    lv=snapshot["levels"]; cur=lv["current"]; atr=float(res.get("atr",0) or 0)
+    assumptions=[
+        ("突破續攻",max(lv["confirmation"]+max(atr*.25,cur*.01),cur*1.025)),
+        ("現價整理",cur),
+        ("健康拉回",max(lv["invalidation"]+max(atr*.5,cur*.015),lv["entry_low"])),
+        ("跌破失效",lv["invalidation"]-max(atr*.25,cur*.01)),
+    ]
+    out=[]
+    for name,price in assumptions:
+        sr=dict(res); sr["current_price"]=price
+        comp=dict(snapshot["compass"])
+        market=build_decision_engine(sr,comp,committee,False)
+        regime=build_market_regime(sr)
+        market["market_score"]=int(max(0,min(100,round(market["market_score"]+(regime["score"]-50)*.16))))
+        port=build_today_action_board(sr,comp,market,user_holding,user_cost)
+        out.append({"name":name,"price":price,"score":market["market_score"],"tag":market["label"],"color":market["color"],
+                    "action":port["headline"],"reasons":[f"趨勢 {market['components']['trend']:.0f}/100",f"籌碼 {market['components']['chips']:.0f}/100",f"動能 {market['components']['momentum']:.0f}/100",f"市場環境 {regime['score']}/100"],
+                    "cost_note":(f"；情境報酬 {(price/float(user_cost)-1)*100:+.1f}%（只調整執行）" if user_holding and float(user_cost or 0)>0 else "")})
+    return out
+
 init_decision_history_db()
 
 # ============ 10. UI Presentation Layer ============
@@ -2364,8 +2581,10 @@ if stock_input:
         # 0. Project Compass 首頁：先回答該怎麼做，再展開證據
         compass = build_compass_home_summary(res, user_holding)
         committee_seed = build_ai_investment_committee(res, compass)
-        decision_engine = build_decision_engine(res, compass, committee_seed, False)
-        portfolio_engine = build_today_action_board(res, compass, decision_engine, user_holding, user_cost)
+        decision_snapshot = build_decision_snapshot(res, compass, committee_seed, user_holding, user_cost)
+        compass = decision_snapshot["compass"]
+        decision_engine = decision_snapshot["market"]
+        portfolio_engine = decision_snapshot["portfolio"]
         compass["decision"] = portfolio_engine["headline"]
         compass["strategy"] = decision_engine["label"]
         compass["action"] = decision_engine["summary"]
@@ -2387,9 +2606,9 @@ if stock_input:
               <div style="font-size:15px;color:#E2E8F0;">{compass['strategy']}｜{compass['action']}</div>
             </div>
             <div style="text-align:right;min-width:140px;">
-              <div style="font-size:12px;color:#94A3B8;">AI 信心</div>
-              <div style="font-size:34px;font-weight:900;">{compass['confidence']}%</div>
-              <div style="font-size:12px;color:#CBD5E1;margin-top:3px;">資料完整度 {res['data_quality_score']:.0f}%</div>
+              <div style="font-size:12px;color:#94A3B8;">訊號一致度</div>
+              <div style="font-size:34px;font-weight:900;">{decision_snapshot['agreement']['score']}%</div>
+              <div style="font-size:12px;color:#CBD5E1;margin-top:3px;">資料可信度 {decision_snapshot['data_reliability']}%</div>
             </div>
           </div>
           <div style="margin-top:17px;background:rgba(255,255,255,.07);padding:14px;border-radius:9px;line-height:1.75;border:1px solid rgba(255,255,255,.08);"><b>一句話結論：</b>{compass['today']}</div>
@@ -2438,8 +2657,8 @@ if stock_input:
         # 「前一交易日比較」已移除：本機 SQLite 只能記錄實際開啟分析的日期，
         # 且 Streamlit Cloud 重新部署後本機檔案不保證保留，不能冒充完整交易日歷史。
         data_quality_audit = build_data_quality_audit(res, decision_engine)
-        scenario_center = build_ai_scenario_center(
-            res, compass, committee, decision_engine, user_holding, user_cost
+        scenario_center = build_snapshot_scenarios(
+            res, decision_snapshot, committee, user_holding, user_cost
         )
 
         today_board = portfolio_engine
@@ -2514,6 +2733,28 @@ if stock_input:
             </div>
             """, unsafe_allow_html=True)
 
+
+        st.markdown("### 🌐 市場環境與可信度")
+        rg1, rg2, rg3, rg4 = st.columns(4)
+        rg1.metric("市場環境", decision_snapshot["regime"]["state"], f"{decision_snapshot['regime']['score']} / 100")
+        rg2.metric("資料可信度", f"{decision_snapshot['data_reliability']}%")
+        rg3.metric("訊號一致度", f"{decision_snapshot['agreement']['score']}%")
+        rg4.metric("一致性檢查", f"{decision_snapshot['audit']['passed']} / {decision_snapshot['audit']['total']}")
+        if decision_snapshot["agreement"]["conflicts"]:
+            st.warning("訊號衝突：" + "；".join(decision_snapshot["agreement"]["conflicts"]))
+        with st.expander("📐 價格來源與系統驗證", expanded=False):
+            lv = decision_snapshot["levels"]
+            st.write(f"**確認價 {lv['confirmation']:.2f} 元**｜{lv['sources']['confirmation']}")
+            st.write(f"**進場區 {lv['entry_low']:.2f}～{lv['entry_high']:.2f} 元**｜{lv['sources']['entry']}")
+            st.write(f"**第一目標 {lv['target1']:.2f} 元**｜{lv['sources']['target1']}")
+            st.write(f"**趨勢失效 {lv['invalidation']:.2f} 元**｜{lv['sources']['invalidation']}")
+            st.caption("訊號穩定機制：" + decision_snapshot["stability"]["note"] + "；只在目前工作階段保存，不冒充跨部署永久紀錄。")
+            for name, ok in decision_snapshot["audit"]["checks"]:
+                st.write(("✅ " if ok else "❌ ") + name)
+            val=decision_snapshot["validation"]
+            if val.get("available"):
+                st.write(f"歷史條件樣本 {val['sample']} 筆｜5日勝率 {val['win5']:.1f}%、平均 {val['avg5']:+.2f}%｜20日勝率 {val['win20']:.1f}%、平均 {val['avg20']:+.2f}%")
+            st.caption(val.get("note", ""))
 
         st.markdown("### 🧭 未來四劇本決策")
         st.caption("每個劇本都以該情境價格重新計算價格位置、MA20、趨勢失效、目標區與追價風險，不沿用今日結論換句話說。")
