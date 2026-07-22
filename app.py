@@ -354,6 +354,82 @@ def get_market_macro_status():
         log_error("market macro", exc)
     return None, "⚪ 大盤資料取得失敗", None, None, None, "⚪ 大盤量能資料不足"
 
+
+@st.cache_data(ttl=1800)
+def get_market_regime_context():
+    """取得可驗證的大盤環境資料。
+
+    目前只使用能穩定取得的加權指數日線；櫃買與產業指數若無可靠資料來源，
+    明確標示未納入，不以替代資料冒充。
+    """
+    ctx = {
+        "available": False, "benchmark": "TAIEX", "scope_note": "僅納入加權指數；櫃買與產業指數未可靠取得時不納入",
+        "close": None, "ma20": None, "ma60": None, "slope20": None, "slope60": None,
+        "adx": None, "ret5": None, "ret20": None, "vol_ratio": None, "atr_pct": None,
+        "panic": False, "state": "資料不足", "reasons": []
+    }
+    try:
+        df = get_api().taiwan_stock_daily(stock_id="TAIEX", start_date=(datetime.now()-timedelta(days=220)).strftime("%Y-%m-%d"))
+        if df is None or df.empty:
+            return ctx
+        d = df.sort_values("date").reset_index(drop=True).copy()
+        for c in ["close", "max", "min", "Trading_money", "Trading_Volume"]:
+            if c in d.columns:
+                d[c] = pd.to_numeric(d[c], errors="coerce")
+        close = d["close"]
+        high = d["max"] if "max" in d.columns else close
+        low = d["min"] if "min" in d.columns else close
+        d["ma20"] = close.rolling(20).mean(); d["ma60"] = close.rolling(60).mean()
+        d["slope20"] = d["ma20"].pct_change(5) * 100; d["slope60"] = d["ma60"].pct_change(10) * 100
+        prev_close = close.shift(1)
+        tr = pd.concat([(high-low).abs(), (high-prev_close).abs(), (low-prev_close).abs()], axis=1).max(axis=1)
+        atr14 = tr.rolling(14).mean()
+        up = high.diff(); down = -low.diff()
+        plus_dm = up.where((up > down) & (up > 0), 0.0); minus_dm = down.where((down > up) & (down > 0), 0.0)
+        tr14 = tr.rolling(14).sum().replace(0, np.nan)
+        plus_di = 100 * plus_dm.rolling(14).sum() / tr14; minus_di = 100 * minus_dm.rolling(14).sum() / tr14
+        dx = 100 * (plus_di-minus_di).abs() / (plus_di+minus_di).replace(0, np.nan)
+        adx = dx.rolling(14).mean()
+        vol_col = "Trading_money" if "Trading_money" in d.columns else "Trading_Volume" if "Trading_Volume" in d.columns else None
+        vol_ratio = None
+        if vol_col:
+            vm = d[vol_col].rolling(20).mean()
+            if pd.notna(vm.iloc[-1]) and vm.iloc[-1] > 0:
+                vol_ratio = float(d[vol_col].iloc[-1] / vm.iloc[-1])
+        last = d.iloc[-1]
+        c = float(last["close"]); ma20 = float(last["ma20"]) if pd.notna(last["ma20"]) else None; ma60 = float(last["ma60"]) if pd.notna(last["ma60"]) else None
+        ret5 = float((c / close.iloc[-6] - 1) * 100) if len(d) >= 6 and close.iloc[-6] > 0 else None
+        ret20 = float((c / close.iloc[-21] - 1) * 100) if len(d) >= 21 and close.iloc[-21] > 0 else None
+        atr_pct = float(atr14.iloc[-1] / c * 100) if pd.notna(atr14.iloc[-1]) and c > 0 else None
+        adx_v = float(adx.iloc[-1]) if pd.notna(adx.iloc[-1]) else None
+        s20 = float(last["slope20"]) if pd.notna(last["slope20"]) else None; s60 = float(last["slope60"]) if pd.notna(last["slope60"]) else None
+        panic = bool((ret5 is not None and ret5 <= -4.5) or (atr_pct is not None and atr_pct >= 3.0 and ret5 is not None and ret5 <= -3.0))
+        if panic:
+            state = "恐慌風險"
+        elif ma20 and ma60 and c > ma20 > ma60 and (s20 or 0) > 0 and (s60 or 0) >= 0:
+            state = "強勢多頭" if (adx_v or 0) >= 20 else "多頭整理"
+        elif ma60 and c >= ma60 and ma20 and c < ma20:
+            state = "多頭回檔"
+        elif ma20 and ma60 and c < ma20 < ma60 and (s20 or 0) < 0:
+            state = "弱勢空頭"
+        elif ma20 and c > ma20 and ma60 and c < ma60:
+            state = "空頭反彈"
+        else:
+            state = "區間整理"
+        reasons = [f"加權指數 {c:.1f}"]
+        if ma20: reasons.append(f"MA20 {ma20:.1f}（斜率 {s20:+.2f}%）")
+        if ma60: reasons.append(f"MA60 {ma60:.1f}（斜率 {s60:+.2f}%）")
+        if adx_v is not None: reasons.append(f"ADX {adx_v:.1f}")
+        if ret5 is not None: reasons.append(f"5日 {ret5:+.1f}%")
+        if ret20 is not None: reasons.append(f"20日 {ret20:+.1f}%")
+        if vol_ratio is not None: reasons.append(f"大盤量比 {vol_ratio:.2f}")
+        ctx.update({"available": True, "close": c, "ma20": ma20, "ma60": ma60, "slope20": s20, "slope60": s60,
+                    "adx": adx_v, "ret5": ret5, "ret20": ret20, "vol_ratio": vol_ratio, "atr_pct": atr_pct,
+                    "panic": panic, "state": state, "reasons": reasons})
+    except Exception as exc:
+        log_error("market regime context", exc)
+    return ctx
+
 @st.cache_data(ttl=900)
 def get_taiwan_enhanced_chips(stock_id: str, avg_daily_volume_shares: float, days: int = 30):
     s_trend, m_trend, s_3d, m_diff = "⚪ 資料不足", "⚪ 資料不足", 0.0, 0.0
@@ -833,6 +909,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     if df_raw is None or df_raw.empty: return None
 
     macro_bull, macro_text, is_market_panic, is_market_overextended, market_vol_healthy, market_vol_desc = get_market_macro_status()
+    market_regime_context = get_market_regime_context()
     radar_results, is_us_panic, us_panic_desc, wtx_change = get_overnight_radar()
     hist_last_raw = df_raw.iloc[-1]
     quote = compute_live_data(stock_id, market_type, float(hist_last_raw["close"]), float(hist_last_raw["vol"]))
@@ -996,8 +1073,13 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     res_dict["stock_id"] = stock_id
     res_dict["stock_name"] = stock_name
     res_dict["industry"] = industry
+    res_dict["market_type"] = market_type
     res_dict["pnl_pct"] = pnl_pct
     res_dict["macro_bull"] = macro_bull
+    res_dict["market_regime_context"] = market_regime_context
+    res_dict["is_market_panic"] = bool(is_market_panic)
+    res_dict["is_us_panic"] = bool(is_us_panic)
+    res_dict["us_panic_desc"] = us_panic_desc
     res_dict["market_vol_desc"] = market_vol_desc
     res_dict["wolf_rank_label"] = wolf_rank_label
     res_dict["wolf_rank_color"] = wolf_rank_color
@@ -2258,42 +2340,51 @@ def build_data_quality_audit(res: dict, decision: dict) -> dict:
 
 # ============ Unified Decision Architecture ============
 def build_market_regime(res: dict) -> dict:
-    """市場環境引擎：評估大盤、相對強弱、產業共振與波動風險。"""
-    macro = res.get("macro_bull")
+    """大盤風險閘門：只使用可驗證資料，並限制允許的操作。"""
+    ctx = res.get("market_regime_context", {}) or {}
     rs = float(res.get("relative_strength", 0) or 0)
     peer_text = str(res.get("peer_resonance_text", "資料不足"))
-    peer_corr = res.get("peer_corr_val")
-    atr = float(res.get("atr", 0) or 0)
-    current = float(res.get("current_price", 0) or 0)
+    atr = float(res.get("atr", 0) or 0); current = float(res.get("current_price", 0) or 0)
     atr_pct = atr / current * 100 if current > 0 else 0
-    score = 50
-    reasons = []
-    if macro is True:
-        score += 20; reasons.append("大盤環境偏多")
-    elif macro is False:
-        score -= 25; reasons.append("大盤環境偏空")
+    reasons = list(ctx.get("reasons", []))
+    limitations = []
+    if not ctx.get("available"):
+        score = 50; state = "大盤資料不足"; gate = "CAUTION"
+        reasons.append("加權指數資料未能可靠取得，大盤不加分也不扣分")
     else:
-        reasons.append("大盤資料不足")
-    if rs >= 0:
-        score += min(15, rs * 1.5); reasons.append(f"相對強弱 {rs:+.1f}")
-    else:
-        score += max(-15, rs * 1.5); reasons.append(f"相對強弱 {rs:+.1f}")
-    if any(k in peer_text for k in ["共振", "同步偏多", "領先"]):
-        score += 10; reasons.append("同族群具正向共振")
-    elif any(k in peer_text for k in ["背離", "轉弱", "落後"]):
-        score -= 10; reasons.append("同族群共振不足")
-    if peer_corr is not None:
-        reasons.append(f"同業相關度 {float(peer_corr):.2f}")
-    if atr_pct >= 6:
-        score -= 12; reasons.append(f"ATR 波動偏高 {atr_pct:.1f}%")
-    elif atr_pct <= 3 and atr_pct > 0:
-        score += 5; reasons.append(f"ATR 波動較穩定 {atr_pct:.1f}%")
+        state = str(ctx.get("state", "區間整理"))
+        base_map = {"強勢多頭":82, "多頭整理":70, "多頭回檔":60, "區間整理":50, "空頭反彈":42, "弱勢空頭":25, "恐慌風險":10}
+        score = base_map.get(state, 50)
+        vr = ctx.get("vol_ratio")
+        if vr is not None:
+            if state in ["強勢多頭","多頭整理"] and vr >= 1.05: score += 5
+            elif state in ["空頭反彈","弱勢空頭"] and vr >= 1.15: score -= 5
+        if bool(res.get("is_us_panic")):
+            score -= 10; reasons.append(str(res.get("us_panic_desc") or "隔夜外部市場明顯轉弱"))
+        if state in ["恐慌風險"]: gate = "PANIC"
+        elif state in ["弱勢空頭"]: gate = "RISK_OFF"
+        elif state in ["空頭反彈"]: gate = "NO_NEW_BUY"
+        elif state in ["區間整理","多頭回檔"]: gate = "CAUTION"
+        else: gate = "OPEN"
+    # 個股相對強弱只作小幅修正，不能推翻大盤閘門。
+    score += max(-8, min(8, rs * 0.8))
+    if rs != 0: reasons.append(f"個股相對大盤 {rs:+.1f}%")
+    if any(k in peer_text for k in ["共振", "同步偏多", "領先"]): score += 4; reasons.append("同族群具正向共振")
+    elif any(k in peer_text for k in ["背離", "轉弱", "落後"]): score -= 4; reasons.append("同族群共振不足")
+    if atr_pct >= 6: score -= 6; reasons.append(f"個股 ATR 波動偏高 {atr_pct:.1f}%")
     score = int(max(0, min(100, round(score))))
-    if score >= 70: state, color = "多頭／風險偏低", "#16A34A"
-    elif score >= 50: state, color = "盤整／中性", "#2563EB"
-    elif score >= 35: state, color = "偏空／風險偏高", "#F97316"
-    else: state, color = "空頭／高風險", "#DC2626"
-    return {"score": score, "state": state, "color": color, "reasons": reasons, "atr_pct": atr_pct}
+    if "OTC" in str(res.get("market_type", "")).upper() or "TWO" in str(res.get("market_type", "")).upper():
+        limitations.append("此為上櫃股票，但櫃買指數未可靠取得；大盤閘門僅參考加權指數")
+    limitations.append(str(ctx.get("scope_note", "僅使用可驗證的大盤資料")))
+    color = "#16A34A" if gate=="OPEN" else "#2563EB" if gate=="CAUTION" else "#F97316" if gate=="NO_NEW_BUY" else "#DC2626"
+    allowed = {
+        "OPEN": ["加碼","續抱","突破操作"],
+        "CAUTION": ["續抱","回測確認","小量操作"],
+        "NO_NEW_BUY": ["續抱","反彈減碼"],
+        "RISK_OFF": ["減碼","退出"],
+        "PANIC": ["停止加碼","加速風控","退出"],
+    }.get(gate,["保守觀察"] )
+    return {"score":score,"state":state,"color":color,"reasons":reasons,"atr_pct":atr_pct,"gate":gate,"allowed_actions":allowed,"limitations":list(dict.fromkeys(limitations)),"context":ctx}
 
 
 def build_price_level_engine(res: dict, compass: dict, market_score: int = 50, market_status: str = "HOLD") -> dict:
@@ -2440,7 +2531,7 @@ def build_decision_snapshot(res: dict, compass: dict, committee: dict, user_hold
     # 先由 Market Engine 判斷方向；成本完全不進入市場評分。
     base_market = build_decision_engine(res, compass, committee, False)
     regime = build_market_regime(res)
-    adjusted = int(max(0, min(100, round(base_market["market_score"] + (regime["score"] - 50) * 0.16))))
+    adjusted = int(max(0, min(100, round(base_market["market_score"] + (regime["score"] - 50) * 0.30))))
     market = dict(base_market)
     market["base_market_score"] = base_market["market_score"]
     market["market_score"] = adjusted
@@ -2455,13 +2546,28 @@ def build_decision_snapshot(res: dict, compass: dict, committee: dict, user_hold
     else:
         market.update({"status":"EXIT", "label":"🔴 弱勢風險", "color":"#DC2626"})
 
+    # 大盤風險閘門具有否決權：不允許個股分數在惡劣大盤下產生加碼訊號。
+    gate = regime.get("gate", "CAUTION")
+    market["pre_gate_status"] = market["status"]
+    market["market_gate"] = gate
+    market["allowed_actions"] = regime.get("allowed_actions", [])
+    if gate == "PANIC":
+        market.update({"status":"EXIT", "label":"🔴 大盤恐慌風控", "color":"#DC2626"})
+    elif gate == "RISK_OFF" and market["status"] in ["STRONG", "HOLD"]:
+        market.update({"status":"REDUCE", "label":"🟠 大盤弱勢限制：優先減碼", "color":"#F97316"})
+    elif gate == "NO_NEW_BUY" and market["status"] == "STRONG":
+        market.update({"status":"HOLD", "label":"🔵 個股強但大盤限制：只續抱不新增", "color":"#2563EB"})
+    elif gate == "CAUTION" and market["status"] == "STRONG":
+        market.update({"status":"HOLD", "label":"🔵 大盤未確認：續抱、不追價", "color":"#2563EB"})
+
     levels = build_price_level_engine(res, compass, adjusted, market["status"])
     unified_compass = dict(compass)
     unified_compass.update({"entry":levels["entry"], "stop":levels["structure_stop"], "target1":levels["target1"], "target2":levels["target2"], "rr":levels["rr"]})
     market.update({"entry":levels["entry"], "stop":levels["structure_stop"], "target1":levels["target1"], "rr":levels["rr"]})
 
     stability = apply_signal_stability(str(res.get("stock_id", "unknown")), market["status"], adjusted)
-    if stability["stable_status"] != market["status"] and market["status"] != "EXIT":
+    # 訊號遲滯不能推翻大盤風險閘門；只在 OPEN／CAUTION 環境下允許延續舊方向。
+    if regime.get("gate") in ["OPEN", "CAUTION"] and stability["stable_status"] != market["status"] and market["status"] != "EXIT":
         market["raw_status"] = market["status"]
         market["status"] = stability["stable_status"]
 
@@ -2755,6 +2861,13 @@ if stock_input:
             rg2.metric("資料可信度", f"{decision_snapshot['data_reliability']}%")
             rg3.metric("訊號一致度", f"{decision_snapshot['agreement']['score']}%")
             rg4.metric("一致性檢查", f"{decision_snapshot['audit']['passed']} / {decision_snapshot['audit']['total']}")
+            gate_names = {"OPEN":"正常開放", "CAUTION":"保守操作", "NO_NEW_BUY":"禁止新增", "RISK_OFF":"風險關閉", "PANIC":"恐慌風控"}
+            st.write(f"**大盤風險閘門：** {gate_names.get(decision_snapshot['regime'].get('gate'), decision_snapshot['regime'].get('gate'))}")
+            st.write("**目前允許的操作：** " + "、".join(decision_snapshot['regime'].get('allowed_actions', [])))
+            for reason in decision_snapshot['regime'].get('reasons', [])[:8]:
+                st.write("• " + str(reason))
+            for limit in decision_snapshot['regime'].get('limitations', []):
+                st.caption("限制：" + str(limit))
             if decision_snapshot["agreement"]["conflicts"]:
                 st.warning("訊號衝突：" + "；".join(decision_snapshot["agreement"]["conflicts"]))
             for name, ok in decision_snapshot["audit"]["checks"]:
