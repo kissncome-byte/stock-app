@@ -1452,78 +1452,133 @@ def build_ai_investment_committee(res: dict, compass: dict) -> dict:
 
 
 
-def build_ai_scenario_center(res: dict, compass: dict, committee: dict, decision: dict = None) -> list:
-    """以單一價格計畫建立四種操作情境。"""
+def build_ai_scenario_center(
+    res: dict,
+    compass: dict,
+    committee: dict,
+    decision: dict = None,
+    user_holding: bool = False,
+    user_cost: float = 0.0,
+) -> list:
+    """依每個假設價格重新評估，而不是沿用今日結論換句話說。"""
     decision = decision or {}
+    ta = res.get("trend_analysis", {}) or {}
     current = float(res.get("current_price", 0) or 0)
     entry = float(compass.get("entry", current) or current)
     stop = float(compass.get("stop", 0) or 0)
     target1 = float(compass.get("target1", current) or current)
-    target2 = float(compass.get("target2", target1) or target1)
     resistance = float(res.get("real_resistance", target1) or target1)
+    ma20 = float(res.get("ma20_val", ta.get("ma20", 0)) or 0)
     atr = float(res.get("atr", 0) or 0)
+    slope20 = float(ta.get("slope20", 0) or 0)
+    adx = float(ta.get("adx", 0) or 0)
+    trend_state = str(res.get("trend_state", "觀察"))
+    accumulation = str(ta.get("accumulation", "資料不足"))
+    price_volume = str(ta.get("price_volume", "資料不足"))
+    quality = float(res.get("data_quality_score", 0) or 0)
     tick = tick_size(current) if current > 0 else 0.01
 
-    def px(value):
+    def px(value: float) -> float:
         return round_to_tick(max(0, value), tick)
 
-    up_price = px(current * 1.03)
-    down_price = px(current * 0.98)
-    breakout_line = px(max(resistance, target1))
-    breakout_confirm = px(breakout_line + max(atr * 0.25, tick))
-    failure_line = px(stop)
+    breakout_price = px(max(resistance, target1, current + max(atr * 0.5, tick)))
+    consolidation_price = px(current)
+    pullback_anchor = max(x for x in [ma20, entry, current - max(atr, current * 0.025)] if x > 0)
+    pullback_price = px(min(current, pullback_anchor))
+    failure_price = px(stop if stop > 0 else current - max(atr * 2, current * 0.06))
 
-    if up_price >= breakout_line > 0:
-        up_title = "上漲 3% 並接近／突破壓力"
-        up_action = "不要直接追價；先看收盤能否站穩壓力區，已有部位可續抱並上移保護。"
-        up_watch = f"收盤是否站穩 {breakout_line:.2f} 元，且成交量至少不低於近期均量。"
-        up_tag, up_color = "確認後再加碼", "#2563EB"
-    else:
-        up_title = "上漲 3%，但尚未完成突破"
-        up_action = "已有部位續抱；未持有者避免因單日上漲追高，等待突破確認或回測。"
-        up_watch = f"上方壓力約 {breakout_line:.2f} 元，先觀察是否放量靠近。"
-        up_tag, up_color = "續抱不追高", "#10B981"
+    trend_base_ok = slope20 > 0 and not any(k in trend_state for k in ["空頭", "趨勢破壞", "下跌段"])
+    chip_ok = any(k in accumulation for k in ["偏累積", "流入", "吸籌"]) and "流出" not in accumulation
+    pv_ok = "價跌量增" not in price_volume and "賣壓" not in price_volume
 
-    if stop > 0 and down_price <= stop:
-        down_title = "下跌 2% 並逼近趨勢失效價（風險防線）"
-        down_action = "停止新增部位；若收盤有效跌破趨勢失效價（風險防線），依紀律減碼或退出，不用急著攤平。"
-        down_watch = f"趨勢失效價（風險防線）{failure_line:.2f} 元，盤中跌破後仍要看收盤是否收回。"
-        down_tag, down_color = "風險優先", "#EF4444"
-    else:
-        down_title = "下跌 2%，仍在風險界線之上"
-        down_action = "先確認是否量縮與支撐有效；符合原計畫才小量分批，不因跌幅自動抄底。"
-        down_watch = f"建議評估價 {entry:.2f} 元、趨勢失效價（風險防線）{failure_line:.2f} 元。"
-        down_tag, down_color = "觀察支撐", "#F59E0B"
+    def evaluate(name: str, scenario_price: float, mode: str) -> dict:
+        score = 50
+        reasons = []
 
-    breakout_action = "收盤站穩後可分批建立或增加部位，第一筆仍以小部位為主，趨勢失效價（風險防線）不向下放寬。"
-    if decision.get("status") in ["WAIT", "VETO", "AVOID"]:
-        breakout_action = "這是原本等待策略的轉折條件；確認站穩後再由等待改為分批布局。"
-    breakout_watch = f"確認價約 {breakout_confirm:.2f} 元；第一目標 {target1:.2f} 元，延伸目標 {target2:.2f} 元。"
+        above_ma20 = ma20 > 0 and scenario_price >= ma20
+        above_entry = entry > 0 and scenario_price >= entry
+        stop_broken = stop > 0 and scenario_price <= stop
+        near_target = target1 > 0 and scenario_price >= target1 * 0.97
+        overextended = entry > 0 and scenario_price > entry * 1.05
 
-    failure_action = "停止買進並執行風險處理；已有部位依原設定減碼或退出，重新站回前不預設反彈。"
-    failure_watch = f"趨勢失效價（風險防線）{failure_line:.2f} 元；收盤有效跌破後，再確認是否伴隨放量與 MA60 轉弱。"
+        if trend_base_ok:
+            score += 14; reasons.append("MA20 斜率與中期趨勢仍偏多")
+        else:
+            score -= 18; reasons.append("中期趨勢尚未形成明確支撐")
+        if above_ma20:
+            score += 10; reasons.append("假設價格仍守在 MA20 之上")
+        else:
+            score -= 15; reasons.append("假設價格落到 MA20 之下")
+        if chip_ok:
+            score += 8; reasons.append("籌碼未出現明顯流出")
+        if pv_ok:
+            score += 6; reasons.append("價量結構未出現明顯賣壓")
+        if adx >= 25:
+            score += 5; reasons.append("趨勢強度足夠")
+        if quality < 60:
+            score -= 12; reasons.append("資料完整度不足，降低決策信心")
+        if stop_broken:
+            score = min(score, 20); reasons.append("已觸及或跌破趨勢失效價")
+        if near_target:
+            score -= 8; reasons.append("接近第一目標區，新增部位報酬空間縮小")
+        if overextended:
+            score -= 12; reasons.append("高於評估價過多，追價風險提高")
+
+        score = int(max(0, min(100, round(score))))
+
+        if stop_broken:
+            action = "停止新增；已有持股依紀律減碼或退出"
+            tag, color = "風險失效", "#DC2626"
+        elif mode == "breakout":
+            if score >= 70 and not overextended:
+                action = "收盤站穩突破價後，可先建立或增加小部位；不一次買滿"
+                tag, color = "突破可執行", "#7C3AED"
+            elif user_holding:
+                action = "原部位續抱並上移保護；尚不建議追價加碼"
+                tag, color = "續抱確認", "#2563EB"
+            else:
+                action = "等待收盤確認與回測，不因盤中突破直接追價"
+                tag, color = "等待確認", "#D97706"
+        elif mode == "pullback":
+            healthy = above_ma20 and not stop_broken and trend_base_ok
+            if healthy and score >= 65:
+                action = "視為健康拉回，可分批執行第一筆或小量加碼"
+                tag, color = "拉回買點", "#16A34A"
+            else:
+                action = "先觀察支撐，不能只因價格變低就自動買進"
+                tag, color = "支撐待驗證", "#D97706"
+        else:
+            if user_holding:
+                action = "續抱觀察；不急著減碼，也不在盤整中反覆加碼"
+                tag, color = "盤整續抱", "#0F766E"
+            elif score >= 65 and above_entry:
+                action = "可等待整理完成後，以小部位試單"
+                tag, color = "整理待突破", "#2563EB"
+            else:
+                action = "維持觀察，等價格或趨勢條件改善"
+                tag, color = "繼續等待", "#64748B"
+
+        cost_note = ""
+        if user_holding and user_cost and user_cost > 0:
+            scenario_pnl = (scenario_price / float(user_cost) - 1) * 100
+            cost_note = f"；以你的成本估算，該情境帳面報酬約 {scenario_pnl:+.1f}%"
+
+        return {
+            "name": name,
+            "price": scenario_price,
+            "score": score,
+            "tag": tag,
+            "color": color,
+            "action": action,
+            "reasons": reasons[:4],
+            "cost_note": cost_note,
+        }
 
     return [
-        {
-            "icon": "📈", "name": "明天上漲 3%", "price": up_price,
-            "title": up_title, "tag": up_tag, "color": up_color,
-            "action": up_action, "watch": up_watch,
-        },
-        {
-            "icon": "📉", "name": "明天下跌 2%", "price": down_price,
-            "title": down_title, "tag": down_tag, "color": down_color,
-            "action": down_action, "watch": down_watch,
-        },
-        {
-            "icon": "🚀", "name": "突破確認", "price": breakout_confirm,
-            "title": "價格與收盤共同確認突破", "tag": "分批執行", "color": "#7C3AED",
-            "action": breakout_action, "watch": breakout_watch,
-        },
-        {
-            "icon": "🛑", "name": "收盤有效跌破趨勢失效價（風險防線）", "price": failure_line,
-            "title": "原投資假設失效", "tag": "停止新增／依計畫減碼或退出", "color": "#DC2626",
-            "action": failure_action, "watch": failure_watch,
-        },
+        evaluate("突破續攻", breakout_price, "breakout"),
+        evaluate("高檔／現價整理", consolidation_price, "consolidation"),
+        evaluate("健康拉回", pullback_price, "pullback"),
+        evaluate("跌破失效", failure_price, "failure"),
     ]
 
 
@@ -2518,17 +2573,12 @@ if stock_input:
         decision_engine = build_decision_engine(res, compass, committee, user_holding)
         committee = align_committee_with_decision(committee, decision_engine)
 
-        # v61：先讀取前一日快照，再寫入今日最新快照。
-        today_key = datetime.now(TZ).strftime("%Y-%m-%d")
-        previous_decision = fetch_previous_decision(res.get("stock_id", stock_input), today_key)
-        save_daily_decision_snapshot(res, compass, committee, decision_engine)
-        decision_timeline = fetch_decision_timeline(res.get("stock_id", stock_input), 7)
-        decision_change = build_decision_change(
-            previous_decision,
-            decision_engine,
-            int(committee.get("cio_confidence", compass.get("confidence", 0)) or 0),
-        )
+        # 「前一交易日比較」已移除：本機 SQLite 只能記錄實際開啟分析的日期，
+        # 且 Streamlit Cloud 重新部署後本機檔案不保證保留，不能冒充完整交易日歷史。
         data_quality_audit = build_data_quality_audit(res, decision_engine)
+        scenario_center = build_ai_scenario_center(
+            res, compass, committee, decision_engine, user_holding, user_cost
+        )
 
         today_board = build_today_action_board(res, compass, decision_engine, user_holding, user_cost)
         if_i_were_you = build_if_i_were_you(
@@ -2604,20 +2654,27 @@ if stock_input:
             </div>
             """, unsafe_allow_html=True)
 
-        if decision_change.get("available"):
-            change_text = (
-                f"{decision_change['previous_date']}：{decision_change['previous_label']} "
-                f"→ 今天：{decision_change['current_label']}"
-            )
-            if not decision_change.get("changed"):
-                change_text = f"與前一交易日相比：維持「{decision_change['current_label']}」"
-            st.caption(change_text)
-        else:
-            st.caption("系統將從今天開始累積每日判斷紀錄。")
 
-        show_more_analysis = st.toggle("🔎 查看判斷依據、歷史與完整數據", value=False)
+        st.markdown("### 🧭 未來四劇本決策")
+        st.caption("每個劇本都以該情境價格重新計算價格位置、MA20、趨勢失效、目標區與追價風險，不沿用今日結論換句話說。")
+        scenario_cols = st.columns(4)
+        for idx, scenario in enumerate(scenario_center):
+            with scenario_cols[idx]:
+                reason_html = "".join(f"<div style='margin-top:5px;'>• {r}</div>" for r in scenario.get("reasons", []))
+                st.markdown(f"""
+                <div style="background:#FFFFFF;border:1px solid #E2E8F0;border-top:6px solid {scenario['color']};padding:15px;border-radius:12px;min-height:330px;">
+                  <div style="font-size:15px;color:#0F172A;font-weight:950;">{scenario['name']}</div>
+                  <div style="font-size:24px;color:{scenario['color']};font-weight:950;margin:6px 0;">{scenario['price']:.2f} 元</div>
+                  <div style="font-size:12px;color:#64748B;font-weight:800;">獨立評分 {scenario['score']} / 100</div>
+                  <div style="display:inline-block;background:{scenario['color']}18;color:{scenario['color']};padding:5px 9px;border-radius:999px;font-size:12px;font-weight:900;margin:10px 0;">{scenario['tag']}</div>
+                  <div style="font-size:14px;color:#334155;line-height:1.65;font-weight:800;">{scenario['action']}{scenario.get('cost_note','')}</div>
+                  <div style="font-size:12px;color:#64748B;line-height:1.55;margin-top:10px;">{reason_html}</div>
+                </div>
+                """, unsafe_allow_html=True)
+
+        show_more_analysis = st.toggle("🔎 查看判斷依據與完整數據", value=False)
         if show_more_analysis:
-            detail_tab1, detail_tab2, detail_tab3 = st.tabs(["判斷依據", "決策歷史", "資料與模型"])
+            detail_tab1, detail_tab3 = st.tabs(["判斷依據", "資料與模型"])
 
             with detail_tab1:
                 st.markdown("#### 進場條件")
@@ -2672,27 +2729,6 @@ if stock_input:
                         st.markdown("**分析摘要**")
                         for label, value in member.get("evidence", []):
                             st.markdown(f"**{label}**｜{value}")
-
-            with detail_tab2:
-                st.markdown("#### 與前一交易日比較")
-                if decision_change.get("available"):
-                    st.write(change_text)
-                    for reason in decision_change.get("reasons", []):
-                        st.markdown(f"• {reason}")
-                else:
-                    st.info(decision_change.get("headline", "目前沒有前一交易日資料。"))
-
-                st.markdown("#### 近七日決策")
-                st.caption(f"歷史紀錄位置：{HISTORY_DB}")
-                if decision_timeline:
-                    for row in decision_timeline:
-                        st.markdown(
-                            f"**{row.get('decision_date','')}｜{row.get('decision_label','—')}**　"
-                            f"條件 {int(row.get('completed',0) or 0)}/{int(row.get('total',0) or 0)}，"
-                            f"信心 {int(row.get('confidence',0) or 0)}%"
-                        )
-                else:
-                    st.info("尚無歷史紀錄。")
 
             with detail_tab3:
                 st.markdown("#### 資料完整度")
