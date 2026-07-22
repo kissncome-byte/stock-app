@@ -1690,16 +1690,28 @@ def build_if_i_were_you(
             actions = [
                 "原有部位先續抱。",
                 "加碼只用小部位，不要一次補滿。",
+                "目前沒有觸發減碼或退出條件，不要只因今天上漲就急著減碼。",
                 f"新增部位仍以 {stop:.2f} 元作為風險防線。",
             ]
         else:
-            headline = "🟡 續抱，但今天不要加碼"
-            color = "#D97706"
-            actions = [
-                "原有部位先續抱。",
-                "今天不要因為上漲就追著加碼。",
-                f"每日收盤確認是否仍守住 {stop:.2f} 元。",
-            ]
+            if decision.get("near_pressure") and target1 > 0:
+                headline = "🟠 續抱，接近目標區再分批調節"
+                color = "#F97316"
+                actions = [
+                    "原有部位先續抱。",
+                    "今天不要因為上漲就追著加碼。",
+                    f"現價已接近第一目標 {target1:.2f} 元，可依原計畫分批停利，不要因單日上漲一次全部減碼。",
+                    f"每日收盤確認是否仍守住 {stop:.2f} 元。",
+                ]
+            else:
+                headline = "🟡 續抱，暫不加碼也不急著減碼"
+                color = "#D97706"
+                actions = [
+                    "原有部位先續抱。",
+                    "今天不要因為上漲就追著加碼。",
+                    "目前沒有觸發減碼或退出條件，也不要只因今天上漲就急著減碼。",
+                    f"每日收盤確認是否仍守住 {stop:.2f} 元。",
+                ]
         if pnl_pct is not None:
             actions.insert(0, f"目前成本 {user_cost:.2f} 元、現價 {current:.2f} 元，帳面報酬 {pnl_pct:+.1f}%。")
             if pnl_pct < 0 and not decision.get("buy"):
@@ -1821,72 +1833,86 @@ def build_ai_forecast(res: dict, compass: dict, decision: dict) -> dict:
 
 
 def build_today_action_board(res: dict, compass: dict, decision: dict, user_holding: bool = False) -> dict:
-    """把 Decision Engine 濃縮成首頁四個可立即回答的行動問題。"""
+    """固定同時回答續抱、減碼、加碼與最後動作，避免建議只偏向買方。"""
     current = float(res.get("current_price", 0) or 0)
-    entry = float(decision.get("entry", compass.get("entry", 0)) or 0)
     stop = float(decision.get("stop", compass.get("stop", 0)) or 0)
     target1 = float(decision.get("target1", compass.get("target1", 0)) or 0)
     completed = int(decision.get("completed", 0) or 0)
     total = int(decision.get("total", 0) or 0)
-    missing = decision.get("missing", []) or []
-
-    if decision.get("stop_broken"):
-        buy_answer, buy_color = "🔴 不可以", "#DC2626"
-        buy_reason = f"目前已到或跌破 {stop:.2f} 元風險防線，先處理風險。"
-    elif decision.get("buy"):
-        buy_answer, buy_color = "🟢 可以分批", "#16A34A"
-        buy_reason = f"進場條件已完成 {completed}/{total}，第一筆仍以小部位為主。"
-    elif completed >= 3:
-        buy_answer, buy_color = "🟡 先等待", "#D97706"
-        buy_reason = f"目前完成 {completed}/{total}，還差 {len(missing)} 項確認條件。"
-    else:
-        buy_answer, buy_color = "🔴 暫不建議", "#DC2626"
-        buy_reason = f"目前只完成 {completed}/{total}，量價與趨勢證據不足。"
 
     if not user_holding:
-        add_answer, add_color = "⚪ 尚未持有", "#64748B"
-        add_reason = "先完成第一筆進場，不把『買進』與『加碼』混在一起。"
-    elif decision.get("stop_broken"):
+        return {
+            "cards": [
+                {"question": "現在應該續抱嗎？", "answer": "⚪ 尚未持有", "reason": "目前沒有持股，續抱與減碼問題不適用。", "color": "#64748B"},
+                {"question": "現在應該減碼嗎？", "answer": "⚪ 無需判斷", "reason": "尚未建立部位，沒有可減碼的持股。", "color": "#64748B"},
+                {"question": "現在應該加碼嗎？", "answer": "⚪ 先判斷首筆", "reason": "尚未持有時應先判斷是否適合第一筆進場，不把買進與加碼混在一起。", "color": "#64748B"},
+                {"question": "最後建議動作", "answer": "🟢 分批買進" if decision.get("buy") else "🔴 暫不進場" if decision.get("stop_broken") or decision.get("hard_veto") else "🟡 等待確認", "reason": decision.get("summary", "依進場條件與風險防線執行。"), "color": "#16A34A" if decision.get("buy") else "#DC2626" if decision.get("stop_broken") or decision.get("hard_veto") else "#D97706"},
+            ]
+        }
+
+    # 1. 續抱判斷
+    if decision.get("stop_broken"):
+        hold_answer, hold_color = "🔴 不建議續抱原部位", "#DC2626"
+        hold_reason = f"趨勢失效價 {stop:.2f} 元已失守；若收盤仍無法站回，應優先處理風險。"
+    elif decision.get("hard_veto"):
+        hold_answer, hold_color = "🟠 降低持股風險", "#F97316"
+        hold_reason = "目前有重大風控否決條件，不適合只用原本的看多理由繼續抱住全部部位。"
+    else:
+        hold_answer, hold_color = "🟢 可以續抱", "#16A34A"
+        hold_reason = f"趨勢尚未失效，現價仍在 {stop:.2f} 元風險防線之上。" if stop > 0 else "目前尚未出現明確趨勢失效訊號。"
+
+    # 2. 減碼判斷（獨立於加碼）
+    if decision.get("stop_broken"):
+        reduce_answer, reduce_color = "🔴 應減碼或退出", "#DC2626"
+        reduce_reason = f"若收盤無法站回 {stop:.2f} 元，依原計畫執行減碼或退出，不要用攤平延後處理。"
+    elif decision.get("hard_veto"):
+        reduce_answer, reduce_color = "🟠 考慮降低部位", "#F97316"
+        reduce_reason = "重大風險條件已出現，可先降低曝險，不必等到所有指標同時轉空。"
+    elif decision.get("near_pressure") and target1 > 0:
+        reduce_answer, reduce_color = "🟠 可分批停利", "#F97316"
+        reduce_reason = f"現價接近第一目標區 {target1:.2f} 元，可依計畫分批調節；但不建議只因單日上漲就一次全部賣出。"
+    else:
+        reduce_answer, reduce_color = "🟢 暫時不用減碼", "#16A34A"
+        reduce_reason = "目前沒有觸發停利、趨勢失效或重大轉弱條件，不應只因今天上漲就急著減碼。"
+
+    # 3. 加碼判斷
+    if decision.get("stop_broken") or decision.get("hard_veto"):
         add_answer, add_color = "🔴 不可加碼", "#DC2626"
-        add_reason = "風險防線已失守，不以攤平取代停損紀律。"
+        add_reason = "風險條件未解除前，不增加曝險，也不要用加碼攤平。"
     elif decision.get("add"):
         add_answer, add_color = "🟢 可小量加碼", "#16A34A"
-        add_reason = "五項條件完整且尚未逼近第一目標區。"
+        add_reason = "條件完整且尚未逼近目標區，但只適合小部位，不要因上漲追著買。"
     elif decision.get("near_pressure"):
-        add_answer, add_color = "🟠 不建議", "#F97316"
-        add_reason = f"目前已接近第一目標區 {target1:.2f} 元，追價報酬風險比下降。"
+        add_answer, add_color = "🔴 不建議追高", "#DC2626"
+        add_reason = f"已接近第一目標區 {target1:.2f} 元，現在新增部位的風險報酬較差。"
     else:
-        add_answer, add_color = "🟡 等待確認", "#D97706"
-        add_reason = f"目前進場條件完成 {completed}/{total}，尚不足以增加曝險。"
+        add_answer, add_color = "🟡 暫不加碼", "#D97706"
+        add_reason = f"目前條件完成 {completed}/{total}，先續抱觀察，不因單日上漲追著加碼。"
 
-    if not user_holding:
-        stop_answer, stop_color = "⚪ 無持倉", "#64748B"
-        stop_reason = f"先記住未來的風險防線 {stop:.2f} 元，再考慮下單。" if stop > 0 else "風險防線資料不足，暫不建立新部位。"
-    elif decision.get("stop_broken"):
-        stop_answer, stop_color = "🔴 需要處理", "#DC2626"
-        stop_reason = f"收盤若無法站回 {stop:.2f} 元，依原計畫減碼或退出。"
-    else:
-        stop_answer, stop_color = "🟢 暫不需要", "#16A34A"
-        buffer_pct = ((current / stop) - 1) * 100 if stop > 0 else 0
-        stop_reason = f"目前仍高於風險防線約 {buffer_pct:.1f}%，每日以收盤確認。" if stop > 0 else "風險防線資料不足，需先補齊。"
-
-    failed_items = [i for i in decision.get("checklist", []) if not i.get("passed")]
+    # 4. 最終動作
     if decision.get("stop_broken"):
-        focus = f"先確認收盤能否站回 {stop:.2f} 元風險防線。"
-    elif failed_items:
-        first = failed_items[0]
-        focus = f"今天最重要：{first.get('name', '等待條件確認')}；{first.get('current', '')}。"
+        final_answer, final_color = "🔴 減碼／退出", "#DC2626"
+        final_reason = "先執行風險管理，停止新增部位。"
+    elif decision.get("hard_veto"):
+        final_answer, final_color = "🟠 降低部位", "#F97316"
+        final_reason = "重大風控條件出現，先降低曝險並等待重新確認。"
+    elif decision.get("near_pressure"):
+        final_answer, final_color = "🟠 續抱＋分批停利", "#F97316"
+        final_reason = "保留核心部位，接近目標區才依計畫分批調節，不因一天上漲全部賣掉。"
+    elif decision.get("add"):
+        final_answer, final_color = "🟢 續抱＋小量加碼", "#16A34A"
+        final_reason = "原有部位續抱；新增部位必須小量並遵守風險防線。"
     else:
-        focus = f"條件已齊，第一筆分批後仍要守住 {stop:.2f} 元風險防線。"
+        final_answer, final_color = "🟢 續抱觀察", "#16A34A"
+        final_reason = "目前不需要減碼，也不適合追高加碼；最合理的動作是續抱等待。"
 
     return {
         "cards": [
-            {"question": "今天可以買嗎？", "answer": buy_answer, "reason": buy_reason, "color": buy_color},
-            {"question": "今天可以加碼嗎？", "answer": add_answer, "reason": add_reason, "color": add_color},
-            {"question": "今天需要停損嗎？", "answer": stop_answer, "reason": stop_reason, "color": stop_color},
-            {"question": "今天最重要的是？", "answer": "🎯 只看一件事", "reason": focus, "color": "#2563EB"},
-        ],
-        "focus": focus,
+            {"question": "現在應該續抱嗎？", "answer": hold_answer, "reason": hold_reason, "color": hold_color},
+            {"question": "現在應該減碼嗎？", "answer": reduce_answer, "reason": reduce_reason, "color": reduce_color},
+            {"question": "現在應該加碼嗎？", "answer": add_answer, "reason": add_reason, "color": add_color},
+            {"question": "最後建議動作", "answer": final_answer, "reason": final_reason, "color": final_color},
+        ]
     }
 
 
@@ -2409,6 +2435,19 @@ if stock_input:
           <div style="margin-top:17px;background:rgba(255,255,255,.07);padding:14px;border-radius:9px;line-height:1.75;border:1px solid rgba(255,255,255,.08);"><b>一句話結論：</b>{compass['today']}</div>
         </div>
         """, unsafe_allow_html=True)
+
+        # 持股四向決策卡：固定同時回答續抱、減碼、加碼與最終動作
+        top_action_board = build_today_action_board(res, compass, build_decision_engine(res, compass, build_ai_investment_committee(res, compass), user_holding), user_holding)
+        board_cols = st.columns(4)
+        for idx, card in enumerate(top_action_board.get("cards", [])):
+            with board_cols[idx]:
+                st.markdown(f"""
+                <div style="background:#FFFFFF;border:1px solid #E2E8F0;border-top:6px solid {card['color']};padding:15px;border-radius:12px;min-height:178px;box-shadow:0 2px 8px rgba(15,23,42,.05);">
+                  <div style="font-size:13px;color:#64748B;font-weight:900;">{card['question']}</div>
+                  <div style="font-size:20px;color:{card['color']};font-weight:950;margin:9px 0;">{card['answer']}</div>
+                  <div style="font-size:13px;color:#334155;line-height:1.65;">{card['reason']}</div>
+                </div>
+                """, unsafe_allow_html=True)
 
         with st.expander("💰 查看價格計畫與判斷證據", expanded=False):
             hc1, hc2, hc3, hc4 = st.columns(4)
