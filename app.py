@@ -1453,36 +1453,6 @@ def build_ai_investment_committee(res: dict, compass: dict) -> dict:
 
 
 
-def build_ai_scenario_center(res: dict, compass: dict, committee: dict, decision: dict, user_holding: bool, user_cost: float):
-    """Scenario Engine：每個假設價格重新跑 Market Engine，再交給 Portfolio Engine。"""
-    current=float(res.get("current_price",0) or 0)
-    entry=float(compass.get("entry",current) or current)
-    stop=float(compass.get("stop",0) or 0)
-    target=float(compass.get("target1",0) or 0)
-    ta=res.get("trend_analysis",{}) or {}
-    ma20=float(res.get("ma20_val",ta.get("ma20",current)) or current)
-    prices={
-        "突破續攻": max(current*1.03, target*0.98 if target>0 else current*1.03),
-        "高檔／現價整理": current,
-        "健康拉回": max(stop*1.03 if stop>0 else current*.94, min(current*.97, ma20*1.01 if ma20>0 else current*.97, entry if entry>0 else current)),
-        "跌破失效": stop*.99 if stop>0 else current*.90,
-    }
-    result=[]
-    for name,price in prices.items():
-        scenario_res=dict(res); scenario_res["current_price"]=float(price)
-        market=build_decision_engine(scenario_res,compass,committee,False)
-        portfolio=build_today_action_board(scenario_res,compass,market,user_holding,user_cost)
-        result.append({
-            "name":name,"price":price,"score":market["market_score"],"tag":market["label"],"color":market["color"],
-            "action":portfolio["headline"],"reasons":[
-                f"趨勢 {market['components']['trend']:.0f}／100",
-                f"籌碼 {market['components']['chips']:.0f}／100",
-                f"動能 {market['components']['momentum']:.0f}／100",
-                f"價格位置 {market['components']['price_position']:.0f}／100",
-            ],
-            "cost_note": (f"；該情境帳面報酬約 {(price/float(user_cost)-1)*100:+.1f}%（只影響執行，不改變市場分數）" if user_holding and float(user_cost or 0)>0 else ""),
-        })
-    return result
 
 
 def build_decision_engine(res: dict, compass: dict, committee: dict = None, user_holding: bool = False) -> dict:
@@ -2460,7 +2430,7 @@ def build_consistency_audit(snapshot: dict) -> dict:
         ("成本沒有進入 Market Engine", "pnl_pct" not in market and "user_cost" not in market),
         ("失效價低於現價", lv["invalidation"] < lv["current"] if lv["current"]>0 else False),
         ("第一目標高於現價", lv["target1"] > lv["current"] if lv["current"]>0 else False),
-        ("Scenario 與全站共用同一價格引擎", True),
+        ("決策流程與全站共用同一價格引擎", True),
     ]
     return {"passed":sum(ok for _,ok in checks),"total":len(checks),"checks":checks,"ok":all(ok for _,ok in checks)}
 
@@ -2513,45 +2483,107 @@ def build_decision_snapshot(res: dict, compass: dict, committee: dict, user_hold
     snapshot["audit"] = build_consistency_audit(snapshot)
     return snapshot
 
-def build_snapshot_scenarios(res: dict, snapshot: dict, committee: dict, user_holding: bool, user_cost: float):
-    """V3 四劇本：每個情境重新跑 Market、Price 與 Execution，不沿用今日價位結論。"""
-    base_lv = snapshot["levels"]
-    cur = float(base_lv["current"] or 0)
-    atr = float(res.get("atr", 0) or 0)
-    atr_eff = max(atr, cur * 0.02)
-    assumptions = [
-        ("突破續攻", max(base_lv["confirmation"] + atr_eff * 0.25, cur * 1.025)),
-        ("現價整理", cur),
-        ("健康拉回", max(base_lv["protective_stop"] + atr_eff * 0.35, cur - atr_eff)),
-        ("跌破失效", base_lv["structure_stop"] - atr_eff * 0.25),
+
+
+def build_decision_confidence(snapshot: dict) -> dict:
+    """決策信心不是上漲機率；只衡量資料品質、訊號一致性與決策距離。"""
+    reliability = float(snapshot.get("data_reliability", 0) or 0)
+    agreement = float(snapshot.get("agreement", {}).get("score", 0) or 0)
+    market_score = float(snapshot.get("market", {}).get("market_score", 50) or 50)
+    direction_strength = min(100.0, abs(market_score - 50.0) * 2.0)
+    score = int(round(reliability * 0.35 + agreement * 0.40 + direction_strength * 0.25))
+    score = max(0, min(100, score))
+    if score >= 80:
+        label = "高"
+    elif score >= 60:
+        label = "中等"
+    else:
+        label = "偏低"
+    return {
+        "score": score,
+        "label": label,
+        "note": "此數值代表目前決策的資料與訊號支持程度，不是上漲機率。",
+    }
+
+
+def build_decision_stability_view(snapshot: dict) -> dict:
+    lv = snapshot["levels"]
+    current = float(lv.get("current", 0) or 0)
+    distances = []
+    for name, value in [
+        ("確認價", lv.get("confirmation")),
+        ("移動保護價", lv.get("protective_stop")),
+        ("結構退出價", lv.get("structure_stop")),
+    ]:
+        value = float(value or 0)
+        if current > 0 and value > 0:
+            distances.append((name, abs(value-current)/current*100))
+    nearest_name, nearest_pct = min(distances, key=lambda x: x[1]) if distances else ("關鍵價位", 0)
+    if nearest_pct >= 5:
+        label, score = "高", 85
+    elif nearest_pct >= 2:
+        label, score = "中等", 65
+    else:
+        label, score = "偏低", 45
+    return {
+        "score": score,
+        "label": label,
+        "note": f"距離最近的決策切換點是{nearest_name}，約 {nearest_pct:.1f}%。",
+    }
+
+
+def build_if_i_were_you_text(snapshot: dict, user_holding: bool, user_cost: float) -> str:
+    lv = snapshot["levels"]
+    p = snapshot["portfolio"]
+    current = float(lv.get("current", 0) or 0)
+    pnl = ((current / user_cost) - 1) * 100 if user_holding and user_cost and user_cost > 0 else None
+    parts = []
+    if user_holding:
+        if pnl is not None:
+            parts.append(f"如果我是你，目前成本 {user_cost:.2f} 元、帳面報酬 {pnl:+.1f}%。")
+        else:
+            parts.append("如果我是你，我會先依市場狀態管理現有部位。")
+    else:
+        parts.append("如果我是你，我不會只因股價接近某個數字就立刻進場。")
+    parts.append(p.get("today_action", p.get("headline", "依目前策略執行。")))
+    parts.append(f"收盤站上 {lv['confirmation']:.2f} 元，才視為確認成功。")
+    parts.append(f"跌破 {lv['protective_stop']:.2f} 元，執行第一層風險處理；跌破 {lv['structure_stop']:.2f} 元，退出剩餘波段部位。")
+    return " ".join(parts)
+
+
+def build_decision_tree(snapshot: dict) -> list:
+    lv = snapshot["levels"]
+    status = snapshot["market"].get("status")
+    if status in ["STRONG", "HOLD"]:
+        success = "續抱；未過度延伸時才評估小量加碼"
+    else:
+        success = "先保留剩餘部位；反彈站不穩則分批調節"
+    return [
+        {"price": lv["confirmation"], "condition": "收盤站上", "yes": success, "no": "檢查下一道保護價"},
+        {"price": lv["protective_stop"], "condition": "收盤跌破", "yes": "減碼或提高現金部位", "no": "維持目前建議"},
+        {"price": lv["structure_stop"], "condition": "收盤跌破", "yes": "退出剩餘波段部位", "no": "繼續依原計畫管理"},
     ]
-    out = []
-    for name, price in assumptions:
-        sr = dict(res)
-        sr["current_price"] = max(price, 0.01)
-        base_market = build_decision_engine(sr, snapshot["compass"], committee, False)
-        regime = build_market_regime(sr)
-        score = int(max(0, min(100, round(base_market["market_score"] + (regime["score"] - 50) * 0.16))))
-        if score >= 80: status, label, color = "STRONG", "🟢 強勢多頭", "#16A34A"
-        elif score >= 60: status, label, color = "HOLD", "🔵 偏多續抱", "#2563EB"
-        elif score >= 40: status, label, color = "REDUCE", "🟠 中性偏弱", "#F97316"
-        else: status, label, color = "EXIT", "🔴 弱勢風險", "#DC2626"
-        market = dict(base_market)
-        market.update({"market_score":score, "status":status, "label":label, "color":color})
-        levels = build_price_level_engine(sr, snapshot["compass"], score, status)
-        port = build_today_action_board(sr, snapshot["compass"], market, user_holding, user_cost, levels)
-        out.append({
-            "name":name, "price":price, "score":score, "tag":label, "color":color,
-            "action":port["headline"],
-            "reasons":[
-                f"確認 {levels['confirmation']:.2f}",
-                f"保護 {levels['protective_stop']:.2f}",
-                f"退出 {levels['structure_stop']:.2f}",
-                f"市場環境 {regime['score']}/100",
-            ],
-            "cost_note":(f"；情境報酬 {(price/float(user_cost)-1)*100:+.1f}%（只調整執行）" if user_holding and float(user_cost or 0)>0 else ""),
-        })
-    return out
+
+
+def remember_session_decision(stock_id: str, snapshot: dict) -> dict:
+    """只比較目前 Streamlit 工作階段，不宣稱跨部署永久日誌。"""
+    key = f"stockpilot_decision_{stock_id}"
+    current = {
+        "headline": snapshot["portfolio"].get("headline", ""),
+        "market_score": snapshot["market"].get("market_score", 0),
+        "status": snapshot["market"].get("status", ""),
+    }
+    previous = st.session_state.get(key)
+    st.session_state[key] = current
+    if not previous:
+        return {"changed": False, "note": "本工作階段尚無前次決策可比較。"}
+    changed = previous != current
+    if changed:
+        return {
+            "changed": True,
+            "note": f"本工作階段前次為「{previous.get('headline','—')}」（{previous.get('market_score',0)}分），目前為「{current['headline']}」（{current['market_score']}分）。",
+        }
+    return {"changed": False, "note": "本工作階段內 AI 決策未改變。"}
 
 init_decision_history_db()
 
@@ -2566,8 +2598,8 @@ with st.sidebar:
     show_evidence_default = st.checkbox("🔎 預設展開各項數據依據", value=False)
     debug_mode = st.checkbox("🛠 開啟成交量資料診斷", value=False)
 
-st.markdown("## 🧭 Project Compass v64.2｜成交量診斷版")
-st.caption("即時成交量比率因資料來源不穩定，已暫停顯示並排除於 AI 決策之外。")
+st.markdown("## 🧠 StockPilot 2.0｜AI 決策中心")
+st.caption("一套決策、一組價位、一個今天要做的動作。即時成交量比率資料不穩定時，會自動排除於方向判斷。")
 stock_input = st.text_input("請輸入核心目標個股代碼：", value="3037").strip()
 
 u_col1, u_col2 = st.columns(2)
@@ -2623,37 +2655,6 @@ if stock_input:
         </div>
         """, unsafe_allow_html=True)
 
-        # 持股四向決策卡：固定同時回答續抱、減碼、加碼與最終動作
-        top_action_board = portfolio_engine
-        board_cols = st.columns(4)
-        for idx, card in enumerate(top_action_board.get("cards", [])):
-            with board_cols[idx]:
-                st.markdown(f"""
-                <div style="background:#FFFFFF;border:1px solid #E2E8F0;border-top:6px solid {card['color']};padding:15px;border-radius:12px;min-height:178px;box-shadow:0 2px 8px rgba(15,23,42,.05);">
-                  <div style="font-size:13px;color:#64748B;font-weight:900;">{card['question']}</div>
-                  <div style="font-size:20px;color:{card['color']};font-weight:950;margin:9px 0;">{card['answer']}</div>
-                  <div style="font-size:13px;color:#334155;line-height:1.65;">{card['reason']}</div>
-                </div>
-                """, unsafe_allow_html=True)
-
-        with st.expander("💰 V3 價格與執行地圖", expanded=False):
-            lv = decision_snapshot["levels"]
-            pc1, pc2, pc3, pc4 = st.columns(4)
-            pc1.metric("目前股價", f"{lv['current']:.2f} 元")
-            pc2.metric("反彈／突破確認", f"{lv['confirmation']:.2f} 元")
-            pc3.metric("移動保護價", f"{lv['protective_stop']:.2f} 元")
-            pc4.metric("結構退出價", f"{lv['structure_stop']:.2f} 元")
-            st.markdown(f"**目前狀態允許顯示的目標：{lv['target_role']} {lv['target1']:.2f} 元**")
-            if lv.get('risk_pct') is not None:
-                reward_text = f"+{lv['reward_pct']:.1f}%" if lv.get('reward_pct') is not None else "不適用"
-                rr_text = f"1：{lv['rr']:.1f}" if lv.get('rr') is not None else "不適用"
-                st.caption(f"到移動保護價的風險：約 -{lv['risk_pct']:.1f}%｜到目前目標的空間：{reward_text}｜風險報酬：{rr_text}")
-            st.write(f"• **確認價**：{lv['sources']['confirmation']}")
-            st.write(f"• **移動保護價**：{lv['sources']['protective_stop']}")
-            st.write(f"• **結構退出價**：{lv['sources']['structure_stop']}")
-            st.write(f"• **目標職責**：{lv['sources']['target1']}")
-
-
         # Phase 3：AI 投資委員會正式版（第一層摘要＋分析依據＋信心計算）
         committee = committee_seed
         committee = align_committee_with_decision(committee, decision_engine)
@@ -2661,9 +2662,6 @@ if stock_input:
         # 「前一交易日比較」已移除：本機 SQLite 只能記錄實際開啟分析的日期，
         # 且 Streamlit Cloud 重新部署後本機檔案不保證保留，不能冒充完整交易日歷史。
         data_quality_audit = build_data_quality_audit(res, decision_engine)
-        scenario_center = build_snapshot_scenarios(
-            res, decision_snapshot, committee, user_holding, user_cost
-        )
 
         today_board = portfolio_engine
         if_i_were_you = portfolio_engine
@@ -2671,65 +2669,102 @@ if stock_input:
 
 
 
-        # V3 首頁：只回答今天做什麼、下一個事件與風險。
+        # StockPilot 2.0 首頁：唯一建議、自然語言執行、決策流程、理由與切換事件。
         lv = decision_snapshot["levels"]
-        st.markdown("### 📌 AI 今日唯一建議")
+        decision_confidence = build_decision_confidence(decision_snapshot)
+        decision_stability_view = build_decision_stability_view(decision_snapshot)
+        if_i_were_you_text = build_if_i_were_you_text(decision_snapshot, user_holding, user_cost)
+        decision_tree = build_decision_tree(decision_snapshot)
+        session_change = remember_session_decision(str(res.get("stock_id", "stock")), decision_snapshot)
+
+        st.markdown("### ⭐ AI 今日唯一建議")
         st.markdown(f"""
         <div style="background:#FFFFFF;border:1px solid #E2E8F0;border-left:10px solid {portfolio_engine['color']};padding:22px;border-radius:14px;box-shadow:0 3px 12px rgba(15,23,42,.06);">
-          <div style="font-size:30px;color:{portfolio_engine['color']};font-weight:950;">{portfolio_engine['headline']}</div>
-          <div style="font-size:17px;color:#0F172A;line-height:1.8;margin-top:8px;font-weight:800;">{portfolio_engine['today_action']}</div>
-          <div style="font-size:13px;color:#64748B;margin-top:12px;">市場 {decision_engine['market_score']}/100｜多方 {decision_snapshot['bull_score']}/100｜空方 {decision_snapshot['bear_score']}/100｜資料可信度 {decision_snapshot['data_reliability']}%</div>
+          <div style="font-size:31px;color:{portfolio_engine['color']};font-weight:950;">{portfolio_engine['headline']}</div>
+          <div style="font-size:18px;color:#0F172A;line-height:1.8;margin-top:9px;font-weight:850;">{portfolio_engine['today_action']}</div>
+          <div style="font-size:13px;color:#64748B;margin-top:13px;">市場 {decision_engine['market_score']}/100｜決策信心 {decision_confidence['score']}%｜穩定度 {decision_stability_view['label']}｜資料可信度 {decision_snapshot['data_reliability']}%</div>
         </div>
         """, unsafe_allow_html=True)
-        next_cols = st.columns(3)
-        next_cols[0].metric("確認成功", f"{lv['confirmation']:.2f} 元", lv['confirmation_source'])
-        next_cols[1].metric("移動保護", f"{lv['protective_stop']:.2f} 元", "跌破後減碼")
-        next_cols[2].metric("結構退出", f"{lv['structure_stop']:.2f} 元", "跌破後退出剩餘部位")
-        with st.expander("查看完整執行規則", expanded=False):
-            for line in portfolio_engine.get("actions", []):
-                st.write("• " + line)
 
-        st.markdown("### 🌐 市場環境與可信度")
-        rg1, rg2, rg3, rg4 = st.columns(4)
-        rg1.metric("市場環境", decision_snapshot["regime"]["state"], f"{decision_snapshot['regime']['score']} / 100")
-        rg2.metric("資料可信度", f"{decision_snapshot['data_reliability']}%")
-        rg3.metric("訊號一致度", f"{decision_snapshot['agreement']['score']}%")
-        rg4.metric("一致性檢查", f"{decision_snapshot['audit']['passed']} / {decision_snapshot['audit']['total']}")
-        if decision_snapshot["agreement"]["conflicts"]:
-            st.warning("訊號衝突：" + "；".join(decision_snapshot["agreement"]["conflicts"]))
-        with st.expander("📐 價格來源與系統驗證", expanded=False):
-            lv = decision_snapshot["levels"]
-            st.write(f"**確認價 {lv['confirmation']:.2f} 元**｜{lv['sources']['confirmation']}")
-            st.write(f"**進場區 {lv['entry_low']:.2f}～{lv['entry_high']:.2f} 元**｜{lv['sources']['entry']}")
-            st.write(f"**{lv['target_role']} {lv['target1']:.2f} 元**｜{lv['sources']['target1']}")
-            st.write(f"**移動保護 {lv['protective_stop']:.2f} 元**｜{lv['sources']['protective_stop']}")
-            st.write(f"**結構退出 {lv['structure_stop']:.2f} 元**｜{lv['sources']['structure_stop']}")
-            st.caption("訊號穩定機制：" + decision_snapshot["stability"]["note"] + "；只在目前工作階段保存，不冒充跨部署永久紀錄。")
+        st.markdown("### 🙋 如果我是你")
+        st.info(if_i_were_you_text)
+
+        st.markdown("### 🧭 AI 決策流程")
+        st.caption("由上往下看；只有事件真正發生，才切換到下一個動作。")
+        for idx, node in enumerate(decision_tree, start=1):
+            c1, c2, c3 = st.columns([1.2, 2.2, 2.2])
+            c1.metric(f"第 {idx} 關", f"{node['price']:.2f} 元", node['condition'])
+            c2.success("成立 → " + node["yes"])
+            c3.info("未成立 → " + node["no"])
+
+        st.markdown("### ⚖️ AI 為什麼這樣判斷")
+        reason_left, reason_right = st.columns(2)
+        with reason_left:
+            st.markdown("#### 支持續抱／轉強的理由")
+            positive = [r for r in decision_engine.get("reasons", []) if not any(k in str(r) for k in ["弱", "流出", "分歧", "不足", "風險", "偏空", "賣"])]
+            if not positive:
+                positive = ["目前尚未跌破結構退出價。"]
+            for item in positive[:5]:
+                st.write("✅ " + str(item))
+        with reason_right:
+            st.markdown("#### 支持保守／減碼的理由")
+            negative = [r for r in decision_engine.get("reasons", []) if any(k in str(r) for k in ["弱", "流出", "分歧", "不足", "風險", "偏空", "賣"])]
+            if not negative:
+                negative = ["目前沒有額外重大空方證據，但仍需遵守保護價。"]
+            for item in negative[:5]:
+                st.write("⚠️ " + str(item))
+        st.caption(f"多方 {decision_snapshot['bull_score']}/100｜空方 {decision_snapshot['bear_score']}/100｜訊號一致度 {decision_snapshot['agreement']['score']}%。")
+
+        st.markdown("### 🔔 下一個會改變 AI 決策的事件")
+        event_rows = [
+            {"事件": f"收盤站上 {lv['confirmation']:.2f} 元", "AI 會改成": decision_tree[0]["yes"]},
+            {"事件": f"收盤跌破 {lv['protective_stop']:.2f} 元", "AI 會改成": "減碼或提高現金部位"},
+            {"事件": f"收盤跌破 {lv['structure_stop']:.2f} 元", "AI 會改成": "退出剩餘波段部位"},
+        ]
+        st.dataframe(pd.DataFrame(event_rows), use_container_width=True, hide_index=True)
+
+        dash1, dash2, dash3, dash4, dash5 = st.columns(5)
+        dash1.metric("市場分數", f"{decision_engine['market_score']} / 100")
+        dash2.metric("操作分數", f"{portfolio_engine.get('portfolio_score', decision_engine['market_score'])} / 100")
+        dash3.metric("市場環境", decision_snapshot['regime']['state'])
+        dash4.metric("決策信心", f"{decision_confidence['score']}%", decision_confidence['label'])
+        dash5.metric("穩定度", decision_stability_view['label'], decision_stability_view['note'])
+        st.caption(decision_confidence["note"])
+
+        with st.expander("📝 AI 今天有沒有改變想法？", expanded=False):
+            st.write(session_change["note"])
+            st.caption("只比較目前工作階段；不冒充跨日或跨部署永久決策日誌。")
+
+        with st.expander("💰 價格與執行地圖", expanded=False):
+            pc1, pc2, pc3, pc4 = st.columns(4)
+            pc1.metric("目前股價", f"{lv['current']:.2f} 元")
+            pc2.metric("確認價", f"{lv['confirmation']:.2f} 元")
+            pc3.metric("移動保護價", f"{lv['protective_stop']:.2f} 元")
+            pc4.metric("結構退出價", f"{lv['structure_stop']:.2f} 元")
+            st.write(f"• 確認價來源：{lv['sources']['confirmation']}")
+            st.write(f"• 移動保護價用途：{lv['sources']['protective_stop']}")
+            st.write(f"• 結構退出價用途：{lv['sources']['structure_stop']}")
+            if decision_engine['market_score'] >= 60:
+                st.write(f"• {lv['target_role']}：{lv['target1']:.2f} 元｜{lv['sources']['target1']}")
+            else:
+                st.write("• 目前市場未達偏多門檻，首頁不顯示遠端多頭目標。")
+
+        with st.expander("🌐 市場環境、可信度與系統驗證", expanded=False):
+            rg1, rg2, rg3, rg4 = st.columns(4)
+            rg1.metric("市場環境", decision_snapshot["regime"]["state"], f"{decision_snapshot['regime']['score']} / 100")
+            rg2.metric("資料可信度", f"{decision_snapshot['data_reliability']}%")
+            rg3.metric("訊號一致度", f"{decision_snapshot['agreement']['score']}%")
+            rg4.metric("一致性檢查", f"{decision_snapshot['audit']['passed']} / {decision_snapshot['audit']['total']}")
+            if decision_snapshot["agreement"]["conflicts"]:
+                st.warning("訊號衝突：" + "；".join(decision_snapshot["agreement"]["conflicts"]))
             for name, ok in decision_snapshot["audit"]["checks"]:
                 st.write(("✅ " if ok else "❌ ") + name)
-            val=decision_snapshot["validation"]
+            val = decision_snapshot["validation"]
             if val.get("available"):
                 st.write(f"歷史條件樣本 {val['sample']} 筆｜5日勝率 {val['win5']:.1f}%、平均 {val['avg5']:+.2f}%｜20日勝率 {val['win20']:.1f}%、平均 {val['avg20']:+.2f}%")
             st.caption(val.get("note", ""))
 
-        st.markdown("### 🧭 未來四劇本決策")
-        st.caption("每個劇本都以該情境價格重新計算價格位置、MA20、趨勢失效、目標區與追價風險，不沿用今日結論換句話說。")
-        scenario_cols = st.columns(4)
-        for idx, scenario in enumerate(scenario_center):
-            with scenario_cols[idx]:
-                reason_html = "".join(f"<div style='margin-top:5px;'>• {r}</div>" for r in scenario.get("reasons", []))
-                st.markdown(f"""
-                <div style="background:#FFFFFF;border:1px solid #E2E8F0;border-top:6px solid {scenario['color']};padding:15px;border-radius:12px;min-height:330px;">
-                  <div style="font-size:15px;color:#0F172A;font-weight:950;">{scenario['name']}</div>
-                  <div style="font-size:24px;color:{scenario['color']};font-weight:950;margin:6px 0;">{scenario['price']:.2f} 元</div>
-                  <div style="font-size:12px;color:#64748B;font-weight:800;">獨立評分 {scenario['score']} / 100</div>
-                  <div style="display:inline-block;background:{scenario['color']}18;color:{scenario['color']};padding:5px 9px;border-radius:999px;font-size:12px;font-weight:900;margin:10px 0;">{scenario['tag']}</div>
-                  <div style="font-size:14px;color:#334155;line-height:1.65;font-weight:800;">{scenario['action']}{scenario.get('cost_note','')}</div>
-                  <div style="font-size:12px;color:#64748B;line-height:1.55;margin-top:10px;">{reason_html}</div>
-                </div>
-                """, unsafe_allow_html=True)
-
-        show_more_analysis = st.toggle("🔎 查看判斷依據與完整數據", value=False)
+        show_more_analysis = st.toggle("🧪 專業模式：查看完整技術、籌碼與模型數據", value=False)
         if show_more_analysis:
             detail_tab1, detail_tab3 = st.tabs(["判斷依據", "資料與模型"])
 
