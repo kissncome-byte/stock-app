@@ -332,50 +332,63 @@ def get_daily_df(stock_id: str, market_type: str = "TSE", days: int = 450):
     return None
 
 @st.cache_data(ttl=1800)
-def get_market_macro_status():
+def get_market_macro_status(market_type: str = "TSE"):
+    """依股票市場別取得對應大盤摘要；資料抓不到就明確回報，不使用替代指數冒充。"""
+    is_otc = any(x in str(market_type).upper() for x in ["OTC", "TWO", "櫃", "上櫃"])
+    benchmark_id = "TPEx" if is_otc else "TAIEX"
+    benchmark_name = "櫃買指數" if is_otc else "加權指數"
     try:
-        df = get_api().taiwan_stock_daily(stock_id="TAIEX", start_date=(datetime.now()-timedelta(days=150)).strftime("%Y-%m-%d"))
+        df = get_api().taiwan_stock_daily(stock_id=benchmark_id, start_date=(datetime.now()-timedelta(days=150)).strftime("%Y-%m-%d"))
         if df is not None and not df.empty:
             df = df.sort_values("date").reset_index(drop=True)
             df['close'] = pd.to_numeric(df['close'], errors='coerce')
             df['MA20'], df['MA60'] = df['close'].rolling(20).mean(), df['close'].rolling(60).mean()
-            vol_col = 'Trading_money' if 'Trading_money' in df.columns else 'vol' if 'vol' in df.columns else df.columns[-1]
-            df['vol_work'] = pd.to_numeric(df[vol_col], errors='coerce').fillna(0)
-            df['MA20_Vol'] = df['vol_work'].rolling(20).mean()
+            vol_col = 'Trading_money' if 'Trading_money' in df.columns else 'Trading_Volume' if 'Trading_Volume' in df.columns else 'vol' if 'vol' in df.columns else None
+            if vol_col:
+                df['vol_work'] = pd.to_numeric(df[vol_col], errors='coerce').fillna(0)
+                df['MA20_Vol'] = df['vol_work'].rolling(20).mean()
+            else:
+                df['vol_work'], df['MA20_Vol'] = 0.0, 0.0
             last, prev = df.iloc[-1], (df.iloc[-5] if len(df) >= 5 else df.iloc[0])
-            ret = ((last['close'] - prev['close']) / prev['close']) * 100
-            panic = (last['close'] < last['MA20']) and (ret <= -3.5)
-            market_vol_healthy = float(last['vol_work']) >= float(last['MA20_Vol'])
-            market_vol_desc = "🟢 大盤資金大部隊在線" if market_vol_healthy else "🚨 大盤量能窒息流失（大盤缺血假突破率高）"
-            if panic: return False, f"🚨 大盤瀑布重挫 ({last['close']:.1f})", True, False, market_vol_healthy, market_vol_desc
-            macro_bull = last['close'] >= last['MA20']
-            return macro_bull, f"加權指數 ({last['close']:.1f})", False, False, market_vol_healthy, market_vol_desc
+            ret = ((last['close'] - prev['close']) / prev['close']) * 100 if float(prev['close']) else 0.0
+            panic = bool(pd.notna(last['MA20']) and last['close'] < last['MA20'] and ret <= -3.5)
+            market_vol_healthy = None
+            if float(last['MA20_Vol'] or 0) > 0:
+                market_vol_healthy = float(last['vol_work']) >= float(last['MA20_Vol'])
+            market_vol_desc = "⚪ 大盤量能資料不足" if market_vol_healthy is None else ("🟢 大盤量能高於20日均值" if market_vol_healthy else "🟡 大盤量能低於20日均值")
+            if panic:
+                return False, f"🚨 {benchmark_name}急跌 ({last['close']:.1f})", True, False, market_vol_healthy, market_vol_desc
+            macro_bull = bool(pd.notna(last['MA20']) and last['close'] >= last['MA20'])
+            return macro_bull, f"{benchmark_name} ({last['close']:.1f})", False, False, market_vol_healthy, market_vol_desc
     except Exception as exc:
-        log_error("market macro", exc)
-    return None, "⚪ 大盤資料取得失敗", None, None, None, "⚪ 大盤量能資料不足"
+        log_error(f"market macro {benchmark_id}", exc)
+    return None, f"⚪ {benchmark_name}資料取得失敗", None, None, None, "⚪ 大盤量能資料不足"
 
 
 @st.cache_data(ttl=1800)
-def get_market_regime_context():
-    """取得可驗證的大盤環境資料。
-
-    目前只使用能穩定取得的加權指數日線；櫃買與產業指數若無可靠資料來源，
-    明確標示未納入，不以替代資料冒充。
-    """
+def get_market_regime_context(market_type: str = "TSE"):
+    """依上市／上櫃選用加權或櫃買指數，完整回傳實際採用數據與可追溯評分。"""
+    is_otc = any(x in str(market_type).upper() for x in ["OTC", "TWO", "櫃", "上櫃"])
+    benchmark_id = "TPEx" if is_otc else "TAIEX"
+    benchmark_name = "櫃買指數" if is_otc else "加權指數"
     ctx = {
-        "available": False, "benchmark": "TAIEX", "scope_note": "僅納入加權指數；櫃買與產業指數未可靠取得時不納入",
+        "available": False, "benchmark": benchmark_id, "benchmark_name": benchmark_name,
+        "market_scope": "上櫃" if is_otc else "上市",
+        "scope_note": f"本股票為{'上櫃' if is_otc else '上市'}，大盤基準採用{benchmark_name}（{benchmark_id}）；未使用其他指數替代。",
         "close": None, "ma20": None, "ma60": None, "slope20": None, "slope60": None,
-        "adx": None, "ret5": None, "ret20": None, "vol_ratio": None, "atr_pct": None,
-        "panic": False, "state": "資料不足", "reasons": []
+        "adx": None, "plus_di": None, "minus_di": None, "rsi14": None,
+        "ret5": None, "ret20": None, "vol_ratio": None, "volume_value": None, "volume_ma20": None,
+        "atr_pct": None, "panic": False, "state": "資料不足", "reasons": [], "raw_date": None
     }
     try:
-        df = get_api().taiwan_stock_daily(stock_id="TAIEX", start_date=(datetime.now()-timedelta(days=220)).strftime("%Y-%m-%d"))
+        df = get_api().taiwan_stock_daily(stock_id=benchmark_id, start_date=(datetime.now()-timedelta(days=240)).strftime("%Y-%m-%d"))
         if df is None or df.empty:
+            ctx["scope_note"] += "目前此基準資料未可靠取得，因此大盤閘門採保守模式。"
             return ctx
         d = df.sort_values("date").reset_index(drop=True).copy()
-        for c in ["close", "max", "min", "Trading_money", "Trading_Volume"]:
-            if c in d.columns:
-                d[c] = pd.to_numeric(d[c], errors="coerce")
+        for col in ["close", "max", "min", "Trading_money", "Trading_Volume", "vol"]:
+            if col in d.columns:
+                d[col] = pd.to_numeric(d[col], errors="coerce")
         close = d["close"]
         high = d["max"] if "max" in d.columns else close
         low = d["min"] if "min" in d.columns else close
@@ -390,44 +403,49 @@ def get_market_regime_context():
         plus_di = 100 * plus_dm.rolling(14).sum() / tr14; minus_di = 100 * minus_dm.rolling(14).sum() / tr14
         dx = 100 * (plus_di-minus_di).abs() / (plus_di+minus_di).replace(0, np.nan)
         adx = dx.rolling(14).mean()
-        vol_col = "Trading_money" if "Trading_money" in d.columns else "Trading_Volume" if "Trading_Volume" in d.columns else None
-        vol_ratio = None
+        delta = close.diff(); gain = delta.clip(lower=0).rolling(14).mean(); loss = (-delta.clip(upper=0)).rolling(14).mean()
+        rs14 = gain / loss.replace(0, np.nan); rsi14 = 100 - (100 / (1 + rs14))
+        vol_col = "Trading_money" if "Trading_money" in d.columns else "Trading_Volume" if "Trading_Volume" in d.columns else "vol" if "vol" in d.columns else None
+        vol_ratio = volume_value = volume_ma20 = None
         if vol_col:
             vm = d[vol_col].rolling(20).mean()
-            if pd.notna(vm.iloc[-1]) and vm.iloc[-1] > 0:
-                vol_ratio = float(d[vol_col].iloc[-1] / vm.iloc[-1])
+            volume_value = float(d[vol_col].iloc[-1]) if pd.notna(d[vol_col].iloc[-1]) else None
+            volume_ma20 = float(vm.iloc[-1]) if pd.notna(vm.iloc[-1]) else None
+            if volume_ma20 and volume_ma20 > 0:
+                vol_ratio = float(volume_value / volume_ma20)
         last = d.iloc[-1]
         c = float(last["close"]); ma20 = float(last["ma20"]) if pd.notna(last["ma20"]) else None; ma60 = float(last["ma60"]) if pd.notna(last["ma60"]) else None
         ret5 = float((c / close.iloc[-6] - 1) * 100) if len(d) >= 6 and close.iloc[-6] > 0 else None
         ret20 = float((c / close.iloc[-21] - 1) * 100) if len(d) >= 21 and close.iloc[-21] > 0 else None
         atr_pct = float(atr14.iloc[-1] / c * 100) if pd.notna(atr14.iloc[-1]) and c > 0 else None
         adx_v = float(adx.iloc[-1]) if pd.notna(adx.iloc[-1]) else None
+        plus_v = float(plus_di.iloc[-1]) if pd.notna(plus_di.iloc[-1]) else None; minus_v = float(minus_di.iloc[-1]) if pd.notna(minus_di.iloc[-1]) else None
+        rsi_v = float(rsi14.iloc[-1]) if pd.notna(rsi14.iloc[-1]) else None
         s20 = float(last["slope20"]) if pd.notna(last["slope20"]) else None; s60 = float(last["slope60"]) if pd.notna(last["slope60"]) else None
         panic = bool((ret5 is not None and ret5 <= -4.5) or (atr_pct is not None and atr_pct >= 3.0 and ret5 is not None and ret5 <= -3.0))
-        if panic:
-            state = "恐慌風險"
-        elif ma20 and ma60 and c > ma20 > ma60 and (s20 or 0) > 0 and (s60 or 0) >= 0:
-            state = "強勢多頭" if (adx_v or 0) >= 20 else "多頭整理"
-        elif ma60 and c >= ma60 and ma20 and c < ma20:
-            state = "多頭回檔"
-        elif ma20 and ma60 and c < ma20 < ma60 and (s20 or 0) < 0:
-            state = "弱勢空頭"
-        elif ma20 and c > ma20 and ma60 and c < ma60:
-            state = "空頭反彈"
-        else:
-            state = "區間整理"
-        reasons = [f"加權指數 {c:.1f}"]
-        if ma20: reasons.append(f"MA20 {ma20:.1f}（斜率 {s20:+.2f}%）")
-        if ma60: reasons.append(f"MA60 {ma60:.1f}（斜率 {s60:+.2f}%）")
-        if adx_v is not None: reasons.append(f"ADX {adx_v:.1f}")
-        if ret5 is not None: reasons.append(f"5日 {ret5:+.1f}%")
-        if ret20 is not None: reasons.append(f"20日 {ret20:+.1f}%")
-        if vol_ratio is not None: reasons.append(f"大盤量比 {vol_ratio:.2f}")
+        if panic: state = "恐慌風險"
+        elif ma20 and ma60 and c > ma20 > ma60 and (s20 or 0) > 0 and (s60 or 0) >= 0: state = "強勢多頭" if (adx_v or 0) >= 20 else "多頭整理"
+        elif ma60 and c >= ma60 and ma20 and c < ma20: state = "多頭回檔"
+        elif ma20 and ma60 and c < ma20 < ma60 and (s20 or 0) < 0: state = "弱勢空頭"
+        elif ma20 and ma60 and c > ma20 and c < ma60: state = "空頭反彈"
+        else: state = "區間整理"
+        reasons = [f"基準：{benchmark_name}（{benchmark_id}）", f"最新收盤 {c:.2f}"]
+        if ma20 is not None: reasons.append(f"MA20 {ma20:.2f}｜5日斜率 {s20:+.2f}%")
+        if ma60 is not None: reasons.append(f"MA60 {ma60:.2f}｜10日斜率 {s60:+.2f}%")
+        if adx_v is not None: reasons.append(f"ADX {adx_v:.1f}｜+DI {plus_v:.1f}｜-DI {minus_v:.1f}")
+        if rsi_v is not None: reasons.append(f"RSI14 {rsi_v:.1f}")
+        if ret5 is not None: reasons.append(f"5日報酬 {ret5:+.2f}%")
+        if ret20 is not None: reasons.append(f"20日報酬 {ret20:+.2f}%")
+        if vol_ratio is not None: reasons.append(f"量能比 {vol_ratio:.2f}（當日／20日均值）")
+        if atr_pct is not None: reasons.append(f"ATR14／指數 {atr_pct:.2f}%")
         ctx.update({"available": True, "close": c, "ma20": ma20, "ma60": ma60, "slope20": s20, "slope60": s60,
-                    "adx": adx_v, "ret5": ret5, "ret20": ret20, "vol_ratio": vol_ratio, "atr_pct": atr_pct,
-                    "panic": panic, "state": state, "reasons": reasons})
+                    "adx": adx_v, "plus_di": plus_v, "minus_di": minus_v, "rsi14": rsi_v,
+                    "ret5": ret5, "ret20": ret20, "vol_ratio": vol_ratio, "volume_value": volume_value, "volume_ma20": volume_ma20,
+                    "atr_pct": atr_pct, "panic": panic, "state": state, "reasons": reasons,
+                    "raw_date": str(last.get("date", ""))})
     except Exception as exc:
-        log_error("market regime context", exc)
+        log_error(f"market regime context {benchmark_id}", exc)
+        ctx["scope_note"] += "資料抓取失敗，系統未以其他指數補值。"
     return ctx
 
 @st.cache_data(ttl=900)
@@ -908,8 +926,8 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     df_raw = get_daily_df(stock_id, market_type=market_type, days=450)
     if df_raw is None or df_raw.empty: return None
 
-    macro_bull, macro_text, is_market_panic, is_market_overextended, market_vol_healthy, market_vol_desc = get_market_macro_status()
-    market_regime_context = get_market_regime_context()
+    macro_bull, macro_text, is_market_panic, is_market_overextended, market_vol_healthy, market_vol_desc = get_market_macro_status(market_type)
+    market_regime_context = get_market_regime_context(market_type)
     radar_results, is_us_panic, us_panic_desc, wtx_change = get_overnight_radar()
     hist_last_raw = df_raw.iloc[-1]
     quote = compute_live_data(stock_id, market_type, float(hist_last_raw["close"]), float(hist_last_raw["vol"]))
@@ -2340,51 +2358,74 @@ def build_data_quality_audit(res: dict, decision: dict) -> dict:
 
 # ============ Unified Decision Architecture ============
 def build_market_regime(res: dict) -> dict:
-    """大盤風險閘門：只使用可驗證資料，並限制允許的操作。"""
+    """大盤風險閘門：以實際基準指數計分，保留每一項原始數據、分數與權重。"""
     ctx = res.get("market_regime_context", {}) or {}
     rs = float(res.get("relative_strength", 0) or 0)
     peer_text = str(res.get("peer_resonance_text", "資料不足"))
     atr = float(res.get("atr", 0) or 0); current = float(res.get("current_price", 0) or 0)
-    atr_pct = atr / current * 100 if current > 0 else 0
-    reasons = list(ctx.get("reasons", []))
-    limitations = []
+    stock_atr_pct = atr / current * 100 if current > 0 else 0
+    reasons = list(ctx.get("reasons", [])); limitations = []
+    factor_rows = []
     if not ctx.get("available"):
         score = 50; state = "大盤資料不足"; gate = "CAUTION"
-        reasons.append("加權指數資料未能可靠取得，大盤不加分也不扣分")
+        reasons.append(f"{ctx.get('benchmark_name','基準指數')}資料未能可靠取得，大盤不加分也不扣分")
+        factor_rows.append({"factor":"資料狀態","raw":"未取得","score":50,"weight":100,"contribution":50.0,"rule":"資料不足採中性50分並限制為保守操作"})
     else:
-        state = str(ctx.get("state", "區間整理"))
-        base_map = {"強勢多頭":82, "多頭整理":70, "多頭回檔":60, "區間整理":50, "空頭反彈":42, "弱勢空頭":25, "恐慌風險":10}
-        score = base_map.get(state, 50)
-        vr = ctx.get("vol_ratio")
-        if vr is not None:
-            if state in ["強勢多頭","多頭整理"] and vr >= 1.05: score += 5
-            elif state in ["空頭反彈","弱勢空頭"] and vr >= 1.15: score -= 5
-        if bool(res.get("is_us_panic")):
-            score -= 10; reasons.append(str(res.get("us_panic_desc") or "隔夜外部市場明顯轉弱"))
-        if state in ["恐慌風險"]: gate = "PANIC"
-        elif state in ["弱勢空頭"]: gate = "RISK_OFF"
-        elif state in ["空頭反彈"]: gate = "NO_NEW_BUY"
-        elif state in ["區間整理","多頭回檔"]: gate = "CAUTION"
-        else: gate = "OPEN"
-    # 個股相對強弱只作小幅修正，不能推翻大盤閘門。
-    score += max(-8, min(8, rs * 0.8))
-    if rs != 0: reasons.append(f"個股相對大盤 {rs:+.1f}%")
-    if any(k in peer_text for k in ["共振", "同步偏多", "領先"]): score += 4; reasons.append("同族群具正向共振")
-    elif any(k in peer_text for k in ["背離", "轉弱", "落後"]): score -= 4; reasons.append("同族群共振不足")
-    if atr_pct >= 6: score -= 6; reasons.append(f"個股 ATR 波動偏高 {atr_pct:.1f}%")
-    score = int(max(0, min(100, round(score))))
-    if "OTC" in str(res.get("market_type", "")).upper() or "TWO" in str(res.get("market_type", "")).upper():
-        limitations.append("此為上櫃股票，但櫃買指數未可靠取得；大盤閘門僅參考加權指數")
+        c=ctx.get('close'); ma20=ctx.get('ma20'); ma60=ctx.get('ma60'); s20=ctx.get('slope20'); s60=ctx.get('slope60')
+        adx=ctx.get('adx'); plus_di=ctx.get('plus_di'); minus_di=ctx.get('minus_di'); rsi=ctx.get('rsi14')
+        ret5=ctx.get('ret5'); ret20=ctx.get('ret20'); vr=ctx.get('vol_ratio'); atr_pct=ctx.get('atr_pct')
+        # 趨勢 40%
+        trend_score=50
+        if c and ma20: trend_score += 12 if c >= ma20 else -12
+        if c and ma60: trend_score += 12 if c >= ma60 else -12
+        if ma20 and ma60: trend_score += 8 if ma20 >= ma60 else -8
+        if s20 is not None: trend_score += 6 if s20 > 0 else -6
+        if s60 is not None: trend_score += 4 if s60 >= 0 else -4
+        trend_score=int(max(0,min(100,trend_score)))
+        factor_rows.append({"factor":"趨勢","raw":f"收盤 {c:.2f}｜MA20 {ma20:.2f}｜MA60 {ma60:.2f}" if ma20 is not None and ma60 is not None else f"收盤 {c:.2f}｜均線資料不足","score":trend_score,"weight":40,"contribution":trend_score*0.40,"rule":"收盤與MA20/MA60、均線排列及斜率"})
+        # 動能 25%
+        momentum_score=50
+        if rsi is not None: momentum_score += 12 if rsi>=55 else -12 if rsi<45 else 0
+        if ret5 is not None: momentum_score += 8 if ret5>1 else -8 if ret5<-1 else 0
+        if ret20 is not None: momentum_score += 10 if ret20>3 else -10 if ret20<-3 else 0
+        if adx is not None and plus_di is not None and minus_di is not None and adx>=20: momentum_score += 8 if plus_di>minus_di else -8
+        momentum_score=int(max(0,min(100,momentum_score)))
+        factor_rows.append({"factor":"動能","raw":f"RSI14 {rsi:.1f}｜ADX {adx:.1f}｜5日 {ret5:+.2f}%｜20日 {ret20:+.2f}%" if None not in [rsi, adx, ret5, ret20] else "部分動能資料不足","score":momentum_score,"weight":25,"contribution":momentum_score*0.25,"rule":"RSI、ADX方向、5日與20日報酬"})
+        # 量能 15%
+        liquidity_score=50
+        if vr is not None: liquidity_score = 70 if vr>=1.10 else 58 if vr>=0.90 else 38
+        factor_rows.append({"factor":"量能","raw":f"量能比 {vr:.2f}" if vr is not None else "資料不足","score":liquidity_score,"weight":15,"contribution":liquidity_score*0.15,"rule":"當日成交金額／20日平均成交金額"})
+        # 波動風險 15%（分數越高越健康）
+        risk_score=70
+        if atr_pct is not None: risk_score = 82 if atr_pct<1.2 else 68 if atr_pct<2.0 else 48 if atr_pct<3.0 else 25
+        if bool(ctx.get('panic')): risk_score=min(risk_score,10)
+        factor_rows.append({"factor":"波動風險","raw":f"ATR14／指數 {atr_pct:.2f}%" if atr_pct is not None else "資料不足","score":risk_score,"weight":15,"contribution":risk_score*0.15,"rule":"波動越低分數越高；急跌觸發恐慌上限"})
+        # 國際市場 5%，只有可靠取到急跌警示才扣分，沒有就維持中性
+        global_score=30 if bool(res.get('is_us_panic')) else 50
+        global_raw=str(res.get('us_panic_desc') or '未出現單一海外指數跌幅超過2%的急跌警示')
+        factor_rows.append({"factor":"國際市場","raw":global_raw,"score":global_score,"weight":5,"contribution":global_score*0.05,"rule":"僅作小幅風險調整，不直接決定台股方向"})
+        score=int(round(sum(float(x['contribution']) for x in factor_rows)))
+        state=str(ctx.get('state','區間整理'))
+        if bool(ctx.get('panic')): gate='PANIC'
+        elif score<30 or state=='弱勢空頭': gate='RISK_OFF'
+        elif score<45 or state=='空頭反彈': gate='NO_NEW_BUY'
+        elif score<65 or state in ['區間整理','多頭回檔']: gate='CAUTION'
+        else: gate='OPEN'
+    # 個股／族群只列為閘門外修正，透明揭露，不改變所選大盤基準。
+    adjustments=[]
+    rs_adj=max(-8,min(8,rs*0.8)); score += rs_adj
+    if rs != 0: adjustments.append({"factor":"個股相對強弱","value":f"{rs:+.2f}%","adjustment":round(rs_adj,1)})
+    peer_adj=0
+    if any(k in peer_text for k in ["共振","同步偏多","領先"]): peer_adj=4
+    elif any(k in peer_text for k in ["背離","轉弱","落後"]): peer_adj=-4
+    if peer_adj: score += peer_adj; adjustments.append({"factor":"同族群共振","value":peer_text,"adjustment":peer_adj})
+    if stock_atr_pct>=6: score-=6; adjustments.append({"factor":"個股高波動","value":f"ATR {stock_atr_pct:.1f}%","adjustment":-6})
+    score=int(max(0,min(100,round(score))))
     limitations.append(str(ctx.get("scope_note", "僅使用可驗證的大盤資料")))
-    color = "#16A34A" if gate=="OPEN" else "#2563EB" if gate=="CAUTION" else "#F97316" if gate=="NO_NEW_BUY" else "#DC2626"
-    allowed = {
-        "OPEN": ["加碼","續抱","突破操作"],
-        "CAUTION": ["續抱","回測確認","小量操作"],
-        "NO_NEW_BUY": ["續抱","反彈減碼"],
-        "RISK_OFF": ["減碼","退出"],
-        "PANIC": ["停止加碼","加速風控","退出"],
-    }.get(gate,["保守觀察"] )
-    return {"score":score,"state":state,"color":color,"reasons":reasons,"atr_pct":atr_pct,"gate":gate,"allowed_actions":allowed,"limitations":list(dict.fromkeys(limitations)),"context":ctx}
+    color="#16A34A" if gate=="OPEN" else "#2563EB" if gate=="CAUTION" else "#F97316" if gate=="NO_NEW_BUY" else "#DC2626"
+    allowed={"OPEN":["加碼","續抱","突破操作"],"CAUTION":["續抱","回測確認","小量操作"],"NO_NEW_BUY":["續抱","反彈減碼"],"RISK_OFF":["減碼","退出"],"PANIC":["停止加碼","加速風控","退出"]}.get(gate,["保守觀察"])
+    return {"score":score,"state":state,"color":color,"reasons":reasons,"atr_pct":stock_atr_pct,"gate":gate,"allowed_actions":allowed,
+            "limitations":list(dict.fromkeys(limitations)),"context":ctx,"factor_rows":factor_rows,"adjustments":adjustments}
 
 
 def build_price_level_engine(res: dict, compass: dict, market_score: int = 50, market_status: str = "HOLD") -> dict:
@@ -2862,12 +2903,34 @@ if stock_input:
             rg3.metric("訊號一致度", f"{decision_snapshot['agreement']['score']}%")
             rg4.metric("一致性檢查", f"{decision_snapshot['audit']['passed']} / {decision_snapshot['audit']['total']}")
             gate_names = {"OPEN":"正常開放", "CAUTION":"保守操作", "NO_NEW_BUY":"禁止新增", "RISK_OFF":"風險關閉", "PANIC":"恐慌風控"}
-            st.write(f"**大盤風險閘門：** {gate_names.get(decision_snapshot['regime'].get('gate'), decision_snapshot['regime'].get('gate'))}")
-            st.write("**目前允許的操作：** " + "、".join(decision_snapshot['regime'].get('allowed_actions', [])))
-            for reason in decision_snapshot['regime'].get('reasons', [])[:8]:
-                st.write("• " + str(reason))
-            for limit in decision_snapshot['regime'].get('limitations', []):
-                st.caption("限制：" + str(limit))
+            regime_view = decision_snapshot['regime']
+            ctx_view = regime_view.get('context', {}) or {}
+            st.write(f"**目前參考市場：** {ctx_view.get('market_scope','—')}股票 → {ctx_view.get('benchmark_name','—')}（{ctx_view.get('benchmark','—')}）")
+            st.write(f"**資料日期：** {ctx_view.get('raw_date') or '資料不足'}")
+            st.write(f"**大盤風險閘門：** {gate_names.get(regime_view.get('gate'), regime_view.get('gate'))}")
+            st.write("**目前允許的操作：** " + "、".join(regime_view.get('allowed_actions', [])))
+            st.markdown("#### 大盤實際採用數據")
+            raw_cols = st.columns(4)
+            raw_cols[0].metric("指數收盤", f"{ctx_view.get('close'):.2f}" if ctx_view.get('close') is not None else "—")
+            raw_cols[1].metric("MA20", f"{ctx_view.get('ma20'):.2f}" if ctx_view.get('ma20') is not None else "—", f"斜率 {ctx_view.get('slope20'):+.2f}%" if ctx_view.get('slope20') is not None else None)
+            raw_cols[2].metric("MA60", f"{ctx_view.get('ma60'):.2f}" if ctx_view.get('ma60') is not None else "—", f"斜率 {ctx_view.get('slope60'):+.2f}%" if ctx_view.get('slope60') is not None else None)
+            raw_cols[3].metric("ADX", f"{ctx_view.get('adx'):.1f}" if ctx_view.get('adx') is not None else "—", f"+DI {ctx_view.get('plus_di'):.1f}／-DI {ctx_view.get('minus_di'):.1f}" if ctx_view.get('plus_di') is not None and ctx_view.get('minus_di') is not None else None)
+            raw_cols2 = st.columns(4)
+            raw_cols2[0].metric("RSI14", f"{ctx_view.get('rsi14'):.1f}" if ctx_view.get('rsi14') is not None else "—")
+            raw_cols2[1].metric("5日報酬", f"{ctx_view.get('ret5'):+.2f}%" if ctx_view.get('ret5') is not None else "—")
+            raw_cols2[2].metric("20日報酬", f"{ctx_view.get('ret20'):+.2f}%" if ctx_view.get('ret20') is not None else "—")
+            raw_cols2[3].metric("量能比", f"{ctx_view.get('vol_ratio'):.2f}" if ctx_view.get('vol_ratio') is not None else "—", "當日／20日均值")
+            st.markdown("#### 大盤評分明細")
+            factor_df = pd.DataFrame(regime_view.get('factor_rows', []))
+            if not factor_df.empty:
+                factor_df = factor_df.rename(columns={'factor':'面向','raw':'原始數據','score':'面向分數','weight':'權重(%)','contribution':'加權貢獻','rule':'採用規則'})
+                st.dataframe(factor_df, use_container_width=True, hide_index=True)
+            if regime_view.get('adjustments'):
+                st.markdown("#### 個股／族群額外修正")
+                adj_df = pd.DataFrame(regime_view.get('adjustments', [])).rename(columns={'factor':'修正項目','value':'原始數據','adjustment':'加減分'})
+                st.dataframe(adj_df, use_container_width=True, hide_index=True)
+            for limit in regime_view.get('limitations', []):
+                st.caption("資料範圍：" + str(limit))
             if decision_snapshot["agreement"]["conflicts"]:
                 st.warning("訊號衝突：" + "；".join(decision_snapshot["agreement"]["conflicts"]))
             for name, ok in decision_snapshot["audit"]["checks"]:
