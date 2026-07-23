@@ -1824,9 +1824,96 @@ def build_ai_forecast(res: dict, compass: dict, decision: dict) -> dict:
     return {"scenarios": scenarios[:4]}
 
 
-def build_today_action_board(res: dict, compass: dict, decision: dict, user_holding: bool = False, user_cost: float = 0.0, levels: dict | None = None) -> dict:
+def build_holding_value_analysis(res: dict, market: dict, regime: dict, levels: dict, user_holding: bool, user_cost: float) -> dict:
+    """持股價值引擎：成本只描述損益，不決定方向；核心是剩餘報酬是否值得承擔下行風險。"""
+    current = float(levels.get("current", res.get("current_price", 0)) or 0)
+    confirmation = float(levels.get("confirmation", 0) or 0)
+    protective = float(levels.get("protective_stop", 0) or 0)
+    structural = float(levels.get("structure_stop", 0) or 0)
+    target = float(levels.get("target1", 0) or 0)
+    market_score = int(market.get("market_score", 0) or 0)
+    regime_score = int(regime.get("score", 50) or 50)
+    status = str(market.get("status", "HOLD"))
+    pnl_pct = ((current / user_cost) - 1) * 100 if user_holding and user_cost > 0 and current > 0 else None
+
+    # 偏弱市場不把遠端多頭目標當成可實現報酬；只採用反彈確認價。
+    if status in ["REDUCE", "EXIT"] or market_score < 55:
+        reward_price = confirmation if confirmation > current else max(current, target)
+        reward_role = "反彈確認價"
+    else:
+        reward_price = target if target > current else confirmation
+        reward_role = str(levels.get("target_role", "第一目標"))
+
+    risk_price = protective if 0 < protective < current else structural
+    upside_pct = ((reward_price / current) - 1) * 100 if reward_price > current > 0 else 0.0
+    downside_pct = ((current / risk_price) - 1) * 100 if 0 < risk_price < current else 0.0
+    rr = upside_pct / downside_pct if downside_pct > 0 else None
+
+    trend_score = float((market.get("components", {}) or {}).get("trend", 50) or 50)
+    momentum_score = float((market.get("components", {}) or {}).get("momentum", 50) or 50)
+    structure_broken = structural > 0 and current <= structural
+    protective_broken = protective > 0 and current <= protective
+
+    reasons = []
+    if market_score >= 60: reasons.append(f"個股市場分數 {market_score}，仍有基本趨勢支持")
+    else: reasons.append(f"個股市場分數只有 {market_score}，上漲證據不足")
+    if regime_score >= 55: reasons.append(f"大盤環境 {regime_score} 分，未明顯拖累")
+    else: reasons.append(f"大盤環境只有 {regime_score} 分，持股承受額外壓力")
+    reasons.append(f"至{reward_role}約有 {upside_pct:.1f}% 空間")
+    reasons.append(f"至第一層風險線約有 {downside_pct:.1f}% 下行風險")
+    if rr is not None: reasons.append(f"剩餘風險報酬比約 {rr:.2f}")
+
+    if structure_broken or status == "EXIT":
+        grade, color, action = "不值得", "#DC2626", "退出／大幅減碼"
+        conclusion = "趨勢或結構已失效，不應用等待反彈取代風險處理。"
+    elif protective_broken:
+        grade, color, action = "不值得", "#DC2626", "立即減碼"
+        conclusion = "第一層風險線已跌破，先降低曝險，再等待重新確認。"
+    elif status == "REDUCE":
+        if rr is not None and rr < 0.8:
+            grade, color, action = "不值得", "#DC2626", "今天先減碼"
+            conclusion = "反彈空間小於下行風險，沒有必要只為等解套繼續承擔完整部位。"
+        else:
+            grade, color, action = "普通", "#F97316", "反彈減碼"
+            conclusion = "趨勢偏弱；可保留部分部位等待反彈，但站不上確認價就應降低曝險。"
+    elif status == "HOLD":
+        if rr is not None and rr < 0.8:
+            grade, color, action = "不值得", "#DC2626", "先減碼，不等反彈"
+            conclusion = "雖未正式破線，但剩餘上漲空間不足以補償下跌風險。"
+        elif rr is not None and rr < 1.5:
+            grade, color, action = "普通", "#D97706", "續抱但降低部位"
+            conclusion = "趨勢尚未失效，但風險報酬普通，不適合滿倉等待。"
+        else:
+            grade, color, action = "值得", "#2563EB", "續抱，不加碼"
+            conclusion = "趨勢尚在且剩餘報酬高於風險，可續抱觀察確認事件。"
+    else:
+        if rr is not None and rr >= 1.5 and trend_score >= 60 and momentum_score >= 55:
+            grade, color, action = "值得", "#16A34A", "續抱"
+            conclusion = "趨勢、動能與風險報酬仍支持持有；加碼仍需另外確認價格位置。"
+        else:
+            grade, color, action = "普通", "#D97706", "續抱但不加碼"
+            conclusion = "方向偏多，但剩餘報酬或動能尚未強到值得增加曝險。"
+
+    score = 50
+    score += max(-20, min(20, (market_score - 50) * 0.4))
+    score += max(-15, min(15, (regime_score - 50) * 0.25))
+    if rr is not None: score += max(-20, min(20, (rr - 1.0) * 12))
+    if protective_broken: score -= 25
+    if structure_broken: score -= 40
+    score = int(max(0, min(100, round(score))))
+
+    return {
+        "available": bool(user_holding), "grade": grade, "color": color, "recommended_action": action,
+        "conclusion": conclusion, "score": score, "pnl_pct": pnl_pct,
+        "reward_price": reward_price, "reward_role": reward_role, "risk_price": risk_price,
+        "upside_pct": upside_pct, "downside_pct": downside_pct, "rr": rr, "reasons": reasons,
+    }
+
+
+def build_today_action_board(res: dict, compass: dict, decision: dict, user_holding: bool = False, user_cost: float = 0.0, levels: dict | None = None, holding_value: dict | None = None) -> dict:
     """V3 Execution Engine：只輸出一個今天動作與三個後續觸發事件。"""
     levels = levels or {}
+    holding_value = holding_value or {}
     current = float(levels.get("current", res.get("current_price", 0)) or 0)
     confirm = float(levels.get("confirmation", 0) or 0)
     protective = float(levels.get("protective_stop", 0) or 0)
@@ -1883,6 +1970,17 @@ def build_today_action_board(res: dict, compass: dict, decision: dict, user_hold
         today_action = f"市場僅 {score} 分，原持有理由失效；不再等待反彈取代風險處理。"
         success = f"即使站回 {confirm:.2f} 元，也只回到觀察，不立即買回。"
         failure = f"收盤仍低於 {protective:.2f} 元：執行退出；{structural:.2f} 元為最後結構線。"
+
+    # 持股價值引擎可在尚未正式破線前，因風險報酬過差而提前要求減碼。
+    hv_action = str(holding_value.get("recommended_action", ""))
+    if hv_action in ["今天先減碼", "先減碼，不等反彈", "立即減碼", "退出／大幅減碼"]:
+        headline = hv_action
+        color = holding_value.get("color", "#DC2626")
+        today_action = holding_value.get("conclusion", today_action)
+    elif hv_action == "續抱但降低部位":
+        headline = "續抱，但先降低部位"
+        color = holding_value.get("color", "#D97706")
+        today_action = holding_value.get("conclusion", today_action)
 
     cards=[
         {"question":"今天唯一動作","answer":headline,"reason":today_action,"color":color},
@@ -2614,14 +2712,15 @@ def build_decision_snapshot(res: dict, compass: dict, committee: dict, user_hold
 
     agreement = build_signal_agreement(market, regime)
     reliability = int(round(float(res.get("data_quality_score", 0) or 0)))
-    portfolio = build_today_action_board(res, unified_compass, market, user_holding, user_cost, levels)
+    holding_value = build_holding_value_analysis(res, market, regime, levels, user_holding, user_cost)
+    portfolio = build_today_action_board(res, unified_compass, market, user_holding, user_cost, levels, holding_value)
 
     comps = market.get("components", {}) or {}
     bull_score = int(round(sum(float(comps.get(k, 50) or 50) for k in ["trend","chips","momentum","price_position"]) / 4))
     bear_score = int(round(100 - (float(comps.get("risk", 50) or 50) + float(regime.get("score", 50) or 50)) / 2))
     validation = build_historical_signal_validation(res)
     snapshot = {
-        "levels":levels, "market":market, "portfolio":portfolio, "regime":regime,
+        "levels":levels, "market":market, "portfolio":portfolio, "regime":regime, "holding_value":holding_value,
         "agreement":agreement, "data_reliability":reliability, "stability":stability,
         "validation":validation, "headline":portfolio.get("headline"), "color":portfolio.get("color"),
         "compass":unified_compass, "bull_score":max(0,min(100,bull_score)),
@@ -2693,6 +2792,10 @@ def build_if_i_were_you_text(snapshot: dict, user_holding: bool, user_cost: floa
     else:
         parts.append("如果我是你，我不會只因股價接近某個數字就立刻進場。")
     parts.append(p.get("today_action", p.get("headline", "依目前策略執行。")))
+    hv = snapshot.get("holding_value", {}) or {}
+    if user_holding and hv.get("available"):
+        rr_text = f"風險報酬比 {hv['rr']:.2f}" if hv.get("rr") is not None else "風險報酬比資料不足"
+        parts.append(f"持股價值評為「{hv.get('grade','—')}」：上漲空間 {hv.get('upside_pct',0):.1f}%、下跌風險 {hv.get('downside_pct',0):.1f}%、{rr_text}。")
     parts.append(f"收盤站上 {lv['confirmation']:.2f} 元，才視為確認成功。")
     parts.append(f"跌破 {lv['protective_stop']:.2f} 元，執行第一層風險處理；跌破 {lv['structure_stop']:.2f} 元，退出剩餘波段部位。")
     return " ".join(parts)
@@ -2745,7 +2848,7 @@ with st.sidebar:
     show_evidence_default = st.checkbox("🔎 預設展開各項數據依據", value=False)
     debug_mode = st.checkbox("🛠 開啟成交量資料診斷", value=False)
 
-st.markdown("## 🧠 StockPilot 2.0｜AI 決策中心")
+st.markdown("## 🧠 StockPilot 2.3｜AI 持股決策中心")
 st.caption("一套決策、一組價位、一個今天要做的動作。即時成交量比率資料不穩定時，會自動排除於方向判斷。")
 stock_input = st.text_input("請輸入核心目標個股代碼：", value="3037").strip()
 
@@ -2835,6 +2938,26 @@ if stock_input:
 
         st.markdown("### 🙋 如果我是你")
         st.info(if_i_were_you_text)
+
+        if user_holding:
+            hv = decision_snapshot.get("holding_value", {}) or {}
+            st.markdown("### 📈 持股價值分析")
+            st.markdown(f"""
+            <div style="background:#FFFFFF;border:1px solid #E2E8F0;border-left:10px solid {hv.get('color','#64748B')};padding:20px;border-radius:14px;box-shadow:0 3px 12px rgba(15,23,42,.05);">
+              <div style="font-size:14px;color:#64748B;font-weight:800;">是否值得繼續持有</div>
+              <div style="font-size:30px;color:{hv.get('color','#64748B')};font-weight:950;margin-top:3px;">{hv.get('grade','—')}｜{hv.get('recommended_action','—')}</div>
+              <div style="font-size:17px;color:#0F172A;line-height:1.7;margin-top:8px;">{hv.get('conclusion','')}</div>
+            </div>
+            """, unsafe_allow_html=True)
+            hv1, hv2, hv3, hv4 = st.columns(4)
+            hv1.metric("持股價值分數", f"{hv.get('score',0)} / 100")
+            hv2.metric("剩餘上漲空間", f"{hv.get('upside_pct',0):.1f}%", f"至 {hv.get('reward_price',0):.2f} 元")
+            hv3.metric("第一層下跌風險", f"{hv.get('downside_pct',0):.1f}%", f"至 {hv.get('risk_price',0):.2f} 元")
+            hv4.metric("風險報酬比", f"{hv.get('rr'):.2f}" if hv.get('rr') is not None else "—")
+            with st.expander("查看持股價值判斷依據", expanded=False):
+                for reason in hv.get("reasons", []):
+                    st.write("• " + str(reason))
+                st.caption("成本只用來顯示帳面損益，不會把偏空趨勢改判為續抱。")
 
         st.markdown("### 🧭 AI 決策流程")
         st.caption("由上往下看；只有事件真正發生，才切換到下一個動作。")
