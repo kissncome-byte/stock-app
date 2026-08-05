@@ -2731,6 +2731,208 @@ def build_decision_snapshot(res: dict, compass: dict, committee: dict, user_hold
 
 
 
+
+def _daily_trend_score(row: pd.Series) -> int:
+    """只使用日線可重建資料計算原始趨勢分數；不使用持股成本或盤中雜訊。"""
+    close = safe_float(row.get("close"), 0)
+    ma20 = safe_float(row.get("MA20"), 0)
+    ma60 = safe_float(row.get("MA60"), 0)
+    slope20 = safe_float(row.get("MA20_SLOPE"), 0)
+    slope60 = safe_float(row.get("MA60_SLOPE"), 0)
+    macd_hist = safe_float(row.get("MACD_HIST"), 0)
+    rsi = safe_float(row.get("RSI14"), 50)
+    plus_di = safe_float(row.get("PLUS_DI"), 0)
+    minus_di = safe_float(row.get("MINUS_DI"), 0)
+    adx = safe_float(row.get("ADX14"), 0)
+    score = 0
+    score += 22 if ma20 > 0 and close >= ma20 else 0
+    score += 18 if ma20 > 0 and ma60 > 0 and ma20 >= ma60 else 0
+    score += 15 if slope20 > 0 else 0
+    score += 15 if slope60 > 0 else 0
+    score += 10 if macd_hist >= 0 else 0
+    score += 8 if rsi >= 50 else 0
+    score += 7 if plus_di >= minus_di else 0
+    score += 5 if adx >= 18 else 0
+    return int(max(0, min(100, score)))
+
+
+def _score_bucket(score: int) -> str:
+    if score >= 78: return "STRONG_BULL"
+    if score >= 62: return "BULL_PULLBACK"
+    if score >= 45: return "RANGE"
+    if score >= 30: return "BEAR_RALLY"
+    return "BEAR"
+
+
+def _state_label(state: str) -> str:
+    return {
+        "STRONG_BULL":"強勢多頭",
+        "BULL_PULLBACK":"多頭整理",
+        "RANGE":"區間整理",
+        "BEAR_RALLY":"空頭反彈",
+        "BEAR":"弱勢空頭",
+    }.get(state, "區間整理")
+
+
+def build_strategy_state_machine(res: dict, decision_snapshot: dict, user_holding: bool, user_cost: float) -> dict:
+    """以歷史日線重建正式趨勢，再用目前大盤、籌碼與風險決定執行動作。
+
+    正式趨勢不依賴本機資料庫，也不因單日小幅分數變化翻轉。
+    一般升降級需連續兩日；重大結構破壞可立即降級。
+    """
+    df = res.get("daily_df")
+    if df is None or df.empty:
+        return {
+            "state":"RANGE","state_label":"資料不足","state_days":0,"trend_score":50,
+            "action":"等待","action_code":"WAIT","color":"#64748B",
+            "positive_evidence":[],"negative_evidence":["日線資料不足，無法重建正式趨勢。"],
+            "warnings":1,"warning_threshold":3,"changed":False,"change_note":"正式趨勢無法建立。",
+            "trigger_rows":[],"today_change":"資料不足，正式策略不下方向結論。",
+        }
+    x = df.copy().sort_values("date").tail(120).reset_index(drop=True)
+    x["_trend_score"] = x.apply(_daily_trend_score, axis=1)
+    raw_states = [_score_bucket(int(v)) for v in x["_trend_score"]]
+    order = ["BEAR","BEAR_RALLY","RANGE","BULL_PULLBACK","STRONG_BULL"]
+    state = raw_states[0]
+    up_count = down_count = 0
+    states = []
+    for i, (raw_state, score) in enumerate(zip(raw_states, x["_trend_score"])):
+        current_idx = order.index(state); raw_idx = order.index(raw_state)
+        row = x.iloc[i]
+        close = safe_float(row.get("close"), 0); ma60 = safe_float(row.get("MA60"), 0)
+        slope60 = safe_float(row.get("MA60_SLOPE"), 0)
+        structural_break = ma60 > 0 and close < ma60 and slope60 < 0 and score < 35
+        if structural_break:
+            state = "BEAR" if score < 25 else "BEAR_RALLY"
+            up_count = down_count = 0
+        elif raw_idx > current_idx:
+            up_count += 1; down_count = 0
+            if up_count >= 2:
+                state = order[min(current_idx + 1, len(order)-1)]
+                up_count = 0
+        elif raw_idx < current_idx:
+            down_count += 1; up_count = 0
+            if down_count >= 2:
+                state = order[max(current_idx - 1, 0)]
+                down_count = 0
+        else:
+            up_count = max(0, up_count-1); down_count = max(0, down_count-1)
+        states.append(state)
+    current_state = states[-1]
+    state_days = 1
+    for s in reversed(states[:-1]):
+        if s == current_state: state_days += 1
+        else: break
+    changed = len(states) >= 2 and states[-1] != states[-2]
+    trend_score = int(x["_trend_score"].iloc[-1])
+
+    market = decision_snapshot.get("market", {}) or {}
+    regime = decision_snapshot.get("regime", {}) or {}
+    levels = decision_snapshot.get("levels", {}) or {}
+    holding_value = decision_snapshot.get("holding_value", {}) or {}
+    ta = res.get("trend_analysis", {}) or {}
+    inst = res.get("institutional_summary", {}) or {}
+    current = safe_float(res.get("current_price"), 0)
+    protective = safe_float(levels.get("protective_stop"), 0)
+    structure_stop = safe_float(levels.get("structure_stop"), 0)
+    confirmation = safe_float(levels.get("confirmation"), 0)
+    target = safe_float(levels.get("target1"), 0)
+
+    positive, negative = [], []
+    if current_state in ["STRONG_BULL","BULL_PULLBACK"]:
+        positive.append(f"正式趨勢為{_state_label(current_state)}，已由歷史日線連續確認 {state_days} 個交易日。")
+    else:
+        negative.append(f"正式趨勢為{_state_label(current_state)}，尚未形成可積極承擔風險的上升結構。")
+    if safe_float(ta.get("slope20"), 0) > 0: positive.append("MA20 斜率仍向上。")
+    else: negative.append("MA20 斜率未向上。")
+    if safe_float(ta.get("slope60"), 0) > 0: positive.append("MA60 斜率仍向上。")
+    else: negative.append("MA60 斜率未向上。")
+    consensus = str(inst.get("consensus_label", "資料不足"))
+    if consensus in ["偏多","稍偏多"]: positive.append(f"三大法人近20日一致性為{consensus}。")
+    elif consensus == "資料不足": negative.append("三大法人資料不足，籌碼不加分。")
+    else: negative.append(f"三大法人近20日一致性為{consensus}。")
+    accumulation = str(ta.get("accumulation", "資料不足"))
+    if "累積" in accumulation or "流入" in accumulation: positive.append(accumulation + "。")
+    elif "流出" in accumulation: negative.append(accumulation + "。")
+    gate = str(regime.get("gate", "CAUTION"))
+    if gate == "OPEN": positive.append(f"大盤環境為{regime.get('state','正常')}，允許順勢操作。")
+    elif gate in ["NO_NEW_BUY","RISK_OFF","PANIC"]: negative.append(f"大盤風險閘門為 {gate}，限制新增或要求優先風控。")
+    else: negative.append(f"大盤環境為{regime.get('state','保守')}，目前只允許保守操作。")
+    price_volume = str(ta.get("price_volume", "資料不足"))
+    if "價漲量增" in price_volume or "價跌量縮" in price_volume: positive.append(price_volume + "。")
+    elif "價跌量增" in price_volume or "賣壓" in price_volume: negative.append(price_volume + "。")
+
+    warnings = 0
+    warnings += 1 if safe_float(ta.get("slope20"), 0) <= 0 else 0
+    warnings += 1 if consensus in ["偏空","稍偏空","分歧"] else 0
+    warnings += 1 if "流出" in accumulation else 0
+    warnings += 1 if gate in ["NO_NEW_BUY","RISK_OFF","PANIC"] else 0
+    warnings += 1 if "價跌量增" in price_volume or "賣壓" in price_volume else 0
+    warning_threshold = 3
+
+    # 決策優先順序：結構風險 > 大盤閘門 > 正式趨勢 > 籌碼量能 > 價格位置。
+    if structure_stop > 0 and current <= structure_stop:
+        action_code, action, color = "EXIT", "退出", "#DC2626"
+    elif protective > 0 and current <= protective and user_holding:
+        action_code, action, color = "REDUCE", "部分減碼", "#F97316"
+    elif gate in ["PANIC","RISK_OFF"]:
+        action_code, action, color = ("REDUCE","部分減碼","#F97316") if user_holding else ("WAIT","等待","#64748B")
+    elif current_state == "BEAR":
+        action_code, action, color = ("EXIT","退出","#DC2626") if user_holding else ("WAIT","等待","#64748B")
+    elif current_state == "BEAR_RALLY":
+        action_code, action, color = ("REDUCE","反彈減碼","#F97316") if user_holding else ("WAIT","等待","#64748B")
+    elif current_state == "RANGE":
+        if user_holding and holding_value.get("grade") == "🔴 不值得":
+            action_code, action, color = "REDUCE", "部分減碼", "#F97316"
+        else:
+            action_code, action, color = ("HOLD_NO_ADD","續抱不加碼","#D97706") if user_holding else ("WAIT","等待","#64748B")
+    elif current_state == "BULL_PULLBACK":
+        if user_holding:
+            action_code, action, color = "HOLD_NO_ADD", "續抱不加碼", "#2563EB"
+        elif gate == "OPEN" and market.get("market_score",0) >= 60:
+            action_code, action, color = "ESTABLISH", "建立第一筆", "#16A34A"
+        else:
+            action_code, action, color = "WAIT", "等待", "#64748B"
+    else:  # STRONG_BULL
+        if user_holding:
+            action_code, action, color = "HOLD", "續抱", "#16A34A"
+        elif gate == "OPEN":
+            action_code, action, color = "ESTABLISH", "建立第一筆", "#16A34A"
+        else:
+            action_code, action, color = "WAIT", "等待", "#64748B"
+
+    # 多項警訊可讓執行降一級，但不直接竄改正式趨勢。
+    if warnings >= warning_threshold and action_code == "HOLD":
+        action_code, action, color = "HOLD_NO_ADD", "續抱不加碼", "#D97706"
+    elif warnings >= warning_threshold and action_code == "HOLD_NO_ADD" and user_holding and holding_value.get("grade") == "🔴 不值得":
+        action_code, action, color = "REDUCE", "部分減碼", "#F97316"
+
+    trigger_rows = []
+    if confirmation > 0:
+        trigger_rows.append({"condition":f"收盤站上 {confirmation:.2f} 元並維持", "effect":"解除警訊／評估升級策略"})
+    if protective > 0:
+        trigger_rows.append({"condition":f"收盤跌破 {protective:.2f} 元", "effect":"部分減碼或提高現金部位"})
+    if structure_stop > 0:
+        trigger_rows.append({"condition":f"收盤跌破 {structure_stop:.2f} 元", "effect":"正式趨勢失效，退出剩餘波段部位"})
+    if target > current and current_state in ["STRONG_BULL","BULL_PULLBACK"]:
+        trigger_rows.append({"condition":f"接近第一目標 {target:.2f} 元", "effect":"分批停利，不一次全部賣出"})
+
+    if changed:
+        change_note = f"正式趨勢已由 {_state_label(states[-2])} 變更為 {_state_label(current_state)}。"
+    else:
+        change_note = f"正式趨勢維持 {_state_label(current_state)}，沒有因單日變化改口。"
+    today_change = f"目前累積警訊 {warnings}/{warning_threshold}；" + ("已達執行降級門檻。" if warnings >= warning_threshold else "尚不足以單獨改變正式趨勢。")
+    return {
+        "state":current_state,"state_label":_state_label(current_state),"state_days":state_days,
+        "trend_score":trend_score,"action":action,"action_code":action_code,"color":color,
+        "positive_evidence":positive[:6],"negative_evidence":negative[:6],
+        "warnings":warnings,"warning_threshold":warning_threshold,"changed":changed,
+        "change_note":change_note,"today_change":today_change,"trigger_rows":trigger_rows,
+        "method_note":"正式趨勢由最近120個交易日日線重新推演；一般升降級需連續兩日，重大結構破壞可立即降級。",
+        "current":current,"confirmation":confirmation,"protective_stop":protective,"structure_stop":structure_stop,"target":target,
+    }
+
+
 def build_decision_confidence(snapshot: dict) -> dict:
     """決策信心不是上漲機率；只衡量資料品質、訊號一致性與決策距離。"""
     reliability = float(snapshot.get("data_reliability", 0) or 0)
@@ -2848,8 +3050,8 @@ with st.sidebar:
     show_evidence_default = st.checkbox("🔎 預設展開各項數據依據", value=False)
     debug_mode = st.checkbox("🛠 開啟成交量資料診斷", value=False)
 
-st.markdown("## 🧠 StockPilot 2.3｜AI 持股決策中心")
-st.caption("一套決策、一組價位、一個今天要做的動作。即時成交量比率資料不穩定時，會自動排除於方向判斷。")
+st.markdown("## 🧠 StockPilot 3.0｜趨勢策略決策中心")
+st.caption("一個正式趨勢、一個目前動作、一組改變條件。正式策略不因單日雜訊反覆切換。")
 stock_input = st.text_input("請輸入核心目標個股代碼：", value="3037").strip()
 
 u_col1, u_col2 = st.columns(2)
@@ -2872,20 +3074,22 @@ if stock_input:
         compass = build_compass_home_summary(res, user_holding)
         committee_seed = build_ai_investment_committee(res, compass)
         decision_snapshot = build_decision_snapshot(res, compass, committee_seed, user_holding, user_cost)
+        strategy_state = build_strategy_state_machine(res, decision_snapshot, user_holding, user_cost)
+        decision_snapshot["strategy"] = strategy_state
         compass = decision_snapshot["compass"]
         decision_engine = decision_snapshot["market"]
         portfolio_engine = decision_snapshot["portfolio"]
-        compass["decision"] = portfolio_engine["headline"]
-        compass["strategy"] = decision_engine["label"]
-        compass["action"] = decision_engine["summary"]
-        compass["today"] = portfolio_engine["actions"][0] + " " + portfolio_engine["headline"]
-        compass["confidence"] = decision_engine["market_score"]
-        decision_color = portfolio_engine["color"]
+        compass["decision"] = strategy_state["action"]
+        compass["strategy"] = "正式趨勢：" + strategy_state["state_label"]
+        compass["action"] = strategy_state["change_note"]
+        compass["today"] = strategy_state["today_change"]
+        compass["confidence"] = strategy_state["trend_score"]
+        decision_color = strategy_state["color"]
         st.markdown(f"""
         <div style="background:linear-gradient(135deg,#0F172A 0%,#1E293B 100%);padding:24px;border-radius:14px;margin:8px 0 18px 0;color:white;border:1px solid #334155;">
           <div style="display:flex;justify-content:space-between;gap:16px;align-items:flex-start;flex-wrap:wrap;">
             <div>
-              <div style="font-size:12px;color:#94A3B8;font-weight:800;letter-spacing:.10em;">AI DECISION CENTER</div>
+              <div style="font-size:12px;color:#94A3B8;font-weight:800;letter-spacing:.10em;">STRATEGY DECISION CENTER</div>
               <div style="font-size:21px;font-weight:900;margin-top:5px;">{res['stock_name']} <span style="color:#60A5FA;">({res['stock_id']})</span></div>
               <div style="display:flex;align-items:baseline;gap:10px;margin-top:8px;flex-wrap:wrap;">
                 <span style="font-size:13px;color:#94A3B8;font-weight:800;">現行價格</span>
@@ -2896,7 +3100,7 @@ if stock_input:
               <div style="font-size:15px;color:#E2E8F0;">{compass['strategy']}｜{compass['action']}</div>
             </div>
             <div style="text-align:right;min-width:140px;">
-              <div style="font-size:12px;color:#94A3B8;">訊號一致度</div>
+              <div style="font-size:12px;color:#94A3B8;">正式趨勢分數</div>
               <div style="font-size:34px;font-weight:900;">{decision_snapshot['agreement']['score']}%</div>
               <div style="font-size:12px;color:#CBD5E1;margin-top:3px;">資料可信度 {decision_snapshot['data_reliability']}%</div>
             </div>
@@ -2919,149 +3123,83 @@ if stock_input:
 
 
 
-        # StockPilot 2.0 首頁：唯一建議、自然語言執行、決策流程、理由與切換事件。
+        # StockPilot 3.0 首頁：State、Action、Evidence、Trigger。
         lv = decision_snapshot["levels"]
-        decision_confidence = build_decision_confidence(decision_snapshot)
-        decision_stability_view = build_decision_stability_view(decision_snapshot)
-        if_i_were_you_text = build_if_i_were_you_text(decision_snapshot, user_holding, user_cost)
-        decision_tree = build_decision_tree(decision_snapshot)
-        session_change = remember_session_decision(str(res.get("stock_id", "stock")), decision_snapshot)
+        strategy_state = decision_snapshot["strategy"]
 
-        st.markdown("### ⭐ AI 今日唯一建議")
+        st.markdown("### ① 目前市場狀態（State）")
         st.markdown(f"""
-        <div style="background:#FFFFFF;border:1px solid #E2E8F0;border-left:10px solid {portfolio_engine['color']};padding:22px;border-radius:14px;box-shadow:0 3px 12px rgba(15,23,42,.06);">
-          <div style="font-size:31px;color:{portfolio_engine['color']};font-weight:950;">{portfolio_engine['headline']}</div>
-          <div style="font-size:18px;color:#0F172A;line-height:1.8;margin-top:9px;font-weight:850;">{portfolio_engine['today_action']}</div>
-          <div style="font-size:13px;color:#64748B;margin-top:13px;">市場 {decision_engine['market_score']}/100｜決策信心 {decision_confidence['score']}%｜穩定度 {decision_stability_view['label']}｜資料可信度 {decision_snapshot['data_reliability']}%</div>
+        <div style="background:#FFFFFF;border:1px solid #E2E8F0;border-left:10px solid {strategy_state['color']};padding:22px;border-radius:14px;box-shadow:0 3px 12px rgba(15,23,42,.06);">
+          <div style="font-size:13px;color:#64748B;font-weight:850;">正式趨勢</div>
+          <div style="font-size:34px;color:{strategy_state['color']};font-weight:950;margin-top:4px;">{strategy_state['state_label']}</div>
+          <div style="font-size:16px;color:#334155;margin-top:7px;">已由歷史日線維持 {strategy_state['state_days']} 個交易日｜日線趨勢分數 {strategy_state['trend_score']}/100</div>
+          <div style="font-size:15px;color:#0F172A;margin-top:12px;line-height:1.7;"><b>{strategy_state['change_note']}</b><br>{strategy_state['today_change']}</div>
         </div>
         """, unsafe_allow_html=True)
+        st.caption(strategy_state["method_note"])
 
-        st.markdown("### 🙋 如果我是你")
-        st.info(if_i_were_you_text)
+        st.markdown("### ② 目前動作（Action）")
+        st.markdown(f"""
+        <div style="background:linear-gradient(135deg,#0F172A 0%,#1E293B 100%);padding:23px;border-radius:14px;color:white;border:1px solid #334155;">
+          <div style="font-size:12px;color:#94A3B8;font-weight:850;letter-spacing:.08em;">CURRENT STRATEGY</div>
+          <div style="font-size:39px;color:{strategy_state['color']};font-weight:950;margin-top:5px;">{strategy_state['action']}</div>
+          <div style="font-size:15px;color:#E2E8F0;margin-top:7px;">現價 {strategy_state['current']:.2f} 元｜正式趨勢 {_state_label(strategy_state['state'])}｜大盤 {decision_snapshot['regime']['state']}</div>
+        </div>
+        """, unsafe_allow_html=True)
+        if user_holding and user_cost > 0:
+            pnl = (strategy_state['current']/user_cost-1)*100 if strategy_state['current']>0 else 0
+            st.info(f"持股成本 {user_cost:.2f} 元、帳面報酬 {pnl:+.1f}%。成本只影響執行節奏，不改變正式趨勢。")
+
+        st.markdown("### ③ 為什麼（Evidence）")
+        ev1, ev2 = st.columns(2)
+        with ev1:
+            st.markdown("#### 支持目前策略")
+            if strategy_state['positive_evidence']:
+                for item in strategy_state['positive_evidence']:
+                    st.write("✅ " + str(item))
+            else:
+                st.write("目前沒有足夠的正向證據。")
+        with ev2:
+            st.markdown("#### 反對目前策略／風險")
+            if strategy_state['negative_evidence']:
+                for item in strategy_state['negative_evidence']:
+                    st.write("⚠️ " + str(item))
+            else:
+                st.write("目前沒有額外重大反證。")
+        st.caption(f"警訊累積 {strategy_state['warnings']}/{strategy_state['warning_threshold']}。警訊會影響執行，但不會單獨讓正式趨勢一天內翻轉。")
+
+        st.markdown("### ④ 什麼情況會改變（Trigger）")
+        if strategy_state['trigger_rows']:
+            st.dataframe(pd.DataFrame(strategy_state['trigger_rows']).rename(columns={'condition':'條件','effect':'策略改變'}), use_container_width=True, hide_index=True)
+        else:
+            st.info("目前沒有可可靠計算的策略切換價位。")
 
         if user_holding:
             hv = decision_snapshot.get("holding_value", {}) or {}
-            st.markdown("### 📈 持股價值分析")
-            st.markdown(f"""
-            <div style="background:#FFFFFF;border:1px solid #E2E8F0;border-left:10px solid {hv.get('color','#64748B')};padding:20px;border-radius:14px;box-shadow:0 3px 12px rgba(15,23,42,.05);">
-              <div style="font-size:14px;color:#64748B;font-weight:800;">是否值得繼續持有</div>
-              <div style="font-size:30px;color:{hv.get('color','#64748B')};font-weight:950;margin-top:3px;">{hv.get('grade','—')}｜{hv.get('recommended_action','—')}</div>
-              <div style="font-size:17px;color:#0F172A;line-height:1.7;margin-top:8px;">{hv.get('conclusion','')}</div>
-            </div>
-            """, unsafe_allow_html=True)
-            hv1, hv2, hv3, hv4 = st.columns(4)
-            hv1.metric("持股價值分數", f"{hv.get('score',0)} / 100")
-            hv2.metric("剩餘上漲空間", f"{hv.get('upside_pct',0):.1f}%", f"至 {hv.get('reward_price',0):.2f} 元")
-            hv3.metric("第一層下跌風險", f"{hv.get('downside_pct',0):.1f}%", f"至 {hv.get('risk_price',0):.2f} 元")
-            hv4.metric("風險報酬比", f"{hv.get('rr'):.2f}" if hv.get('rr') is not None else "—")
-            with st.expander("查看持股價值判斷依據", expanded=False):
-                for reason in hv.get("reasons", []):
-                    st.write("• " + str(reason))
-                st.caption("成本只用來顯示帳面損益，不會把偏空趨勢改判為續抱。")
+            with st.expander("📈 持股價值與風險報酬", expanded=False):
+                h1,h2,h3,h4=st.columns(4)
+                h1.metric("持股價值", hv.get('grade','—'))
+                h2.metric("剩餘上漲空間", f"{hv.get('upside_pct',0):.1f}%")
+                h3.metric("第一層下跌風險", f"{hv.get('downside_pct',0):.1f}%")
+                h4.metric("風險報酬比", f"{hv.get('rr'):.2f}" if hv.get('rr') is not None else "—")
+                st.write(hv.get('conclusion',''))
+                for reason in hv.get('reasons',[]): st.write("• "+str(reason))
 
-        st.markdown("### 🧭 AI 決策流程")
-        st.caption("由上往下看；只有事件真正發生，才切換到下一個動作。")
-        for idx, node in enumerate(decision_tree, start=1):
-            c1, c2, c3 = st.columns([1.2, 2.2, 2.2])
-            c1.metric(f"第 {idx} 關", f"{node['price']:.2f} 元", node['condition'])
-            c2.success("成立 → " + node["yes"])
-            c3.info("未成立 → " + node["no"])
-
-        st.markdown("### ⚖️ AI 為什麼這樣判斷")
-        reason_left, reason_right = st.columns(2)
-        with reason_left:
-            st.markdown("#### 支持續抱／轉強的理由")
-            positive = [r for r in decision_engine.get("reasons", []) if not any(k in str(r) for k in ["弱", "流出", "分歧", "不足", "風險", "偏空", "賣"])]
-            if not positive:
-                positive = ["目前尚未跌破結構退出價。"]
-            for item in positive[:5]:
-                st.write("✅ " + str(item))
-        with reason_right:
-            st.markdown("#### 支持保守／減碼的理由")
-            negative = [r for r in decision_engine.get("reasons", []) if any(k in str(r) for k in ["弱", "流出", "分歧", "不足", "風險", "偏空", "賣"])]
-            if not negative:
-                negative = ["目前沒有額外重大空方證據，但仍需遵守保護價。"]
-            for item in negative[:5]:
-                st.write("⚠️ " + str(item))
-        st.caption(f"多方 {decision_snapshot['bull_score']}/100｜空方 {decision_snapshot['bear_score']}/100｜訊號一致度 {decision_snapshot['agreement']['score']}%。")
-
-        st.markdown("### 🔔 下一個會改變 AI 決策的事件")
-        event_rows = [
-            {"事件": f"收盤站上 {lv['confirmation']:.2f} 元", "AI 會改成": decision_tree[0]["yes"]},
-            {"事件": f"收盤跌破 {lv['protective_stop']:.2f} 元", "AI 會改成": "減碼或提高現金部位"},
-            {"事件": f"收盤跌破 {lv['structure_stop']:.2f} 元", "AI 會改成": "退出剩餘波段部位"},
-        ]
-        st.dataframe(pd.DataFrame(event_rows), use_container_width=True, hide_index=True)
-
-        dash1, dash2, dash3, dash4, dash5 = st.columns(5)
-        dash1.metric("市場分數", f"{decision_engine['market_score']} / 100")
-        dash2.metric("操作分數", f"{portfolio_engine.get('portfolio_score', decision_engine['market_score'])} / 100")
-        dash3.metric("市場環境", decision_snapshot['regime']['state'])
-        dash4.metric("決策信心", f"{decision_confidence['score']}%", decision_confidence['label'])
-        dash5.metric("穩定度", decision_stability_view['label'], decision_stability_view['note'])
-        st.caption(decision_confidence["note"])
-
-        with st.expander("📝 AI 今天有沒有改變想法？", expanded=False):
-            st.write(session_change["note"])
-            st.caption("只比較目前工作階段；不冒充跨日或跨部署永久決策日誌。")
-
-        with st.expander("💰 價格與執行地圖", expanded=False):
-            pc1, pc2, pc3, pc4 = st.columns(4)
-            pc1.metric("目前股價", f"{lv['current']:.2f} 元")
-            pc2.metric("確認價", f"{lv['confirmation']:.2f} 元")
-            pc3.metric("移動保護價", f"{lv['protective_stop']:.2f} 元")
-            pc4.metric("結構退出價", f"{lv['structure_stop']:.2f} 元")
-            st.write(f"• 確認價來源：{lv['sources']['confirmation']}")
-            st.write(f"• 移動保護價用途：{lv['sources']['protective_stop']}")
-            st.write(f"• 結構退出價用途：{lv['sources']['structure_stop']}")
-            if decision_engine['market_score'] >= 60:
-                st.write(f"• {lv['target_role']}：{lv['target1']:.2f} 元｜{lv['sources']['target1']}")
-            else:
-                st.write("• 目前市場未達偏多門檻，首頁不顯示遠端多頭目標。")
-
-        with st.expander("🌐 市場環境、可信度與系統驗證", expanded=False):
-            rg1, rg2, rg3, rg4 = st.columns(4)
-            rg1.metric("市場環境", decision_snapshot["regime"]["state"], f"{decision_snapshot['regime']['score']} / 100")
-            rg2.metric("資料可信度", f"{decision_snapshot['data_reliability']}%")
-            rg3.metric("訊號一致度", f"{decision_snapshot['agreement']['score']}%")
-            rg4.metric("一致性檢查", f"{decision_snapshot['audit']['passed']} / {decision_snapshot['audit']['total']}")
-            gate_names = {"OPEN":"正常開放", "CAUTION":"保守操作", "NO_NEW_BUY":"禁止新增", "RISK_OFF":"風險關閉", "PANIC":"恐慌風控"}
-            regime_view = decision_snapshot['regime']
-            ctx_view = regime_view.get('context', {}) or {}
-            st.write(f"**目前參考市場：** {ctx_view.get('market_scope','—')}股票 → {ctx_view.get('benchmark_name','—')}（{ctx_view.get('benchmark','—')}）")
-            st.write(f"**資料日期：** {ctx_view.get('raw_date') or '資料不足'}")
-            st.write(f"**大盤風險閘門：** {gate_names.get(regime_view.get('gate'), regime_view.get('gate'))}")
-            st.write("**目前允許的操作：** " + "、".join(regime_view.get('allowed_actions', [])))
-            st.markdown("#### 大盤實際採用數據")
-            raw_cols = st.columns(4)
-            raw_cols[0].metric("指數收盤", f"{ctx_view.get('close'):.2f}" if ctx_view.get('close') is not None else "—")
-            raw_cols[1].metric("MA20", f"{ctx_view.get('ma20'):.2f}" if ctx_view.get('ma20') is not None else "—", f"斜率 {ctx_view.get('slope20'):+.2f}%" if ctx_view.get('slope20') is not None else None)
-            raw_cols[2].metric("MA60", f"{ctx_view.get('ma60'):.2f}" if ctx_view.get('ma60') is not None else "—", f"斜率 {ctx_view.get('slope60'):+.2f}%" if ctx_view.get('slope60') is not None else None)
-            raw_cols[3].metric("ADX", f"{ctx_view.get('adx'):.1f}" if ctx_view.get('adx') is not None else "—", f"+DI {ctx_view.get('plus_di'):.1f}／-DI {ctx_view.get('minus_di'):.1f}" if ctx_view.get('plus_di') is not None and ctx_view.get('minus_di') is not None else None)
-            raw_cols2 = st.columns(4)
-            raw_cols2[0].metric("RSI14", f"{ctx_view.get('rsi14'):.1f}" if ctx_view.get('rsi14') is not None else "—")
-            raw_cols2[1].metric("5日報酬", f"{ctx_view.get('ret5'):+.2f}%" if ctx_view.get('ret5') is not None else "—")
-            raw_cols2[2].metric("20日報酬", f"{ctx_view.get('ret20'):+.2f}%" if ctx_view.get('ret20') is not None else "—")
-            raw_cols2[3].metric("量能比", f"{ctx_view.get('vol_ratio'):.2f}" if ctx_view.get('vol_ratio') is not None else "—", "當日／20日均值")
-            st.markdown("#### 大盤評分明細")
-            factor_df = pd.DataFrame(regime_view.get('factor_rows', []))
-            if not factor_df.empty:
-                factor_df = factor_df.rename(columns={'factor':'面向','raw':'原始數據','score':'面向分數','weight':'權重(%)','contribution':'加權貢獻','rule':'採用規則'})
-                st.dataframe(factor_df, use_container_width=True, hide_index=True)
-            if regime_view.get('adjustments'):
-                st.markdown("#### 個股／族群額外修正")
-                adj_df = pd.DataFrame(regime_view.get('adjustments', [])).rename(columns={'factor':'修正項目','value':'原始數據','adjustment':'加減分'})
-                st.dataframe(adj_df, use_container_width=True, hide_index=True)
-            for limit in regime_view.get('limitations', []):
-                st.caption("資料範圍：" + str(limit))
-            if decision_snapshot["agreement"]["conflicts"]:
-                st.warning("訊號衝突：" + "；".join(decision_snapshot["agreement"]["conflicts"]))
-            for name, ok in decision_snapshot["audit"]["checks"]:
-                st.write(("✅ " if ok else "❌ ") + name)
-            val = decision_snapshot["validation"]
-            if val.get("available"):
-                st.write(f"歷史條件樣本 {val['sample']} 筆｜5日勝率 {val['win5']:.1f}%、平均 {val['avg5']:+.2f}%｜20日勝率 {val['win20']:.1f}%、平均 {val['avg20']:+.2f}%")
-            st.caption(val.get("note", ""))
+        with st.expander("🌐 大盤、價格與資料透明度", expanded=False):
+            c1,c2,c3,c4=st.columns(4)
+            c1.metric("大盤環境", decision_snapshot['regime']['state'], f"{decision_snapshot['regime']['score']}/100")
+            c2.metric("市場分數", f"{decision_engine['market_score']}/100")
+            c3.metric("資料可信度", f"{decision_snapshot['data_reliability']}%")
+            c4.metric("訊號一致度", f"{decision_snapshot['agreement']['score']}%")
+            st.write(f"• 確認價：{lv['confirmation']:.2f} 元｜{lv['sources']['confirmation']}")
+            st.write(f"• 移動保護價：{lv['protective_stop']:.2f} 元｜{lv['sources']['protective_stop']}")
+            st.write(f"• 結構退出價：{lv['structure_stop']:.2f} 元｜{lv['sources']['structure_stop']}")
+            ctx=decision_snapshot['regime'].get('context',{}) or {}
+            st.write(f"• 參考市場：{ctx.get('benchmark_name','—')}（{ctx.get('benchmark','—')}），資料日期 {ctx.get('raw_date') or '資料不足'}")
+            factors=pd.DataFrame(decision_snapshot['regime'].get('factor_rows',[]))
+            if not factors.empty:
+                factors=factors.rename(columns={'factor':'面向','raw':'原始數據','score':'分數','weight':'權重(%)','contribution':'加權貢獻','rule':'規則'})
+                st.dataframe(factors,use_container_width=True,hide_index=True)
 
         show_more_analysis = st.toggle("🧪 專業模式：查看完整技術、籌碼與模型數據", value=False)
         if show_more_analysis:
