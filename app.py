@@ -2706,11 +2706,14 @@ def build_decision_snapshot(res: dict, compass: dict, committee: dict, user_hold
     unified_compass.update({"entry":levels["entry"], "stop":levels["structure_stop"], "target1":levels["target1"], "target2":levels["target2"], "rr":levels["rr"]})
     market.update({"entry":levels["entry"], "stop":levels["structure_stop"], "target1":levels["target1"], "rr":levels["rr"]})
 
-    stability = apply_signal_stability(str(res.get("stock_id", "unknown")), market["status"], adjusted)
-    # 訊號遲滯不能推翻大盤風險閘門；只在 OPEN／CAUTION 環境下允許延續舊方向。
-    if regime.get("gate") in ["OPEN", "CAUTION"] and stability["stable_status"] != market["status"] and market["status"] != "EXIT":
-        market["raw_status"] = market["status"]
-        market["status"] = stability["stable_status"]
+    # 正式趨勢不再使用 Streamlit 工作階段記憶覆寫。
+    # 跨日穩定性由最近 120 個交易日日線重新推演的 Strategy State Machine 負責，
+    # 因此重新部署、換裝置或重新整理後仍可得到一致的正式趨勢。
+    stability = {
+        "stable_status": market["status"],
+        "raw_status": market["status"],
+        "note": "正式趨勢由歷史日線狀態機管理；工作階段記憶不參與方向判斷。",
+    }
 
     agreement = build_signal_agreement(market, regime)
     reliability = int(round(float(res.get("data_quality_score", 0) or 0)))
@@ -3066,6 +3069,100 @@ def build_strategy_state_machine(res: dict, decision_snapshot: dict, user_holdin
 
 
 
+
+def build_strategy_stability_validation(res: dict) -> dict:
+    """驗證狀態機是否降低跨日反覆翻轉。
+
+    只使用已完成日線；比較每日原始分數分桶與「連續兩日確認、重大結構破壞立即降級」後的正式狀態。
+    此結果是模型穩定度驗證，不是報酬回測。
+    """
+    df = res.get("daily_df")
+    if df is None or df.empty or len(df) < 65:
+        return {
+            "available": False,
+            "note": "至少需要 65 個完成交易日才能驗證策略穩定度。",
+        }
+    x = df.copy().sort_values("date").tail(120).reset_index(drop=True)
+    needed = ["MA20", "MA60", "MA20_SLOPE", "MA60_SLOPE", "MACD_HIST", "RSI14", "PLUS_DI", "MINUS_DI", "ADX14"]
+    for col in needed:
+        if col not in x.columns:
+            x[col] = 0.0
+    x["_trend_score"] = x.apply(_daily_trend_score, axis=1)
+    raw_states = [_score_bucket(int(v)) for v in x["_trend_score"].tolist()]
+
+    order = ["BEAR", "BEAR_RALLY", "RANGE", "BULL_PULLBACK", "STRONG_BULL"]
+    state = raw_states[0]
+    up_count = 0
+    down_count = 0
+    confirmed = [state]
+    for i in range(1, len(x)):
+        candidate = raw_states[i]
+        close = safe_float(x.iloc[i].get("close"), 0)
+        ma20 = safe_float(x.iloc[i].get("MA20"), 0)
+        ma60 = safe_float(x.iloc[i].get("MA60"), 0)
+        # 重大破壞：收盤同時跌破 MA20 與 MA60，正式狀態可立即降至弱勢空頭。
+        structural_break = ma20 > 0 and ma60 > 0 and close < ma20 and close < ma60
+        if structural_break:
+            state = "BEAR"
+            up_count = down_count = 0
+        else:
+            cur_i = order.index(state)
+            cand_i = order.index(candidate)
+            if cand_i > cur_i:
+                up_count += 1
+                down_count = 0
+                if up_count >= 2:
+                    state = order[min(cur_i + 1, len(order) - 1)]
+                    up_count = 0
+            elif cand_i < cur_i:
+                down_count += 1
+                up_count = 0
+                if down_count >= 2:
+                    state = order[max(cur_i - 1, 0)]
+                    down_count = 0
+            else:
+                up_count = max(0, up_count - 1)
+                down_count = max(0, down_count - 1)
+        confirmed.append(state)
+
+    def flip_count(states):
+        return sum(1 for a, b in zip(states, states[1:]) if a != b)
+
+    def one_day_reversals(states):
+        # A→B→A，代表只維持一天便反轉。
+        return sum(1 for i in range(1, len(states)-1) if states[i-1] == states[i+1] and states[i] != states[i-1])
+
+    runs = []
+    start = 0
+    for i in range(1, len(confirmed)+1):
+        if i == len(confirmed) or confirmed[i] != confirmed[start]:
+            runs.append(i-start)
+            start = i
+    raw_flips = flip_count(raw_states)
+    confirmed_flips = flip_count(confirmed)
+    reduction = (1 - confirmed_flips / raw_flips) * 100 if raw_flips > 0 else 0.0
+    dates = pd.to_datetime(x.get("date"), errors="coerce")
+    last_change_idx = 0
+    for i in range(1, len(confirmed)):
+        if confirmed[i] != confirmed[i-1]:
+            last_change_idx = i
+    last_change_date = dates.iloc[last_change_idx].strftime("%Y-%m-%d") if not pd.isna(dates.iloc[last_change_idx]) else "—"
+    return {
+        "available": True,
+        "sample_days": len(x),
+        "raw_flips": raw_flips,
+        "confirmed_flips": confirmed_flips,
+        "flip_reduction_pct": round(reduction, 1),
+        "raw_one_day_reversals": one_day_reversals(raw_states),
+        "confirmed_one_day_reversals": one_day_reversals(confirmed),
+        "average_state_days": round(sum(runs) / len(runs), 1) if runs else 0.0,
+        "median_state_days": round(float(pd.Series(runs).median()), 1) if runs else 0.0,
+        "current_state": confirmed[-1],
+        "current_state_label": _state_label(confirmed[-1]),
+        "last_change_date": last_change_date,
+        "note": "只驗證正式趨勢的穩定性，不代表買賣績效；狀態機一般變更需連續兩日，重大結構破壞可立即降級。",
+    }
+
 def build_strategy_consistency_audit(snapshot: dict, strategy: dict, user_holding: bool) -> dict:
     """策略完成後的最終稽核。只檢查一致性，不重新產生另一套決策。"""
     lv = snapshot.get("levels", {}) or {}
@@ -3091,6 +3188,7 @@ def build_strategy_consistency_audit(snapshot: dict, strategy: dict, user_holdin
     checks.append(("籌碼否決不會積極建立", not (chip.get("veto") and action == "ESTABLISH")))
     checks.append(("量價否決不會積極建立", not (volume.get("veto") and action == "ESTABLISH")))
     checks.append(("正式趨勢與動作使用同一快照", snapshot.get("strategy") is strategy))
+    checks.append(("工作階段記憶未覆寫正式趨勢", "歷史日線" in str(snapshot.get("stability", {}).get("note", ""))))
 
     failed = [name for name, ok in checks if not ok]
     return {
@@ -3218,7 +3316,7 @@ with st.sidebar:
     show_evidence_default = st.checkbox("🔎 預設展開各項數據依據", value=False)
     debug_mode = st.checkbox("🛠 開啟成交量資料診斷", value=False)
 
-st.markdown("## 🧠 StockPilot 3.2｜趨勢策略一致性中心")
+st.markdown("## 🧠 StockPilot 3.3｜趨勢穩定驗證中心")
 st.caption("一個正式趨勢、一個目前動作、一組改變條件。正式策略不因單日雜訊反覆切換。")
 stock_input = st.text_input("請輸入核心目標個股代碼：", value="3037").strip()
 
@@ -3244,6 +3342,7 @@ if stock_input:
         decision_snapshot = build_decision_snapshot(res, compass, committee_seed, user_holding, user_cost)
         strategy_state = build_strategy_state_machine(res, decision_snapshot, user_holding, user_cost)
         decision_snapshot["strategy"] = strategy_state
+        decision_snapshot["strategy_stability_validation"] = build_strategy_stability_validation(res)
         decision_snapshot["strategy_audit"] = build_strategy_consistency_audit(decision_snapshot, strategy_state, user_holding)
         compass = decision_snapshot["compass"]
         decision_engine = decision_snapshot["market"]
@@ -3370,6 +3469,21 @@ if stock_input:
                 st.error("策略快照存在不一致，請不要依此版本執行交易；失敗項目：" + "、".join(sa.get("failed", [])))
             else:
                 st.success("State、Action、Trigger、籌碼、量價與大盤閘門目前一致。")
+
+        with st.expander("🧪 跨日趨勢穩定性驗證", expanded=False):
+            sv = decision_snapshot.get("strategy_stability_validation", {}) or {}
+            if not sv.get("available"):
+                st.info(sv.get("note", "目前無法驗證。"))
+            else:
+                v1, v2, v3, v4 = st.columns(4)
+                v1.metric("驗證交易日", f"{sv.get('sample_days',0)} 日")
+                v2.metric("原始訊號翻轉", f"{sv.get('raw_flips',0)} 次")
+                v3.metric("正式趨勢翻轉", f"{sv.get('confirmed_flips',0)} 次", f"減少 {sv.get('flip_reduction_pct',0):.1f}%")
+                v4.metric("平均維持", f"{sv.get('average_state_days',0):.1f} 日")
+                st.write(f"• 原始訊號一日反轉：{sv.get('raw_one_day_reversals',0)} 次")
+                st.write(f"• 正式趨勢一日反轉：{sv.get('confirmed_one_day_reversals',0)} 次")
+                st.write(f"• 目前正式趨勢：{sv.get('current_state_label','—')}｜最近一次狀態變更：{sv.get('last_change_date','—')}")
+                st.caption(sv.get("note", ""))
 
         if user_holding:
             hv = decision_snapshot.get("holding_value", {}) or {}
