@@ -1314,9 +1314,8 @@ def build_ai_investment_committee(res: dict, compass: dict) -> dict:
     """把既有分析結果轉成可解釋的 AI 投資委員會，不改動底層模型。"""
     ta = res.get("trend_analysis", {}) or {}
     inst = res.get("institutional_summary", {}) or {}
-    chip_engine = decision_snapshot.get("chip_engine", {}) or {}
-    volume_engine = decision_snapshot.get("volume_engine", {}) or {}
-    edge_engine = decision_snapshot.get("edge_engine", {}) or {}
+    # 投資委員會是 DecisionSnapshot 的上游輸入，不能反向讀取尚未建立的快照。
+    # Chip／Volume／Edge Engine 會在 build_decision_snapshot() 內建立，並由後續策略狀態機使用。
     quality = float(res.get("data_quality_score", 0) or 0)
 
     def clamp(value, low=0, high=100):
@@ -2962,6 +2961,9 @@ def build_strategy_state_machine(res: dict, decision_snapshot: dict, user_holdin
     regime = decision_snapshot.get("regime", {}) or {}
     levels = decision_snapshot.get("levels", {}) or {}
     holding_value = decision_snapshot.get("holding_value", {}) or {}
+    chip_engine = decision_snapshot.get("chip_engine", {}) or {}
+    volume_engine = decision_snapshot.get("volume_engine", {}) or {}
+    edge_engine = decision_snapshot.get("edge_engine", {}) or {}
     ta = res.get("trend_analysis", {}) or {}
     inst = res.get("institutional_summary", {}) or {}
     current = safe_float(res.get("current_price"), 0)
