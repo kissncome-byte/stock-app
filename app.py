@@ -3014,7 +3014,7 @@ def build_strategy_state_machine(res: dict, decision_snapshot: dict, user_holdin
     elif current_state == "BEAR_RALLY":
         action_code, action, color = ("REDUCE","反彈減碼","#F97316") if user_holding else ("WAIT","等待","#64748B")
     elif current_state == "RANGE":
-        if user_holding and holding_value.get("grade") == "🔴 不值得":
+        if user_holding and holding_value.get("grade") == "不值得":
             action_code, action, color = "REDUCE", "部分減碼", "#F97316"
         else:
             action_code, action, color = ("HOLD_NO_ADD","續抱不加碼","#D97706") if user_holding else ("WAIT","等待","#64748B")
@@ -3036,7 +3036,7 @@ def build_strategy_state_machine(res: dict, decision_snapshot: dict, user_holdin
     # 多項警訊可讓執行降一級，但不直接竄改正式趨勢。
     if warnings >= warning_threshold and action_code == "HOLD":
         action_code, action, color = "HOLD_NO_ADD", "續抱不加碼", "#D97706"
-    elif warnings >= warning_threshold and action_code == "HOLD_NO_ADD" and user_holding and (holding_value.get("grade") == "🔴 不值得" or edge_engine.get("state") == "缺乏優勢"):
+    elif warnings >= warning_threshold and action_code == "HOLD_NO_ADD" and user_holding and (holding_value.get("grade") == "不值得" or edge_engine.get("state") == "缺乏優勢"):
         action_code, action, color = "REDUCE", "部分減碼", "#F97316"
 
     trigger_rows = []
@@ -3064,6 +3064,42 @@ def build_strategy_state_machine(res: dict, decision_snapshot: dict, user_holdin
         "current":current,"confirmation":confirmation,"protective_stop":protective,"structure_stop":structure_stop,"target":target,
     }
 
+
+
+def build_strategy_consistency_audit(snapshot: dict, strategy: dict, user_holding: bool) -> dict:
+    """策略完成後的最終稽核。只檢查一致性，不重新產生另一套決策。"""
+    lv = snapshot.get("levels", {}) or {}
+    regime = snapshot.get("regime", {}) or {}
+    chip = snapshot.get("chip_engine", {}) or {}
+    volume = snapshot.get("volume_engine", {}) or {}
+    current = safe_float(lv.get("current"), 0)
+    confirm = safe_float(lv.get("confirmation"), 0)
+    protective = safe_float(lv.get("protective_stop"), 0)
+    structural = safe_float(lv.get("structure_stop"), 0)
+    target = safe_float(lv.get("target1"), 0)
+    action = str(strategy.get("action_code", "WAIT"))
+    state = str(strategy.get("state", "RANGE"))
+    gate = str(regime.get("gate", "CAUTION"))
+
+    checks = []
+    checks.append(("價格順序合理", current > 0 and structural < protective < current < target))
+    checks.append(("確認價為有效正數", confirm > 0))
+    checks.append(("未持股不會收到續抱或減碼指令", user_holding or action not in {"HOLD", "HOLD_NO_ADD", "REDUCE", "EXIT"}))
+    checks.append(("弱勢空頭不會建立新部位", not (state == "BEAR" and action == "ESTABLISH")))
+    checks.append(("大盤風險關閉不會建立新部位", not (gate in {"PANIC", "RISK_OFF", "NO_NEW_BUY"} and action == "ESTABLISH")))
+    checks.append(("結構跌破不會續抱", not (current <= structural and action in {"HOLD", "HOLD_NO_ADD", "ESTABLISH"})))
+    checks.append(("籌碼否決不會積極建立", not (chip.get("veto") and action == "ESTABLISH")))
+    checks.append(("量價否決不會積極建立", not (volume.get("veto") and action == "ESTABLISH")))
+    checks.append(("正式趨勢與動作使用同一快照", snapshot.get("strategy") is strategy))
+
+    failed = [name for name, ok in checks if not ok]
+    return {
+        "passed": sum(1 for _, ok in checks if ok),
+        "total": len(checks),
+        "ok": not failed,
+        "failed": failed,
+        "checks": checks,
+    }
 
 def build_decision_confidence(snapshot: dict) -> dict:
     """決策信心不是上漲機率；只衡量資料品質、訊號一致性與決策距離。"""
@@ -3182,7 +3218,7 @@ with st.sidebar:
     show_evidence_default = st.checkbox("🔎 預設展開各項數據依據", value=False)
     debug_mode = st.checkbox("🛠 開啟成交量資料診斷", value=False)
 
-st.markdown("## 🧠 StockPilot 3.1｜趨勢、籌碼與量價策略中心")
+st.markdown("## 🧠 StockPilot 3.2｜趨勢策略一致性中心")
 st.caption("一個正式趨勢、一個目前動作、一組改變條件。正式策略不因單日雜訊反覆切換。")
 stock_input = st.text_input("請輸入核心目標個股代碼：", value="3037").strip()
 
@@ -3208,6 +3244,7 @@ if stock_input:
         decision_snapshot = build_decision_snapshot(res, compass, committee_seed, user_holding, user_cost)
         strategy_state = build_strategy_state_machine(res, decision_snapshot, user_holding, user_cost)
         decision_snapshot["strategy"] = strategy_state
+        decision_snapshot["strategy_audit"] = build_strategy_consistency_audit(decision_snapshot, strategy_state, user_holding)
         compass = decision_snapshot["compass"]
         decision_engine = decision_snapshot["market"]
         portfolio_engine = decision_snapshot["portfolio"]
@@ -3233,7 +3270,7 @@ if stock_input:
             </div>
             <div style="text-align:right;min-width:140px;">
               <div style="font-size:12px;color:#94A3B8;">正式趨勢分數</div>
-              <div style="font-size:34px;font-weight:900;">{decision_snapshot['agreement']['score']}%</div>
+              <div style="font-size:34px;font-weight:900;">{strategy_state['trend_score']}/100</div>
               <div style="font-size:12px;color:#CBD5E1;margin-top:3px;">資料可信度 {decision_snapshot['data_reliability']}%</div>
             </div>
           </div>
@@ -3323,6 +3360,16 @@ if stock_input:
             st.write(f"量價狀態：**{ve.get('state')}**｜完成日量比 {ve.get('volume_ratio',0):.2f}｜20日上漲量／下跌量 {ve.get('pressure_ratio',0):.2f}")
             if ve.get('veto'): st.warning(ve.get('veto'))
             if decision_snapshot['chip_engine'].get('veto'): st.warning(decision_snapshot['chip_engine'].get('veto'))
+
+        with st.expander("✅ 策略一致性與安全檢查", expanded=False):
+            sa = decision_snapshot.get("strategy_audit", {}) or {}
+            st.write(f"通過 {sa.get('passed',0)} / {sa.get('total',0)} 項")
+            for name, ok in sa.get("checks", []):
+                st.write(("✅ " if ok else "❌ ") + str(name))
+            if not sa.get("ok", False):
+                st.error("策略快照存在不一致，請不要依此版本執行交易；失敗項目：" + "、".join(sa.get("failed", [])))
+            else:
+                st.success("State、Action、Trigger、籌碼、量價與大盤閘門目前一致。")
 
         if user_holding:
             hv = decision_snapshot.get("holding_value", {}) or {}
