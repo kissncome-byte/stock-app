@@ -3163,6 +3163,97 @@ def build_strategy_stability_validation(res: dict) -> dict:
         "note": "只驗證正式趨勢的穩定性，不代表買賣績效；狀態機一般變更需連續兩日，重大結構破壞可立即降級。",
     }
 
+
+def build_strategy_outcome_validation(res: dict) -> dict:
+    """以正式趨勢狀態驗證後續 5／20 日表現。
+
+    這是狀態辨識驗證，不模擬實際下單、部位大小、滑價或交易成本。
+    目的在檢查多頭狀態後續是否相對較強、空頭狀態後續是否相對較弱。
+    """
+    df = res.get("daily_df")
+    if df is None or df.empty or len(df) < 90:
+        return {"available": False, "note": "至少需要 90 個完成交易日才能驗證趨勢狀態後續表現。"}
+    x = df.copy().sort_values("date").tail(260).reset_index(drop=True)
+    needed = ["MA20", "MA60", "MA20_SLOPE", "MA60_SLOPE", "MACD_HIST", "RSI14", "PLUS_DI", "MINUS_DI", "ADX14"]
+    for col in needed:
+        if col not in x.columns:
+            x[col] = 0.0
+    x["_trend_score"] = x.apply(_daily_trend_score, axis=1)
+    raw_states = [_score_bucket(int(v)) for v in x["_trend_score"].tolist()]
+    order = ["BEAR", "BEAR_RALLY", "RANGE", "BULL_PULLBACK", "STRONG_BULL"]
+    state = raw_states[0]
+    up_count = down_count = 0
+    confirmed = []
+    for i, candidate in enumerate(raw_states):
+        row = x.iloc[i]
+        close = safe_float(row.get("close"), 0)
+        ma20 = safe_float(row.get("MA20"), 0)
+        ma60 = safe_float(row.get("MA60"), 0)
+        score = safe_float(row.get("_trend_score"), 50)
+        structural_break = ma20 > 0 and ma60 > 0 and close < ma20 and close < ma60 and score < 35
+        if structural_break:
+            state = "BEAR" if score < 25 else "BEAR_RALLY"
+            up_count = down_count = 0
+        else:
+            cur_i = order.index(state); cand_i = order.index(candidate)
+            if cand_i > cur_i:
+                up_count += 1; down_count = 0
+                if up_count >= 2:
+                    state = order[min(cur_i + 1, len(order)-1)]
+                    up_count = 0
+            elif cand_i < cur_i:
+                down_count += 1; up_count = 0
+                if down_count >= 2:
+                    state = order[max(cur_i - 1, 0)]
+                    down_count = 0
+            else:
+                up_count = max(0, up_count-1); down_count = max(0, down_count-1)
+        confirmed.append(state)
+    x["_state"] = confirmed
+    close = pd.to_numeric(x["close"], errors="coerce")
+    x["_ret5"] = (close.shift(-5) / close - 1) * 100
+    x["_ret20"] = (close.shift(-20) / close - 1) * 100
+    # 未來 20 日最大不利走勢：從訊號日收盤起算。
+    future_adverse = []
+    for i in range(len(x)):
+        base = safe_float(close.iloc[i], 0)
+        if base <= 0 or i + 1 >= len(x):
+            future_adverse.append(float('nan')); continue
+        window = pd.to_numeric(x.loc[i+1:min(i+20, len(x)-1), "close"], errors="coerce").dropna()
+        future_adverse.append(((window.min()/base)-1)*100 if not window.empty else float('nan'))
+    x["_mae20"] = future_adverse
+    labels = {s: _state_label(s) for s in order}
+    rows=[]
+    for s in order:
+        g=x[x["_state"]==s]
+        r5=g["_ret5"].dropna(); r20=g["_ret20"].dropna(); mae=g["_mae20"].dropna()
+        if len(r5)==0 and len(r20)==0:
+            continue
+        rows.append({
+            "正式趨勢": labels[s],
+            "樣本數": int(max(len(r5), len(r20))),
+            "5日勝率": round(float((r5>0).mean()*100),1) if len(r5) else None,
+            "5日平均報酬": round(float(r5.mean()),2) if len(r5) else None,
+            "20日勝率": round(float((r20>0).mean()*100),1) if len(r20) else None,
+            "20日平均報酬": round(float(r20.mean()),2) if len(r20) else None,
+            "20日平均最大不利": round(float(mae.mean()),2) if len(mae) else None,
+        })
+    if not rows:
+        return {"available": False, "note": "目前沒有足夠的可用樣本。"}
+    # 基本方向檢查：多頭狀態 20 日平均應高於空頭狀態。
+    rowmap={r["正式趨勢"]:r for r in rows}
+    bull_vals=[r["20日平均報酬"] for r in rows if r["正式趨勢"] in ["強勢多頭","多頭整理"] and r["20日平均報酬"] is not None]
+    bear_vals=[r["20日平均報酬"] for r in rows if r["正式趨勢"] in ["弱勢空頭","空頭反彈"] and r["20日平均報酬"] is not None]
+    separation = (sum(bull_vals)/len(bull_vals) - sum(bear_vals)/len(bear_vals)) if bull_vals and bear_vals else None
+    return {
+        "available": True,
+        "sample_days": len(x),
+        "rows": rows,
+        "separation_pct": round(float(separation),2) if separation is not None else None,
+        "direction_ok": bool(separation is not None and separation > 0),
+        "note": "只驗證正式趨勢狀態後續表現，不代表實際交易績效；未計手續費、交易稅、滑價與部位管理。",
+    }
+
 def build_strategy_consistency_audit(snapshot: dict, strategy: dict, user_holding: bool) -> dict:
     """策略完成後的最終稽核。只檢查一致性，不重新產生另一套決策。"""
     lv = snapshot.get("levels", {}) or {}
@@ -3343,6 +3434,7 @@ if stock_input:
         strategy_state = build_strategy_state_machine(res, decision_snapshot, user_holding, user_cost)
         decision_snapshot["strategy"] = strategy_state
         decision_snapshot["strategy_stability_validation"] = build_strategy_stability_validation(res)
+        decision_snapshot["strategy_outcome_validation"] = build_strategy_outcome_validation(res)
         decision_snapshot["strategy_audit"] = build_strategy_consistency_audit(decision_snapshot, strategy_state, user_holding)
         compass = decision_snapshot["compass"]
         decision_engine = decision_snapshot["market"]
@@ -3484,6 +3576,29 @@ if stock_input:
                 st.write(f"• 正式趨勢一日反轉：{sv.get('confirmed_one_day_reversals',0)} 次")
                 st.write(f"• 目前正式趨勢：{sv.get('current_state_label','—')}｜最近一次狀態變更：{sv.get('last_change_date','—')}")
                 st.caption(sv.get("note", ""))
+
+        with st.expander("📈 正式趨勢後續表現驗證", expanded=False):
+            ov = decision_snapshot.get("strategy_outcome_validation", {}) or {}
+            if not ov.get("available"):
+                st.info(ov.get("note", "目前無法驗證。"))
+            else:
+                o1,o2,o3 = st.columns(3)
+                o1.metric("驗證交易日", f"{ov.get('sample_days',0)} 日")
+                sep = ov.get('separation_pct')
+                o2.metric("多頭－空頭 20日差", f"{sep:+.2f}%" if sep is not None else "—")
+                o3.metric("方向區分", "通過" if ov.get('direction_ok') else "待調整")
+                odf = pd.DataFrame(ov.get("rows", []))
+                if not odf.empty:
+                    st.dataframe(odf.style.format({
+                        "5日勝率":"{:.1f}%", "5日平均報酬":"{:+.2f}%",
+                        "20日勝率":"{:.1f}%", "20日平均報酬":"{:+.2f}%",
+                        "20日平均最大不利":"{:+.2f}%"
+                    }, na_rep="—"), use_container_width=True, hide_index=True)
+                if ov.get('direction_ok'):
+                    st.success("多頭正式狀態的後續 20 日表現高於空頭狀態，狀態機具備基本方向區分。")
+                else:
+                    st.warning("目前樣本未顯示清楚的多空區分；應先調整狀態門檻，不宜只因狀態穩定就提高信任。")
+                st.caption(ov.get("note", ""))
 
         if user_holding:
             hv = decision_snapshot.get("holding_value", {}) or {}
