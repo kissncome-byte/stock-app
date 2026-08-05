@@ -1002,7 +1002,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     avg_daily_volume_shares = float(df["vol"].tail(20).mean())
     sitc_trend, margin_trend, sitc_3d_sum, margin_diff = get_taiwan_enhanced_chips(stock_id, avg_daily_volume_shares)
     
-    try: institutional_df = get_institutional_trading_df(stock_id, days=30)
+    try: institutional_df = get_institutional_trading_df(stock_id, days=120)
     except Exception: pass
     institutional_summary = summarize_institutional_flow(institutional_df, df)
     try:
@@ -1314,6 +1314,9 @@ def build_ai_investment_committee(res: dict, compass: dict) -> dict:
     """把既有分析結果轉成可解釋的 AI 投資委員會，不改動底層模型。"""
     ta = res.get("trend_analysis", {}) or {}
     inst = res.get("institutional_summary", {}) or {}
+    chip_engine = decision_snapshot.get("chip_engine", {}) or {}
+    volume_engine = decision_snapshot.get("volume_engine", {}) or {}
+    edge_engine = decision_snapshot.get("edge_engine", {}) or {}
     quality = float(res.get("data_quality_score", 0) or 0)
 
     def clamp(value, low=0, high=100):
@@ -2719,13 +2722,16 @@ def build_decision_snapshot(res: dict, compass: dict, committee: dict, user_hold
     bull_score = int(round(sum(float(comps.get(k, 50) or 50) for k in ["trend","chips","momentum","price_position"]) / 4))
     bear_score = int(round(100 - (float(comps.get("risk", 50) or 50) + float(regime.get("score", 50) or 50)) / 2))
     validation = build_historical_signal_validation(res)
+    chip_engine = build_chip_engine(res)
+    volume_engine = build_volume_engine(res)
     snapshot = {
         "levels":levels, "market":market, "portfolio":portfolio, "regime":regime, "holding_value":holding_value,
         "agreement":agreement, "data_reliability":reliability, "stability":stability,
         "validation":validation, "headline":portfolio.get("headline"), "color":portfolio.get("color"),
         "compass":unified_compass, "bull_score":max(0,min(100,bull_score)),
-        "bear_score":max(0,min(100,bear_score)),
+        "bear_score":max(0,min(100,bear_score)), "chip_engine":chip_engine, "volume_engine":volume_engine,
     }
+    snapshot["edge_engine"] = build_edge_engine(snapshot, user_holding)
     snapshot["audit"] = build_consistency_audit(snapshot)
     return snapshot
 
@@ -2773,6 +2779,132 @@ def _state_label(state: str) -> str:
         "BEAR":"弱勢空頭",
     }.get(state, "區間整理")
 
+
+
+def _institution_window_stats(df: pd.DataFrame, col: str, window: int) -> dict:
+    if df is None or df.empty or col not in df.columns:
+        return {"sum":0.0,"buy_days":0,"sell_days":0,"days":0,"streak":0,"direction":"資料不足"}
+    x=df.copy().sort_values("date")
+    vals=pd.to_numeric(x[col], errors="coerce").fillna(0).tail(window)
+    if vals.empty:
+        return {"sum":0.0,"buy_days":0,"sell_days":0,"days":0,"streak":0,"direction":"資料不足"}
+    streak=0
+    last_sign=1 if vals.iloc[-1]>0 else -1 if vals.iloc[-1]<0 else 0
+    if last_sign:
+        for v in reversed(vals.tolist()):
+            sign=1 if v>0 else -1 if v<0 else 0
+            if sign==last_sign: streak+=1
+            else: break
+    total=float(vals.sum())
+    buy_days=int((vals>0).sum()); sell_days=int((vals<0).sum())
+    direction="偏買" if total>0 and buy_days>sell_days else "偏賣" if total<0 and sell_days>buy_days else "交錯"
+    return {"sum":total,"buy_days":buy_days,"sell_days":sell_days,"days":len(vals),"streak":streak*last_sign,"direction":direction}
+
+
+def build_chip_engine(res: dict) -> dict:
+    """三大法人籌碼引擎。只使用實際買賣超資料，不讀持有成本。"""
+    df=res.get("institutional_df", pd.DataFrame())
+    daily=res.get("daily_df", pd.DataFrame())
+    if df is None or df.empty:
+        return {"score":50,"state":"資料不足","quality":"LOW","foreign":{},"trust":{},"dealer":{},
+                "positive":[],"negative":["三大法人日資料不足，籌碼不納入方向加減分。"],
+                "warning_points":0,"veto":None,"rows":[]}
+    avg_lots=1.0
+    if daily is not None and not daily.empty and "vol" in daily.columns:
+        avg_lots=max(float(pd.to_numeric(daily["vol"],errors="coerce").tail(20).mean())/1000.0,1.0)
+    mapping=[("外資(張)","外資",0.45),("投信(張)","投信",0.35),("自營商總計(張)","自營商",0.20)]
+    score=50.0; positive=[]; negative=[]; rows=[]; warning_points=0
+    details={}
+    for col,label,weight in mapping:
+        stats={w:_institution_window_stats(df,col,w) for w in (5,10,20)}
+        details[label]=stats
+        s5,s10,s20=stats[5],stats[10],stats[20]
+        intensity=s20["sum"]/avg_lots
+        component=50.0
+        component += max(-24,min(24,intensity*18))
+        component += 8 if s20["buy_days"]>=13 else -8 if s20["sell_days"]>=13 else 0
+        component += 6 if s5["sum"]>0 and s10["sum"]>0 else -6 if s5["sum"]<0 and s10["sum"]<0 else 0
+        component += 4 if s5["streak"]>=3 else -4 if s5["streak"]<=-3 else 0
+        component=max(0,min(100,component))
+        score += (component-50)*weight
+        if component>=62:
+            positive.append(f"{label}近20日 {s20['sum']:+,.0f} 張，近5／10日方向一致偏買。")
+        elif component<=38:
+            negative.append(f"{label}近20日 {s20['sum']:+,.0f} 張，近5／10日方向一致偏賣。")
+            warning_points += 3 if label in ["外資","投信"] else 1
+        elif component<48:
+            negative.append(f"{label}籌碼略偏弱，近20日 {s20['sum']:+,.0f} 張。")
+            warning_points += 1
+        rows.append({"法人":label,"5日累計(張)":s5["sum"],"10日累計(張)":s10["sum"],"20日累計(張)":s20["sum"],
+                     "20日買超天數":s20["buy_days"],"20日賣超天數":s20["sell_days"],"連續方向天數":s5["streak"],"分數":round(component)})
+    score=int(round(max(0,min(100,score))))
+    state="明顯偏多" if score>=70 else "稍偏多" if score>=58 else "分歧" if score>=43 else "稍偏空" if score>=30 else "明顯偏空"
+    veto=None
+    foreign20=details.get("外資",{}).get(20,{})
+    trust20=details.get("投信",{}).get(20,{})
+    if score<=25 and foreign20.get("sell_days",0)>=14 and trust20.get("sum",0)<0:
+        veto="外資長期偏賣且投信同步轉賣，禁止把單日反彈視為籌碼翻多。"
+    return {"score":score,"state":state,"quality":"HIGH","foreign":details.get("外資",{}),"trust":details.get("投信",{}),
+            "dealer":details.get("自營商",{}),"positive":positive[:4],"negative":negative[:4],
+            "warning_points":warning_points,"veto":veto,"rows":rows}
+
+
+def build_volume_engine(res: dict) -> dict:
+    """價量品質引擎。盤中成交量無效時，只用已完成日線，不以 0 量誤判。"""
+    df=res.get("daily_df")
+    if df is None or df.empty or len(df)<25:
+        return {"score":50,"state":"資料不足","quality":"LOW","positive":[],"negative":["日線成交量不足。"],"warning_points":0,"veto":None}
+    x=df.copy().sort_values("date")
+    close=pd.to_numeric(x["close"],errors="coerce")
+    vol=pd.to_numeric(x["vol"],errors="coerce")
+    ma20=vol.rolling(20).mean()
+    last_ret=float(close.pct_change().iloc[-1] or 0)
+    ret5=float(close.pct_change(5).iloc[-1] or 0)
+    vr=float(vol.iloc[-1]/ma20.iloc[-1]) if ma20.iloc[-1]>0 else 1.0
+    upvol=float(vol.where(close>close.shift(1),0).tail(20).sum())
+    downvol=float(vol.where(close<close.shift(1),0).tail(20).sum())
+    pressure_ratio=upvol/max(downvol,1.0)
+    score=50.0; positive=[]; negative=[]; warning_points=0; veto=None
+    if last_ret>0 and vr>=1.3:
+        state="放量上漲"; score+=20; positive.append(f"最近完成日上漲且量比 {vr:.2f}，上漲有量能支持。")
+    elif last_ret<0 and vr>=1.3:
+        state="放量下跌"; score-=25; negative.append(f"最近完成日下跌且量比 {vr:.2f}，賣壓明顯放大。")
+        warning_points+=3
+        if vr>=1.8 and ret5<0: veto="放量下跌且近5日報酬為負，禁止把反彈直接判定為轉強。"
+    elif ret5<0 and float(vol.tail(5).mean()/ma20.iloc[-1])<=0.85:
+        state="量縮整理"; score+=8; positive.append("近5日回檔量縮，賣壓未同步擴大。")
+    elif ret5>0 and float(vol.tail(5).mean()/ma20.iloc[-1])<0.75:
+        state="無量反彈"; score-=10; negative.append("近5日上漲但量能不足，反彈可信度偏低。")
+        warning_points+=1
+    else:
+        state="量價中性"
+    if pressure_ratio>=1.25:
+        score+=10; positive.append(f"20日上漲日量／下跌日量為 {pressure_ratio:.2f}，買方量能占優。")
+    elif pressure_ratio<=0.80:
+        score-=12; negative.append(f"20日上漲日量／下跌日量為 {pressure_ratio:.2f}，賣方量能占優。")
+        warning_points+=2
+    score=int(round(max(0,min(100,score))))
+    return {"score":score,"state":state,"quality":"HIGH","volume_ratio":vr,"pressure_ratio":pressure_ratio,
+            "positive":positive[:3],"negative":negative[:3],"warning_points":warning_points,"veto":veto}
+
+
+def build_edge_engine(snapshot: dict, user_holding: bool) -> dict:
+    """用單一價格引擎計算剩餘報酬與風險；不預測，只比較目前策略的報酬風險。"""
+    lv=snapshot.get("levels",{}) or {}
+    current=safe_float(lv.get("current"),0)
+    target=safe_float(lv.get("target1"),0)
+    protective=safe_float(lv.get("protective_stop"),0)
+    structure=safe_float(lv.get("structure_stop"),0)
+    risk_line=protective if user_holding and 0<protective<current else structure
+    upside=max(0,(target/current-1)*100) if current>0 and target>current else 0
+    downside=max(0,(current/risk_line-1)*100) if current>0 and 0<risk_line<current else 0
+    rr=upside/downside if downside>0 else None
+    score=50
+    if rr is not None:
+        score=int(max(0,min(100,round(25+rr*22))))
+    state="有優勢" if score>=70 else "普通" if score>=45 else "缺乏優勢"
+    return {"score":score,"state":state,"upside_pct":upside,"downside_pct":downside,"rr":rr,"risk_line":risk_line,
+            "note":"Edge 只比較既定目標與風險線，不代表股價一定到達目標。"}
 
 def build_strategy_state_machine(res: dict, decision_snapshot: dict, user_holding: bool, user_cost: float) -> dict:
     """以歷史日線重建正式趨勢，再用目前大盤、籌碼與風險決定執行動作。
@@ -2847,28 +2979,26 @@ def build_strategy_state_machine(res: dict, decision_snapshot: dict, user_holdin
     else: negative.append("MA20 斜率未向上。")
     if safe_float(ta.get("slope60"), 0) > 0: positive.append("MA60 斜率仍向上。")
     else: negative.append("MA60 斜率未向上。")
-    consensus = str(inst.get("consensus_label", "資料不足"))
-    if consensus in ["偏多","稍偏多"]: positive.append(f"三大法人近20日一致性為{consensus}。")
-    elif consensus == "資料不足": negative.append("三大法人資料不足，籌碼不加分。")
-    else: negative.append(f"三大法人近20日一致性為{consensus}。")
-    accumulation = str(ta.get("accumulation", "資料不足"))
-    if "累積" in accumulation or "流入" in accumulation: positive.append(accumulation + "。")
-    elif "流出" in accumulation: negative.append(accumulation + "。")
+    consensus = str(chip_engine.get("state", inst.get("consensus_label", "資料不足")))
+    for item in chip_engine.get("positive", []): positive.append(item)
+    for item in chip_engine.get("negative", []): negative.append(item)
+    if chip_engine.get("veto"): negative.append("籌碼否決：" + str(chip_engine.get("veto")))
     gate = str(regime.get("gate", "CAUTION"))
     if gate == "OPEN": positive.append(f"大盤環境為{regime.get('state','正常')}，允許順勢操作。")
     elif gate in ["NO_NEW_BUY","RISK_OFF","PANIC"]: negative.append(f"大盤風險閘門為 {gate}，限制新增或要求優先風控。")
     else: negative.append(f"大盤環境為{regime.get('state','保守')}，目前只允許保守操作。")
-    price_volume = str(ta.get("price_volume", "資料不足"))
-    if "價漲量增" in price_volume or "價跌量縮" in price_volume: positive.append(price_volume + "。")
-    elif "價跌量增" in price_volume or "賣壓" in price_volume: negative.append(price_volume + "。")
+    for item in volume_engine.get("positive", []): positive.append(item)
+    for item in volume_engine.get("negative", []): negative.append(item)
+    if volume_engine.get("veto"): negative.append("量價否決：" + str(volume_engine.get("veto")))
 
-    warnings = 0
-    warnings += 1 if safe_float(ta.get("slope20"), 0) <= 0 else 0
-    warnings += 1 if consensus in ["偏空","稍偏空","分歧"] else 0
-    warnings += 1 if "流出" in accumulation else 0
-    warnings += 1 if gate in ["NO_NEW_BUY","RISK_OFF","PANIC"] else 0
-    warnings += 1 if "價跌量增" in price_volume or "賣壓" in price_volume else 0
-    warning_threshold = 3
+    warning_points = 0
+    warning_points += 2 if safe_float(ta.get("slope20"), 0) <= 0 else 0
+    warning_points += int(chip_engine.get("warning_points", 0) or 0)
+    warning_points += int(volume_engine.get("warning_points", 0) or 0)
+    warning_points += 4 if gate in ["RISK_OFF","PANIC"] else 2 if gate == "NO_NEW_BUY" else 0
+    warning_points += 2 if edge_engine.get("state") == "缺乏優勢" else 0
+    warning_threshold = 6
+    warnings = warning_points
 
     # 決策優先順序：結構風險 > 大盤閘門 > 正式趨勢 > 籌碼量能 > 價格位置。
     if structure_stop > 0 and current <= structure_stop:
@@ -2904,7 +3034,7 @@ def build_strategy_state_machine(res: dict, decision_snapshot: dict, user_holdin
     # 多項警訊可讓執行降一級，但不直接竄改正式趨勢。
     if warnings >= warning_threshold and action_code == "HOLD":
         action_code, action, color = "HOLD_NO_ADD", "續抱不加碼", "#D97706"
-    elif warnings >= warning_threshold and action_code == "HOLD_NO_ADD" and user_holding and holding_value.get("grade") == "🔴 不值得":
+    elif warnings >= warning_threshold and action_code == "HOLD_NO_ADD" and user_holding and (holding_value.get("grade") == "🔴 不值得" or edge_engine.get("state") == "缺乏優勢"):
         action_code, action, color = "REDUCE", "部分減碼", "#F97316"
 
     trigger_rows = []
@@ -2921,7 +3051,7 @@ def build_strategy_state_machine(res: dict, decision_snapshot: dict, user_holdin
         change_note = f"正式趨勢已由 {_state_label(states[-2])} 變更為 {_state_label(current_state)}。"
     else:
         change_note = f"正式趨勢維持 {_state_label(current_state)}，沒有因單日變化改口。"
-    today_change = f"目前累積警訊 {warnings}/{warning_threshold}；" + ("已達執行降級門檻。" if warnings >= warning_threshold else "尚不足以單獨改變正式趨勢。")
+    today_change = f"目前累積風險證據 {warnings}/{warning_threshold}；" + ("已達執行降級門檻。" if warnings >= warning_threshold else "尚不足以單獨改變正式趨勢。")
     return {
         "state":current_state,"state_label":_state_label(current_state),"state_days":state_days,
         "trend_score":trend_score,"action":action,"action_code":action_code,"color":color,
@@ -3050,7 +3180,7 @@ with st.sidebar:
     show_evidence_default = st.checkbox("🔎 預設展開各項數據依據", value=False)
     debug_mode = st.checkbox("🛠 開啟成交量資料診斷", value=False)
 
-st.markdown("## 🧠 StockPilot 3.0｜趨勢策略決策中心")
+st.markdown("## 🧠 StockPilot 3.1｜趨勢、籌碼與量價策略中心")
 st.caption("一個正式趨勢、一個目前動作、一組改變條件。正式策略不因單日雜訊反覆切換。")
 stock_input = st.text_input("請輸入核心目標個股代碼：", value="3037").strip()
 
@@ -3166,13 +3296,31 @@ if stock_input:
                     st.write("⚠️ " + str(item))
             else:
                 st.write("目前沒有額外重大反證。")
-        st.caption(f"警訊累積 {strategy_state['warnings']}/{strategy_state['warning_threshold']}。警訊會影響執行，但不會單獨讓正式趨勢一天內翻轉。")
+        st.caption(f"風險證據 {strategy_state['warnings']}/{strategy_state['warning_threshold']}。一般證據會累積後才影響動作，重大結構風險才可立即處理。")
 
         st.markdown("### ④ 什麼情況會改變（Trigger）")
         if strategy_state['trigger_rows']:
             st.dataframe(pd.DataFrame(strategy_state['trigger_rows']).rename(columns={'condition':'條件','effect':'策略改變'}), use_container_width=True, hide_index=True)
         else:
             st.info("目前沒有可可靠計算的策略切換價位。")
+
+        st.markdown("### 決策引擎儀表板")
+        eng1,eng2,eng3,eng4,eng5=st.columns(5)
+        eng1.metric("正式趨勢", f"{strategy_state['trend_score']}/100", strategy_state['state_label'])
+        eng2.metric("法人籌碼", f"{decision_snapshot['chip_engine']['score']}/100", decision_snapshot['chip_engine']['state'])
+        eng3.metric("量價品質", f"{decision_snapshot['volume_engine']['score']}/100", decision_snapshot['volume_engine']['state'])
+        eng4.metric("大盤環境", f"{decision_snapshot['regime']['score']}/100", decision_snapshot['regime']['state'])
+        eng5.metric("報酬風險", f"{decision_snapshot['edge_engine']['score']}/100", decision_snapshot['edge_engine']['state'])
+        with st.expander("🏦 籌碼與量價引擎明細", expanded=False):
+            chip_rows=pd.DataFrame(decision_snapshot['chip_engine'].get('rows',[]))
+            if not chip_rows.empty:
+                st.dataframe(chip_rows.style.format({'5日累計(張)':'{:+,.0f}','10日累計(張)':'{:+,.0f}','20日累計(張)':'{:+,.0f}'}),use_container_width=True,hide_index=True)
+            else:
+                st.info("三大法人資料不足，籌碼未納入方向判斷。")
+            ve=decision_snapshot['volume_engine']
+            st.write(f"量價狀態：**{ve.get('state')}**｜完成日量比 {ve.get('volume_ratio',0):.2f}｜20日上漲量／下跌量 {ve.get('pressure_ratio',0):.2f}")
+            if ve.get('veto'): st.warning(ve.get('veto'))
+            if decision_snapshot['chip_engine'].get('veto'): st.warning(decision_snapshot['chip_engine'].get('veto'))
 
         if user_holding:
             hv = decision_snapshot.get("holding_value", {}) or {}
