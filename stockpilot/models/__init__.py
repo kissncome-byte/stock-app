@@ -8,10 +8,13 @@ from .evidence import (
     EvidenceEngine,
     EvidenceSeverity,
 )
+from .market_bar import DailyBar
 from .market_state import MarketState
 from .price_input import PriceEngineInput
 from .price_levels import PriceLevel, PriceLevels
 from .strategy import Strategy
+from .trend_input import TrendEngineInput
+from .trend_result import TrendResult
 from .trend_state import TrendState
 
 __all__ = [
@@ -21,10 +24,13 @@ __all__ = [
     "EvidenceDirection",
     "EvidenceEngine",
     "EvidenceSeverity",
+    "DailyBar",
     "MarketState",
     "PriceEngineInput",
     "PriceLevel",
     "PriceLevels",
     "Strategy",
+    "TrendEngineInput",
+    "TrendResult",
     "TrendState",
 ]
