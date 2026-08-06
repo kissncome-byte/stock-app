@@ -9,6 +9,7 @@ from .evidence import (
     EvidenceSeverity,
 )
 from .market_state import MarketState
+from .price_input import PriceEngineInput
 from .price_levels import PriceLevel, PriceLevels
 from .strategy import Strategy
 from .trend_state import TrendState
@@ -21,6 +22,7 @@ __all__ = [
     "EvidenceEngine",
     "EvidenceSeverity",
     "MarketState",
+    "PriceEngineInput",
     "PriceLevel",
     "PriceLevels",
     "Strategy",
