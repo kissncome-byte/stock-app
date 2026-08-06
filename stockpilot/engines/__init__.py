@@ -4,5 +4,6 @@ Engines may import domain models, but must not import UI modules or other engine
 """
 
 from .price_engine import PriceEngine, PriceEngineError
+from .trend_engine import TrendEngine, TrendEngineError
 
-__all__ = ["PriceEngine", "PriceEngineError"]
+__all__ = ["PriceEngine", "PriceEngineError", "TrendEngine", "TrendEngineError"]
