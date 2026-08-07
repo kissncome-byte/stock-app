@@ -1,3 +1,4 @@
+from .decision_engine import DecisionEngine, DecisionEngineError
 from .chip_engine import ChipEngine, ChipEngineError
 """Independent analytical engines.
 
@@ -9,6 +10,8 @@ from .price_engine import PriceEngine, PriceEngineError
 from .trend_engine import TrendEngine, TrendEngineError
 
 __all__ = [
+    "DecisionEngine",
+    "DecisionEngineError",
     "ChipEngine",
     "ChipEngineError",
     "VolumeEngine",
