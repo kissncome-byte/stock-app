@@ -5,6 +5,8 @@ from .chip_result import ChipResult, ChipState
 from .volume_input import VolumeEngineInput
 from .volume_result import VolumeResult, VolumeState
 from .action import Action
+from .decision_input import DecisionEngineInput, PortfolioContext
+from .decision_result import DecisionResult
 from .decision_snapshot import DecisionSnapshot
 from .evidence import (
     Evidence,
@@ -33,6 +35,9 @@ __all__ = [
     "InstitutionalFlow",
     "ChipEngineInput",
     "Action",
+    "DecisionEngineInput",
+    "PortfolioContext",
+    "DecisionResult",
     "DecisionSnapshot",
     "Evidence",
     "EvidenceDirection",
