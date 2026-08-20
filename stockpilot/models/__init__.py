@@ -1,3 +1,6 @@
+from .raw_data import (
+    RawDailyBar, RawInstitutionalRecord, RawMarginRecord, RawMarketBundle, RawQuote,
+)
 """Domain models used by StockPilot."""
 
 from .chip_input import ChipEngineInput, InstitutionalFlow, MarginRecord
@@ -18,6 +21,7 @@ from .market_bar import DailyBar
 from .market_input import ListingMarket, MarketEngineInput
 from .market_result import MarketResult
 from .market_state import MarketState
+from .orchestrator_input import OrchestratorInput
 from .price_input import PriceEngineInput
 from .price_levels import PriceLevel, PriceLevels
 from .strategy import Strategy
@@ -34,6 +38,11 @@ __all__ = [
     "MarginRecord",
     "InstitutionalFlow",
     "ChipEngineInput",
+    "RawDailyBar",
+    "RawInstitutionalRecord",
+    "RawMarginRecord",
+    "RawMarketBundle",
+    "RawQuote",
     "Action",
     "DecisionEngineInput",
     "PortfolioContext",
@@ -48,6 +57,7 @@ __all__ = [
     "MarketEngineInput",
     "MarketResult",
     "MarketState",
+    "OrchestratorInput",
     "PriceEngineInput",
     "PriceLevel",
     "PriceLevels",
