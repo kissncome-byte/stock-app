@@ -3582,56 +3582,160 @@ if stock_input:
                 _s12_raw_strategy = str(_s12.strategy.value).lower()
                 _s12_reasons = []
 
-                # 核心原則：strong_uptrend 不等於立刻 BUILD。
-                # BUILD 若尚未達主要確認條件，至少降為 WAIT_CONFIRMATION。
+                # Sprint 14：BUILD 分層進場治理
+                # Trend 只回答方向；Governance 回答「現在是否適合進場、適合做到哪一層」。
+                _s14_entry_low = float(_s12_levels.get("entry_low", 0) or 0)
+                _s14_entry_high = float(_s12_levels.get("entry_high", 0) or 0)
+                _s14_entry = float(_s12_levels.get("entry", 0) or 0)
+
+                _s14_labels = {
+                    "strong_uptrend": "強勢多頭",
+                    "uptrend": "多頭趨勢",
+                    "neutral": "中性整理",
+                    "weak": "偏弱",
+                    "bearish": "空頭",
+                    "risk_off": "風險偏高",
+                    "BUILD": "允許建立部位",
+                    "WAIT_BETTER_ENTRY": "等待較佳進場位置",
+                    "PROBE": "試探性進場",
+                    "BUILD_BASE": "建立基本部位",
+                    "ADD_ON_CONFIRMATION": "突破確認後加碼",
+                    "WAIT_CONFIRMATION": "等待進場條件確認",
+                    "HOLD": "持有",
+                    "REDUCE": "減碼",
+                    "EXIT": "退出",
+                    "WAIT": "等待",
+                }
+
                 _s12_action = _s12_raw_strategy.upper()
+
                 if _s12_raw_strategy == "build":
-                    if _s12_confirm > 0 and _s12_price < _s12_confirm:
-                        _s12_action = "WAIT_CONFIRMATION"
+                    _s14_in_entry_zone = (
+                        _s14_entry_low > 0
+                        and _s14_entry_high > 0
+                        and _s14_entry_low <= _s12_price <= _s14_entry_high
+                    )
+                    _s14_above_entry = (
+                        _s14_entry_high > 0 and _s12_price > _s14_entry_high
+                    )
+                    _s14_confirmed = (
+                        _s12_confirm > 0 and _s12_price >= _s12_confirm
+                    )
+
+                    # 支持條件採「計分」而不是單一條件一票否決。
+                    _s14_support_score = 0
+                    _s14_support_total = 0
+
+                    if _s12_vol_ratio is not None:
+                        _s14_support_total += 1
+                        if _s12_vol_ratio >= 0.80:
+                            _s14_support_score += 1
+                        elif _s12_vol_ratio < 0.60:
+                            _s12_reasons.append(
+                                f"目前成交量僅約20日均量的 {_s12_vol_ratio:.2f} 倍，量能偏低"
+                            )
+
+                    if _s12_foreign5 is not None and _s12_trust5 is not None:
+                        _s14_support_total += 1
+                        if _s12_foreign5 >= 0 or _s12_trust5 >= 0:
+                            _s14_support_score += 1
+                        else:
+                            _s12_reasons.append(
+                                f"外資近5日 {_s12_foreign5:+,.0f} 張、"
+                                f"投信近5日 {_s12_trust5:+,.0f} 張，兩者同步偏賣"
+                            )
+
+                    _s14_support_total += 1
+                    if _s12_market in {"strong_uptrend", "uptrend", "bullish"}:
+                        _s14_support_score += 1
+                    elif _s12_market == "neutral":
+                        _s12_reasons.append("大盤目前為中性整理，尚未提供明確順風條件")
+                    else:
                         _s12_reasons.append(
-                            f"尚未達主要確認價 {_s12_confirm:.2f} 元"
+                            f"大盤狀態為 {_s14_labels.get(_s12_market, _s12.market_state.value)}，"
+                            "不利於積極建立新部位"
                         )
 
-                    # 極低量不允許把趨勢直接轉成積極進場。
-                    if _s12_vol_ratio is not None and _s12_vol_ratio < 0.60:
-                        _s12_action = "WAIT_CONFIRMATION"
-                        _s12_reasons.append(
-                            f"量比僅 {_s12_vol_ratio:.2f}x，低於 0.60x 進場確認門檻"
+                    # 第一層：突破確認價後，且至少有部分外部條件支持，才允許加碼。
+                    if _s14_confirmed:
+                        if _s14_support_score >= 2:
+                            _s12_action = "ADD_ON_CONFIRMATION"
+                            _s12_reasons.insert(
+                                0,
+                                f"股價已達／突破 {_s12_confirm:,.2f} 元確認價，"
+                                "且量能、法人、大盤至少有兩項提供支持"
+                            )
+                        else:
+                            _s12_action = "WAIT_CONFIRMATION"
+                            _s12_reasons.insert(
+                                0,
+                                f"股價雖已達 {_s12_confirm:,.2f} 元確認價，"
+                                "但量能、法人與大盤的配合仍不足，暫不追價"
+                            )
+
+                    # 第二層：位於既有 Entry Zone，外部條件普通可試單，較佳可建基本部位。
+                    elif _s14_in_entry_zone:
+                        if _s14_support_score >= 2:
+                            _s12_action = "BUILD_BASE"
+                            _s12_reasons.insert(
+                                0,
+                                f"現價位於既有理想進場區 {_s14_entry_low:,.2f}～"
+                                f"{_s14_entry_high:,.2f} 元，且外部條件已有一定支持"
+                            )
+                        elif _s14_support_score >= 1:
+                            _s12_action = "PROBE"
+                            _s12_reasons.insert(
+                                0,
+                                f"現價位於既有理想進場區 {_s14_entry_low:,.2f}～"
+                                f"{_s14_entry_high:,.2f} 元，但確認條件尚未完全到位，"
+                                "僅適合小部位試探"
+                            )
+                        else:
+                            _s12_action = "WAIT_CONFIRMATION"
+                            _s12_reasons.insert(
+                                0,
+                                f"雖位於既有理想進場區 {_s14_entry_low:,.2f}～"
+                                f"{_s14_entry_high:,.2f} 元，但量能、法人與大盤均未提供足夠支持"
+                            )
+
+                    # 第三層：已高於 Entry Zone、尚未突破 Confirmation。
+                    # 這裡不因 Trend 看多就追價。
+                    elif _s14_above_entry:
+                        _s12_action = "WAIT_BETTER_ENTRY"
+                        _s12_reasons.insert(
+                            0,
+                            f"現價 {_s12_price:,.2f} 元已高於既有理想進場區 "
+                            f"{_s14_entry_low:,.2f}～{_s14_entry_high:,.2f} 元，"
+                            f"但尚未突破 {_s12_confirm:,.2f} 元確認價，暫不追價"
                         )
 
-                    # 法人同步偏賣：只作進場抑制，不反轉 Trend。
-                    if (
-                        _s12_foreign5 is not None
-                        and _s12_trust5 is not None
-                        and _s12_foreign5 < 0
-                        and _s12_trust5 < 0
-                    ):
+                    # 第四層：低於 Entry Zone，不把「便宜」直接當買點。
+                    else:
                         _s12_action = "WAIT_CONFIRMATION"
-                        _s12_reasons.append(
-                            f"外資近5日 {_s12_foreign5:+,.0f} 張、"
-                            f"投信近5日 {_s12_trust5:+,.0f} 張，同步偏賣"
-                        )
-
-                    # neutral 大盤不直接否決個股多頭，但不能提供進場加分。
-                    if _s12_market == "neutral":
-                        _s12_reasons.append("大盤為 neutral，未提供進場確認加分")
-                    elif _s12_market in {"risk_off", "bearish", "weak"}:
-                        _s12_action = "WAIT_CONFIRMATION"
-                        _s12_reasons.append(
-                            f"大盤狀態 {_s12.market_state.value}，限制新建部位"
+                        _s12_reasons.insert(
+                            0,
+                            f"現價尚未進入可確認的進場結構，先等待價格與趨勢重新取得一致"
                         )
 
                 _s12_governance = {
                     "trend_state": _s12.trend_state.value,
+                    "trend_state_zh": _s14_labels.get(_s12.trend_state.value, _s12.trend_state.value),
                     "raw_strategy": _s12_raw_strategy.upper(),
+                    "raw_strategy_zh": _s14_labels.get(_s12_raw_strategy.upper(), _s12_raw_strategy.upper()),
                     "governed_action": _s12_action,
+                    "governed_action_zh": _s14_labels.get(_s12_action, _s12_action),
                     "price": _s12_price,
                     "confirmation": _s12_confirm,
                     "protective_stop": _s12_stop,
+                    "entry_low": _s14_entry_low,
+                    "entry_high": _s14_entry_high,
                     "volume_ratio": _s12_vol_ratio,
                     "foreign_5d": _s12_foreign5,
                     "trust_5d": _s12_trust5,
                     "market_state": _s12.market_state.value,
+                    "market_state_zh": _s14_labels.get(_s12_market, _s12.market_state.value),
+                    "support_score": locals().get("_s14_support_score", 0),
+                    "support_total": locals().get("_s14_support_total", 0),
                     "reasons": _s12_reasons,
                 }
                 st.session_state["_stockpilot4_s12_governance"] = _s12_governance
@@ -3715,14 +3819,28 @@ if stock_input:
 
                     _s12g = st.session_state.get("_stockpilot4_s12_governance", {}) or {}
                     governed_action = _s12g.get("governed_action", s.strategy.value.upper())
+                    governed_action_zh = _s12g.get("governed_action_zh", governed_action)
+                    raw_strategy_zh = _s12g.get("raw_strategy_zh", s.strategy.value.upper())
+
+                    _legacy_zh_map = {
+                        "等待": "等待",
+                        "wait": "等待",
+                        "build": "建立部位",
+                        "hold": "持有",
+                        "reduce": "減碼",
+                        "exit": "退出",
+                    }
+                    legacy_action_zh = _legacy_zh_map.get(
+                        str(legacy_action).lower(), legacy_action
+                    )
 
                     sc1, sc2, sc3, sc4, sc5 = st.columns(5)
-                    sc1.metric("舊版正式動作", legacy_action)
-                    sc2.metric("4.0 原始策略", s.strategy.value.upper())
-                    sc3.metric("4.0 治理後動作", governed_action)
-                    sc4.metric("方向比對", match_text)
+                    sc1.metric("舊版正式動作", legacy_action_zh)
+                    sc2.metric("4.0 原始策略", raw_strategy_zh)
+                    sc3.metric("4.0 目前建議", governed_action_zh)
+                    sc4.metric("新舊方向比較", "不同" if "不同" in match_text else match_text)
                     sc5.metric(
-                        "4.0 資料品質",
+                        "4.0 資料完整度",
                         f"{float(s.data_quality_score or 0):.0f}%",
                     )
 
@@ -3735,22 +3853,51 @@ if stock_input:
 
                     _s12g = st.session_state.get("_stockpilot4_s12_governance", {}) or {}
                     if _s12g:
-                        st.markdown("**Sprint 12｜趨勢與進場動作分離**")
+                        st.markdown("**Sprint 14｜分層進場判斷**")
                         st.write(
-                            f"趨勢狀態：{_s12g.get('trend_state', '未知')} → "
-                            f"原始策略：{_s12g.get('raw_strategy', '未知')} → "
-                            f"治理後動作：**{_s12g.get('governed_action', '未知')}**"
+                            f"趨勢狀態：**{_s12g.get('trend_state_zh', '未知')}** → "
+                            f"原始策略：**{_s12g.get('raw_strategy_zh', '未知')}** → "
+                            f"目前建議：**{_s12g.get('governed_action_zh', '未知')}**"
                         )
+
+                        _el = float(_s12g.get("entry_low", 0) or 0)
+                        _eh = float(_s12g.get("entry_high", 0) or 0)
+                        _cf = float(_s12g.get("confirmation", 0) or 0)
+                        if _el > 0 and _eh > 0:
+                            st.write(f"理想進場區：{_el:,.2f}～{_eh:,.2f} 元")
+                        if _cf > 0:
+                            st.write(f"突破確認價：{_cf:,.2f} 元")
+
                         if _s12g.get("reasons"):
+                            st.markdown("**判斷原因：**")
                             for _reason in _s12g["reasons"]:
                                 st.write("•", _reason)
-                        if (
-                            _s12g.get("raw_strategy") == "BUILD"
-                            and _s12g.get("governed_action") != "BUILD"
-                        ):
+
+                        _ga = _s12g.get("governed_action")
+                        if _ga == "WAIT_BETTER_ENTRY":
                             st.info(
-                                "Trend 維持原判，不因單日進場條件不足而翻空；"
-                                "目前只暫停建立部位，等待確認條件改善。"
+                                "目前趨勢仍偏多，但股價已離開原本較有利的進場區，"
+                                "又尚未完成突破確認，因此先等待較好的價格或新的突破訊號，避免追價。"
+                            )
+                        elif _ga == "PROBE":
+                            st.info(
+                                "目前只適合小部位試探，不代表完整進場；"
+                                "後續仍需觀察量能、法人籌碼與大盤是否改善。"
+                            )
+                        elif _ga == "BUILD_BASE":
+                            st.success(
+                                "目前價格位置與外部條件已具備建立基本部位的條件，"
+                                "但仍不是滿倉訊號。"
+                            )
+                        elif _ga == "ADD_ON_CONFIRMATION":
+                            st.success(
+                                "股價已完成主要突破確認，且外部條件具備支持，"
+                                "可進一步評估提高部位。"
+                            )
+                        else:
+                            st.info(
+                                "趨勢判斷與操作建議分開處理；"
+                                "即使趨勢偏多，進場條件不足時仍會選擇等待。"
                             )
 
                     if s.primary_trigger:
@@ -4106,7 +4253,7 @@ if stock_input:
                             {"階段": "Trend Engine", "輸出": s.trend_state.value, "說明": "由價格/均線/結構等形成趨勢狀態"},
                             {"階段": "Market Engine", "輸出": s.market_state.value, "說明": f"使用 {audit_market_name} 對應市場"},
                             {"階段": "Strategy（原始）", "輸出": s.strategy.value.upper(), "說明": s.action.detail},
-                            {"階段": "Action Governance", "輸出": (st.session_state.get("_stockpilot4_s12_governance", {}) or {}).get("governed_action", s.strategy.value.upper()), "說明": "趨勢不翻轉；依確認價、量能、法人與大盤限制當下進場"},
+                            {"階段": "目前操作建議", "輸出": (st.session_state.get("_stockpilot4_s12_governance", {}) or {}).get("governed_action_zh", s.strategy.value.upper()), "說明": "依理想進場區、突破確認價、量能、法人與大盤決定當下適合的進場層級"},
                             {"階段": "Primary Trigger", "輸出": str(s.primary_trigger or "無"), "說明": "主要確認條件"},
                             {"階段": "Secondary Trigger", "輸出": str(s.secondary_trigger or "無"), "說明": "次要風險條件"},
                         ]
