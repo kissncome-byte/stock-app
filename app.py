@@ -3765,6 +3765,173 @@ if stock_input:
                             "目前未偵測到舊版與 4.0 的方向差異。"
                         )
 
+
+                    # Sprint 13：Trigger Audit
+                    # 目的：追查 confirmation / protective_stop / structure_stop 的實際生成來源。
+                    # 純顯示，不修改任何價格、Trend、Strategy 或 Governance。
+                    with st.expander("🎯 Sprint 13｜Trigger Audit：1200 / 965 到底怎麼來的", expanded=True):
+                        _lv13 = decision_snapshot.get("levels", {}) or {}
+                        _p13 = float(res.get("current_price", 0) or 0)
+                        _ma20_13 = float(res.get("ma20_val", 0) or 0)
+                        _ma60_13 = float(res.get("ma60_val", 0) or 0)
+                        _atr13 = float(res.get("atr", 0) or 0)
+                        _res13 = float(res.get("real_resistance", 0) or 0)
+                        _struct_raw13 = float(res.get("structure_stop", 0) or 0)
+                        _confirm13 = float(_lv13.get("confirmation", 0) or 0)
+                        _protect13 = float(_lv13.get("protective_stop", 0) or 0)
+                        _structure13 = float(_lv13.get("structure_stop", 0) or 0)
+                        _entry13 = float(_lv13.get("entry", 0) or 0)
+                        _entry_low13 = float(_lv13.get("entry_low", 0) or 0)
+                        _entry_high13 = float(_lv13.get("entry_high", 0) or 0)
+
+                        _tick13 = tick_size(_p13) if _p13 > 0 else 0.01
+                        _atr_eff13 = max(_atr13, _p13 * 0.02, _tick13)
+
+                        # 依 build_price_level_engine 原始 if/elif/else 重建「是哪一條分支」。
+                        if _ma20_13 > 0 and _ma20_13 >= _p13 * 0.97:
+                            _confirm_branch13 = "① MA20 分支"
+                            _confirm_formula13 = "MA20 >= 現價 × 0.97 → 確認價 = MA20"
+                            _confirm_candidate13 = _ma20_13
+                        elif _res13 > _p13:
+                            _confirm_branch13 = "② 最近壓力分支"
+                            _confirm_formula13 = "MA20 不在現價 3% 內，且最近壓力 > 現價 → 確認價 = 最近壓力"
+                            _confirm_candidate13 = _res13
+                        else:
+                            _confirm_branch13 = "③ ATR / 2% 短線確認分支"
+                            _confirm_formula13 = "確認價 = 現價 + max(0.5×ATR_eff, 現價×2%)，再向上取 tick"
+                            _confirm_candidate13 = ceil_to_tick(
+                                _p13 + max(_atr_eff13 * 0.5, _p13 * 0.02),
+                                _tick13
+                            )
+
+                        st.markdown("##### A. 確認價來源")
+                        _confirm_rows13 = [
+                            {"項目": "現價", "實際值": f"{_p13:,.2f}", "用途": "分支判斷基準"},
+                            {"項目": "MA20", "實際值": f"{_ma20_13:,.2f}", "用途": f"門檻：現價×0.97 = {_p13*0.97:,.2f}"},
+                            {"項目": "最近壓力 real_resistance", "實際值": f"{_res13:,.2f}", "用途": "MA20 分支未成立時才檢查"},
+                            {"項目": "ATR", "實際值": f"{_atr13:,.2f}", "用途": f"ATR_eff = max(ATR, 現價2%, tick) = {_atr_eff13:,.2f}"},
+                            {"項目": "實際命中分支", "實際值": _confirm_branch13, "用途": _confirm_formula13},
+                            {"項目": "重建候選確認價", "實際值": f"{_confirm_candidate13:,.2f}", "用途": "依目前程式原始公式重建"},
+                            {"項目": "decision_snapshot 確認價", "實際值": f"{_confirm13:,.2f}", "用途": str((_lv13.get("sources", {}) or {}).get("confirmation", "未提供來源文字"))},
+                        ]
+                        st.dataframe(pd.DataFrame(_confirm_rows13), use_container_width=True, hide_index=True)
+
+                        _confirm_match13 = abs(_confirm_candidate13 - _confirm13) <= max(_tick13, 0.01) + 1e-9
+                        if _confirm_match13:
+                            st.success(
+                                f"確認價可重建：目前 {_confirm13:,.2f} 元來自「{_confirm_branch13}」。"
+                            )
+                        else:
+                            st.error(
+                                f"確認價無法由目前 build_price_level_engine 公式重建："
+                                f"公式候選 {_confirm_candidate13:,.2f}，snapshot {_confirm13:,.2f}。"
+                                "這表示資料時點或價格引擎之間仍有不同步，不能直接把此價當成進場聖旨。"
+                            )
+
+                        # protective_stop 原始公式
+                        _ma60_guard13 = _ma60_13 * 0.98 if _ma60_13 > 0 else 0.0
+                        _atr_guard13 = _p13 - max(_atr_eff13 * 1.25, _p13 * 0.03)
+                        _protect_candidates13 = [
+                            x for x in [_ma60_guard13, _atr_guard13]
+                            if 0 < x < _p13
+                        ]
+                        _protect_raw13 = (
+                            max(_protect_candidates13)
+                            if _protect_candidates13
+                            else _atr_guard13
+                        )
+                        _protect_rebuilt13 = floor_to_tick(_protect_raw13, _tick13)
+
+                        st.markdown("##### B. 移動保護價來源")
+                        _protect_rows13 = [
+                            {"候選": "MA60 × 0.98", "數值": f"{_ma60_guard13:,.2f}", "規則": "有效且低於現價才納入"},
+                            {"候選": "ATR / 3% 防線", "數值": f"{_atr_guard13:,.2f}", "規則": "現價 − max(1.25×ATR_eff, 現價×3%)"},
+                            {"候選": "較接近現價者", "數值": f"{_protect_raw13:,.2f}", "規則": "max(有效候選)"},
+                            {"候選": "tick 向下取整後", "數值": f"{_protect_rebuilt13:,.2f}", "規則": "build_price_level_engine 最終 protective_stop"},
+                            {"候選": "decision_snapshot", "數值": f"{_protect13:,.2f}", "規則": str((_lv13.get("sources", {}) or {}).get("protective_stop", "未提供來源文字"))},
+                        ]
+                        st.dataframe(pd.DataFrame(_protect_rows13), use_container_width=True, hide_index=True)
+
+                        _protect_match13 = abs(_protect_rebuilt13 - _protect13) <= max(_tick13, 0.01) + 1e-9
+                        if _protect_match13:
+                            st.success(f"移動保護價 {_protect13:,.2f} 元可由目前公式重建。")
+                        else:
+                            st.error(
+                                f"移動保護價重建不一致：公式 {_protect_rebuilt13:,.2f}，"
+                                f"snapshot {_protect13:,.2f}。需檢查資料時點或引擎傳遞。"
+                            )
+
+                        # 結構失效價與 Entry zone：證明「確認價」並非唯一可評估進場價格。
+                        _compass_stop13 = float(compass.get("stop", 0) or 0)
+                        _struct_candidates13 = [
+                            x for x in [_struct_raw13, _compass_stop13]
+                            if 0 < x < _protect13
+                        ]
+                        _struct_fallback13 = _p13 - max(_atr_eff13 * 3, _p13 * 0.09)
+                        _struct_pre13 = (
+                            max(_struct_candidates13)
+                            if _struct_candidates13
+                            else _struct_fallback13
+                        )
+                        _struct_rebuilt13 = floor_to_tick(
+                            min(_struct_pre13, _protect13 - _tick13),
+                            _tick13
+                        )
+
+                        _entry_center13 = _ma20_13 if _ma20_13 > 0 else _p13
+                        _entry_buffer13 = max(_atr_eff13 * 0.35, _p13 * 0.01)
+                        _entry_low_re13 = floor_to_tick(
+                            max(_tick13, _entry_center13 - _entry_buffer13), _tick13
+                        )
+                        _entry_high_re13 = ceil_to_tick(
+                            _entry_center13 + _entry_buffer13, _tick13
+                        )
+
+                        st.markdown("##### C. 結構失效價與既有 Entry Zone")
+                        _entry_rows13 = [
+                            {"項目": "原始 structure_stop", "數值": f"{_struct_raw13:,.2f}", "意義": "個股結構資料"},
+                            {"項目": "Compass stop", "數值": f"{_compass_stop13:,.2f}", "意義": "既有 Compass 風控價"},
+                            {"項目": "重建 structure_stop", "數值": f"{_struct_rebuilt13:,.2f}", "意義": "跌破後退出剩餘波段部位"},
+                            {"項目": "snapshot structure_stop", "數值": f"{_structure13:,.2f}", "意義": str((_lv13.get("sources", {}) or {}).get("structure_stop", "未提供來源文字"))},
+                            {"項目": "Entry center", "數值": f"{_entry_center13:,.2f}", "意義": "目前程式其實以 MA20 作為偏多評估中心"},
+                            {"項目": "Entry low（重建）", "數值": f"{_entry_low_re13:,.2f}", "意義": "MA20 − max(0.35×ATR_eff, 現價1%)"},
+                            {"項目": "Entry high（重建）", "數值": f"{_entry_high_re13:,.2f}", "意義": "MA20 + max(0.35×ATR_eff, 現價1%)"},
+                            {"項目": "snapshot Entry Zone", "數值": f"{_entry_low13:,.2f} ～ {_entry_high13:,.2f}", "意義": str((_lv13.get("sources", {}) or {}).get("entry", "未提供來源文字"))},
+                        ]
+                        st.dataframe(pd.DataFrame(_entry_rows13), use_container_width=True, hide_index=True)
+
+                        st.markdown("##### D. Trigger 的角色判定")
+                        _source13 = str(_lv13.get("confirmation_source", ""))
+                        _role13 = (
+                            "突破／壓力確認價"
+                            if ("壓力" in _source13 or _confirm_branch13.startswith("②"))
+                            else "均線重新確認價"
+                            if ("MA20" in _source13 or _confirm_branch13.startswith("①"))
+                            else "短線價格確認價"
+                        )
+                        _distance13 = ((_confirm13 / _p13 - 1) * 100) if _p13 > 0 and _confirm13 > 0 else None
+                        _entry_relation13 = (
+                            "現價高於既有 Entry Zone"
+                            if _entry_high13 > 0 and _p13 > _entry_high13
+                            else "現價位於既有 Entry Zone"
+                            if _entry_low13 <= _p13 <= _entry_high13 and _entry_high13 > 0
+                            else "現價低於既有 Entry Zone"
+                        )
+                        _role_rows13 = [
+                            {"問題": "1200 是什麼？", "判定": _role13, "依據": _source13 or _confirm_branch13},
+                            {"問題": "離現價多遠？", "判定": f"{_distance13:+.2f}%" if _distance13 is not None else "缺資料", "依據": "confirmation / current - 1"},
+                            {"問題": "程式是否另有 Entry Zone？", "判定": "有", "依據": f"{_entry_low13:,.2f} ～ {_entry_high13:,.2f}"},
+                            {"問題": "現價與 Entry Zone 關係", "判定": _entry_relation13, "依據": f"現價 {_p13:,.2f}"},
+                            {"問題": "確認價能否直接等同首次買進價？", "判定": "不能直接等同", "依據": "原價格引擎同時存在 entry 與 confirmation，兩者本來就是不同欄位／職責"},
+                        ]
+                        st.dataframe(pd.DataFrame(_role_rows13), use_container_width=True, hide_index=True)
+
+                        st.info(
+                            "Sprint 13 結論只做『角色辨識』：confirmation 是確認事件，"
+                            "entry 是偏多狀態的評估區。這一版不新增 PROBE / ADD，也不修改 WAIT_CONFIRMATION；"
+                            "等實機確認 Trigger 來源與 Entry Zone 正確後，再決定 Sprint 14 的分層進場規則。"
+                        )
+
                     # Sprint 11：4.0 Decision Audit
                     # 只讀取已存在的 res / shadow payload / snapshot，不改任何策略或分數。
                     with st.expander("🔎 4.0 決策稽核｜實際用了哪些數據", expanded=True):
