@@ -3546,6 +3546,96 @@ if stock_input:
                     legacy_action=strategy_state.get("action"),
                 )
 
+                # Sprint 12：Action Governance
+                # Trend 是慢狀態；Action 是快狀態。治理層不改 Trend，只限制「現在能不能進場」。
+                _s12 = shadow_v4.snapshot
+                _s12_price = float(res.get("current_price", 0) or 0)
+                _s12_levels = decision_snapshot.get("levels", {}) or {}
+                _s12_confirm = float(_s12_levels.get("confirmation", 0) or 0)
+                _s12_stop = float(_s12_levels.get("protective_stop", 0) or 0)
+
+                _s12_daily = res.get("daily_df")
+                _s12_vol_ratio = None
+                if isinstance(_s12_daily, pd.DataFrame) and not _s12_daily.empty:
+                    _vcol = "vol" if "vol" in _s12_daily.columns else (
+                        "Trading_Volume" if "Trading_Volume" in _s12_daily.columns else None
+                    )
+                    if _vcol:
+                        _vs = pd.to_numeric(_s12_daily[_vcol], errors="coerce").dropna()
+                        if len(_vs) >= 20 and float(_vs.tail(20).mean()) > 0:
+                            _s12_vol_ratio = float(_vs.iloc[-1]) / float(_vs.tail(20).mean())
+
+                _s12_inst = res.get("institutional_df")
+                _s12_foreign5 = None
+                _s12_trust5 = None
+                if isinstance(_s12_inst, pd.DataFrame) and not _s12_inst.empty:
+                    if "外資(張)" in _s12_inst.columns:
+                        _x = pd.to_numeric(_s12_inst["外資(張)"], errors="coerce").dropna()
+                        if len(_x):
+                            _s12_foreign5 = float(_x.tail(5).sum())
+                    if "投信(張)" in _s12_inst.columns:
+                        _x = pd.to_numeric(_s12_inst["投信(張)"], errors="coerce").dropna()
+                        if len(_x):
+                            _s12_trust5 = float(_x.tail(5).sum())
+
+                _s12_market = str(_s12.market_state.value).lower()
+                _s12_raw_strategy = str(_s12.strategy.value).lower()
+                _s12_reasons = []
+
+                # 核心原則：strong_uptrend 不等於立刻 BUILD。
+                # BUILD 若尚未達主要確認條件，至少降為 WAIT_CONFIRMATION。
+                _s12_action = _s12_raw_strategy.upper()
+                if _s12_raw_strategy == "build":
+                    if _s12_confirm > 0 and _s12_price < _s12_confirm:
+                        _s12_action = "WAIT_CONFIRMATION"
+                        _s12_reasons.append(
+                            f"尚未達主要確認價 {_s12_confirm:.2f} 元"
+                        )
+
+                    # 極低量不允許把趨勢直接轉成積極進場。
+                    if _s12_vol_ratio is not None and _s12_vol_ratio < 0.60:
+                        _s12_action = "WAIT_CONFIRMATION"
+                        _s12_reasons.append(
+                            f"量比僅 {_s12_vol_ratio:.2f}x，低於 0.60x 進場確認門檻"
+                        )
+
+                    # 法人同步偏賣：只作進場抑制，不反轉 Trend。
+                    if (
+                        _s12_foreign5 is not None
+                        and _s12_trust5 is not None
+                        and _s12_foreign5 < 0
+                        and _s12_trust5 < 0
+                    ):
+                        _s12_action = "WAIT_CONFIRMATION"
+                        _s12_reasons.append(
+                            f"外資近5日 {_s12_foreign5:+,.0f} 張、"
+                            f"投信近5日 {_s12_trust5:+,.0f} 張，同步偏賣"
+                        )
+
+                    # neutral 大盤不直接否決個股多頭，但不能提供進場加分。
+                    if _s12_market == "neutral":
+                        _s12_reasons.append("大盤為 neutral，未提供進場確認加分")
+                    elif _s12_market in {"risk_off", "bearish", "weak"}:
+                        _s12_action = "WAIT_CONFIRMATION"
+                        _s12_reasons.append(
+                            f"大盤狀態 {_s12.market_state.value}，限制新建部位"
+                        )
+
+                _s12_governance = {
+                    "trend_state": _s12.trend_state.value,
+                    "raw_strategy": _s12_raw_strategy.upper(),
+                    "governed_action": _s12_action,
+                    "price": _s12_price,
+                    "confirmation": _s12_confirm,
+                    "protective_stop": _s12_stop,
+                    "volume_ratio": _s12_vol_ratio,
+                    "foreign_5d": _s12_foreign5,
+                    "trust_5d": _s12_trust5,
+                    "market_state": _s12.market_state.value,
+                    "reasons": _s12_reasons,
+                }
+                st.session_state["_stockpilot4_s12_governance"] = _s12_governance
+
                 st.session_state["_stockpilot4_shadow"] = shadow_v4
                 st.session_state["_stockpilot4_shadow_error"] = None
 
@@ -3623,11 +3713,15 @@ if stock_input:
                         else "⚪ 無法直接比較"
                     )
 
-                    sc1, sc2, sc3, sc4 = st.columns(4)
+                    _s12g = st.session_state.get("_stockpilot4_s12_governance", {}) or {}
+                    governed_action = _s12g.get("governed_action", s.strategy.value.upper())
+
+                    sc1, sc2, sc3, sc4, sc5 = st.columns(5)
                     sc1.metric("舊版正式動作", legacy_action)
-                    sc2.metric("4.0 Shadow 策略", s.strategy.value.upper())
-                    sc3.metric("方向比對", match_text)
-                    sc4.metric(
+                    sc2.metric("4.0 原始策略", s.strategy.value.upper())
+                    sc3.metric("4.0 治理後動作", governed_action)
+                    sc4.metric("方向比對", match_text)
+                    sc5.metric(
                         "4.0 資料品質",
                         f"{float(s.data_quality_score or 0):.0f}%",
                     )
@@ -3637,7 +3731,27 @@ if stock_input:
                         f"大盤：{s.market_state.value}｜"
                         f"現價：{float(s.current_price or 0):.2f} 元"
                     )
-                    st.write("4.0 動作說明：", s.action.detail)
+                    st.write("4.0 原始動作說明：", s.action.detail)
+
+                    _s12g = st.session_state.get("_stockpilot4_s12_governance", {}) or {}
+                    if _s12g:
+                        st.markdown("**Sprint 12｜趨勢與進場動作分離**")
+                        st.write(
+                            f"趨勢狀態：{_s12g.get('trend_state', '未知')} → "
+                            f"原始策略：{_s12g.get('raw_strategy', '未知')} → "
+                            f"治理後動作：**{_s12g.get('governed_action', '未知')}**"
+                        )
+                        if _s12g.get("reasons"):
+                            for _reason in _s12g["reasons"]:
+                                st.write("•", _reason)
+                        if (
+                            _s12g.get("raw_strategy") == "BUILD"
+                            and _s12g.get("governed_action") != "BUILD"
+                        ):
+                            st.info(
+                                "Trend 維持原判，不因單日進場條件不足而翻空；"
+                                "目前只暫停建立部位，等待確認條件改善。"
+                            )
 
                     if s.primary_trigger:
                         st.write("主要 Trigger：", s.primary_trigger)
@@ -3735,12 +3849,18 @@ if stock_input:
                             {"項目": "保護價", "值": f"{audit_stop:,.2f} 元" if audit_stop else "缺資料", "檢查": ""},
                         ]
                         st.dataframe(pd.DataFrame(trigger_rows), use_container_width=True, hide_index=True)
+                        _s12_audit = st.session_state.get("_stockpilot4_s12_governance", {}) or {}
                         if s.strategy.value == "build" and below_confirmation:
-                            st.error(
-                                "⚠️ 稽核警示：4.0 目前輸出 BUILD，但現價仍低於確認價。"
-                                "這不是自動改答案；此處只標記決策規則與 Trigger 可能不一致，"
-                                "下一步應檢查 Strategy Engine 的進場門檻。"
-                            )
+                            if _s12_audit.get("governed_action") == "WAIT_CONFIRMATION":
+                                st.warning(
+                                    "原始 4.0 Strategy 為 BUILD，但現價仍低於確認價；"
+                                    "Sprint 12 已將當下動作治理為 WAIT_CONFIRMATION。"
+                                    "Trend State 不因此改變。"
+                                )
+                            else:
+                                st.error(
+                                    "⚠️ 原始 BUILD 與確認價仍有未處理衝突。"
+                                )
                         elif s.strategy.value == "build":
                             st.success("BUILD 與確認價條件目前未偵測到直接衝突。")
 
@@ -3818,7 +3938,8 @@ if stock_input:
                         path_rows = [
                             {"階段": "Trend Engine", "輸出": s.trend_state.value, "說明": "由價格/均線/結構等形成趨勢狀態"},
                             {"階段": "Market Engine", "輸出": s.market_state.value, "說明": f"使用 {audit_market_name} 對應市場"},
-                            {"階段": "Strategy", "輸出": s.strategy.value.upper(), "說明": s.action.detail},
+                            {"階段": "Strategy（原始）", "輸出": s.strategy.value.upper(), "說明": s.action.detail},
+                            {"階段": "Action Governance", "輸出": (st.session_state.get("_stockpilot4_s12_governance", {}) or {}).get("governed_action", s.strategy.value.upper()), "說明": "趨勢不翻轉；依確認價、量能、法人與大盤限制當下進場"},
                             {"階段": "Primary Trigger", "輸出": str(s.primary_trigger or "無"), "說明": "主要確認條件"},
                             {"階段": "Secondary Trigger", "輸出": str(s.secondary_trigger or "無"), "說明": "次要風險條件"},
                         ]
