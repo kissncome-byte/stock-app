@@ -3555,10 +3555,14 @@ if stock_input:
                     legacy_levels=decision_snapshot.get("levels", {}),
                 )
 
+                # Sprint 19.1：未持股時，成本欄即使殘留舊值也不得送進 Shadow。
+                # Decision Engine 對 non-holder 的 cost 必須是 0。
+                _shadow_user_cost = float(user_cost or 0) if user_holding else 0.0
+
                 shadow_v4 = ShadowIntegration().run(
                     shadow_payload,
                     is_holding=user_holding,
-                    cost=user_cost,
+                    cost=_shadow_user_cost,
                     legacy_action=strategy_state.get("action"),
                 )
 
