@@ -4115,12 +4115,24 @@ if stock_input:
                 _s19_daily = res.get("daily_df")
                 _s19_ret3 = None
                 _s19_ret5 = None
+                _s20_today_pct = _s19_safe_float(res.get("stock_daily_pct", 0), 0.0)
+                _s20_ret2_live = None
+                _s20_reclaim_2d = False
+                _s20_ma5 = _s19_safe_float(res.get("ma5_val", 0), 0.0)
+
                 if isinstance(_s19_daily, pd.DataFrame) and not _s19_daily.empty and "close" in _s19_daily.columns:
                     _c19 = pd.to_numeric(_s19_daily["close"], errors="coerce").dropna()
                     if len(_c19) >= 4 and float(_c19.iloc[-4]) > 0:
                         _s19_ret3 = (float(_c19.iloc[-1]) / float(_c19.iloc[-4]) - 1) * 100
                     if len(_c19) >= 6 and float(_c19.iloc[-6]) > 0:
                         _s19_ret5 = (float(_c19.iloc[-1]) / float(_c19.iloc[-6]) - 1) * 100
+
+                    # 用即時價檢查「今天是否正在反轉」，避免三日累積報酬慢一拍。
+                    if len(_c19) >= 2 and float(_c19.iloc[-2]) > 0:
+                        _s20_ret2_live = (_s19_price / float(_c19.iloc[-2]) - 1) * 100
+                    if len(_c19) >= 2:
+                        _s20_recent_2d_high = float(_c19.tail(2).max())
+                        _s20_reclaim_2d = _s19_price > _s20_recent_2d_high
 
                 _s19_checks = []
 
@@ -4216,13 +4228,33 @@ if stock_input:
                     "確認短期均線沒有落在中期均線下方",
                 )
 
-                # 加分條件：3日動能；沒有日線就不計分
+                # Sprint 20：短線動能轉折
+                # 不再要求三日累積報酬一定先翻正；今天若已明顯轉強，也可提早辨識。
+                _s20_momentum_turn = bool(
+                    (_s20_today_pct >= 1.0 and (_s20_ma5 <= 0 or _s19_price >= _s20_ma5))
+                    or (_s20_today_pct > 0 and _s20_reclaim_2d)
+                    or (_s19_ret3 is not None and 0.3 <= _s19_ret3 <= 8.0)
+                )
+
+                _s20_momentum_text_parts = [f"今日 {_s20_today_pct:+.2f}%"]
+                if _s20_ret2_live is not None:
+                    _s20_momentum_text_parts.append(f"即時2日 {_s20_ret2_live:+.2f}%")
+                if _s19_ret3 is not None:
+                    _s20_momentum_text_parts.append(f"近3日 {_s19_ret3:+.2f}%")
+                if _s20_reclaim_2d:
+                    _s20_momentum_text_parts.append("已收復近2日高點")
+                if _s20_ma5 > 0:
+                    _s20_momentum_text_parts.append(
+                        f"現價{'站上' if _s19_price >= _s20_ma5 else '低於'}MA5 {_s20_ma5:,.2f}"
+                    )
+                _s20_momentum_text = "／".join(_s20_momentum_text_parts)
+
                 _s19_add_check(
-                    "近3日開始有正向動能",
-                    _s19_ret3 is not None,
-                    0.3 <= _s19_ret3 <= 8.0 if _s19_ret3 is not None else False,
-                    f"{_s19_ret3:+.2f}%" if _s19_ret3 is not None else "缺資料",
-                    "太弱不算起漲；短線暴衝也不追",
+                    "短線動能出現轉折",
+                    True,
+                    _s20_momentum_turn,
+                    _s20_momentum_text,
+                    "三日報酬尚未翻正時，只要今日明顯轉強或收復近2日高點，也能提早辨識起漲",
                 )
 
                 # 加分條件：量能，不需要爆量，至少不能極度無量
@@ -4292,24 +4324,39 @@ if stock_input:
                     and _s19_ma20_distance_pct <= _s19_extension_limit_pct
                 )
 
-                # 未持股的三段式進場
+                # Sprint 20：未持股實戰狀態
+                # 比完成度更重要的是「現在該做什麼」。
+                _s20_market_blocked = _s19_gate in {"PANIC", "RISK_OFF", "NO_NEW_BUY"}
+                _s20_price_weak = bool(_s19_ma20 > 0 and _s19_price < _s19_ma20)
+
                 if _s12_confirm > 0 and _s19_price >= _s12_confirm and _s19_market_pass:
-                    _s19_early_state = "BREAKOUT_ENTRY"
-                    _s19_early_state_zh = "突破確認進場"
-                elif _s19_core_ok and _s19_not_extended and _s19_early_ratio >= 0.78:
-                    _s19_early_state = "EARLY_ENTRY"
-                    _s19_early_state_zh = "起漲確認進場"
-                elif _s19_core_ok and _s19_not_extended and _s19_early_ratio >= 0.62:
+                    _s19_early_state = "CONFIRMED_ENTRY"
+                    _s19_early_state_zh = "確認進場"
+                elif _s19_core_ok and (not _s19_not_extended):
+                    _s19_early_state = "WAIT_PULLBACK"
+                    _s19_early_state_zh = "等待拉回"
+                elif (
+                    _s19_core_ok
+                    and _s19_not_extended
+                    and _s20_momentum_turn
+                    and _s19_early_ratio >= 0.78
+                ):
+                    _s19_early_state = "CONFIRMED_ENTRY"
+                    _s19_early_state_zh = "確認進場"
+                elif (
+                    _s19_core_ok
+                    and _s19_not_extended
+                    and _s20_momentum_turn
+                    and _s19_early_ratio >= 0.62
+                ):
                     _s19_early_state = "EARLY_PROBE"
-                    _s19_early_state_zh = "起漲前試單"
+                    _s19_early_state_zh = "起漲試單"
+                elif _s20_market_blocked or (_s20_price_weak and not _s19_reversal_structure):
+                    _s19_early_state = "NO_ENTRY"
+                    _s19_early_state_zh = "不宜進場"
                 else:
-                    _s19_early_state = "NONE"
-                    if _s19_core_ok and not _s19_not_extended:
-                        _s19_early_state_zh = "已有起漲條件，但目前不宜追價"
-                    elif not _s19_core_ok:
-                        _s19_early_state_zh = "核心起漲條件尚未完整"
-                    else:
-                        _s19_early_state_zh = "起漲條件仍不足"
+                    _s19_early_state = "WAIT_CONFIRM"
+                    _s19_early_state_zh = "繼續等待"
 
                 # Sprint 18.3：最終只回答四件事：進場、退場、加碼、減碼。
                 _s183_governed = str(_s12_governance.get("governed_action") or "").upper()
@@ -4319,30 +4366,35 @@ if stock_input:
                 )
 
                 if not user_holding or _s18_current_shares <= 0:
-                    if _s19_early_state == "BREAKOUT_ENTRY":
-                        _s183_trade_decision = "進場"
-                        _s183_trade_reason = "股價已完成主要突破確認，可評估建立第一筆部位。"
-                    elif _s19_early_state == "EARLY_ENTRY":
+                    if _s19_early_state == "CONFIRMED_ENTRY":
                         _s183_trade_decision = "進場"
                         _s183_trade_reason = (
-                            "尚未突破遠端壓力，但價格、均線、量能與市場條件已出現起漲確認，"
-                            "可提前建立第一筆部位，避免完全錯過起漲段。"
+                            "價格、趨勢結構與短線動能已形成可執行的進場條件；"
+                            "不必再等遠端壓力全面突破才第一次買進。"
                         )
                     elif _s19_early_state == "EARLY_PROBE":
                         _s183_trade_decision = "試單"
                         _s183_trade_reason = (
-                            "個股已出現初步轉強跡象，但條件尚未完整；"
-                            "可用小部位先建立觀察倉，避免等到全面突破後才追價。"
+                            "已出現起漲轉折，但尚未到完整確認；"
+                            "可用小部位先卡位，後續確認後再加碼。"
                         )
-                    elif _s183_governed in {"PROBE", "BUILD", "BUILD_BASE", "ADD_ON_CONFIRMATION"}:
-                        _s183_trade_decision = "進場"
-                        _s183_trade_reason = "個股條件已允許建立部位。"
-                    elif _s183_price_in_entry and _s183_governed not in {"EXIT", "REDUCE"}:
-                        _s183_trade_decision = "等待進場確認"
-                        _s183_trade_reason = "價格已進入理想區，但確認條件尚未完整。"
+                    elif _s19_early_state == "WAIT_PULLBACK":
+                        _s183_trade_decision = "等待拉回"
+                        _s183_trade_reason = (
+                            "起漲結構已出現，但目前價格離短期成本區過遠；"
+                            "此時追價的風險報酬較差，等待拉回或重新形成低風險切入點。"
+                        )
+                    elif _s19_early_state == "NO_ENTRY":
+                        _s183_trade_decision = "不宜進場"
+                        _s183_trade_reason = (
+                            "目前仍有明確的大盤或價格結構風險，暫不建立新部位。"
+                        )
                     else:
-                        _s183_trade_decision = "等待"
-                        _s183_trade_reason = "目前尚未形成足夠的進場或起漲試單條件。"
+                        _s183_trade_decision = "繼續等待"
+                        _s183_trade_reason = (
+                            "已接近起漲條件，但短線動能或確認訊號尚未形成；"
+                            "持續觀察，不因完成度高就提前追價。"
+                        )
                 else:
                     if _s183_governed == "EXIT":
                         _s183_trade_decision = "退場"
@@ -4432,6 +4484,11 @@ if stock_input:
                     "early_formal_trend_bull": _s19_formal_trend_bull,
                     "early_reversal_structure": _s19_reversal_structure,
                     "early_trend_gate_text": _s19_trend_gate_text,
+                    "short_momentum_turn": _s20_momentum_turn,
+                    "short_momentum_text": _s20_momentum_text,
+                    "today_pct": _s20_today_pct,
+                    "ret2_live": _s20_ret2_live,
+                    "reclaim_2d": _s20_reclaim_2d,
                 }
                 st.session_state["_stockpilot4_s18_position"] = _s18_position_plan
 
@@ -4622,12 +4679,32 @@ if stock_input:
                                 )
                                 _er = float(_p18.get("early_entry_ratio", 0) or 0)
                                 ec3.metric(
-                                    "起漲條件完成度",
+                                    "條件完成度（參考）",
                                     f"{_er*100:.0f}%"
                                 )
                                 st.info(
                                     f"判斷原因：{_p18.get('trade_reason', '等待更多確認。')}"
                                 )
+                                _entry_state20 = _p18.get("early_entry_state_zh")
+                                if _entry_state20 == "等待拉回":
+                                    st.warning(
+                                        "目前不是『條件不足』，而是『位置太高』："
+                                        "已有起漲結構，但現在追價的風險報酬較差，等待拉回。"
+                                    )
+                                elif _entry_state20 == "起漲試單":
+                                    st.success(
+                                        "系統已偵測到早期起漲轉折，可用小部位試單；"
+                                        "若後續動能與突破再確認，再考慮加碼。"
+                                    )
+                                elif _entry_state20 == "確認進場":
+                                    st.success(
+                                        "目前已達確認進場條件，不需等到更遠的壓力價才第一次建立部位。"
+                                    )
+                                elif _entry_state20 == "不宜進場":
+                                    st.error(
+                                        "目前存在明確風險條件，暫不建立新部位。"
+                                    )
+
                                 if _p18.get("early_reversal_structure") and not _p18.get("early_formal_trend_bull"):
                                     st.success(
                                         "正式趨勢尚未翻多，但價格與均線已形成『反轉起漲結構』；"
