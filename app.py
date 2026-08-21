@@ -4022,16 +4022,49 @@ if stock_input:
                 )
 
                 # 個人部位判斷與股票方向分開。
+                # Sprint 18.3：個股操作判斷不再看核心資金池集中度。
                 if not user_holding or _s18_current_shares <= 0:
                     _s181_position_status = "未持有"
-                elif _s181_exposure_pct is not None and _s181_exposure_pct > 100:
-                    _s181_position_status = "資金集中度過高，禁止加碼"
-                elif _s181_exposure_pct is not None and _s181_exposure_pct >= 70:
-                    _s181_position_status = "資金集中度偏高"
                 elif _s182_principal_loss_risk > _s18_max_risk_ntd and _s18_max_risk_ntd > 0:
-                    _s181_position_status = "本金風險超過單筆上限"
+                    _s181_position_status = "本金風險偏高"
                 else:
-                    _s181_position_status = "部位在目前可控範圍"
+                    _s181_position_status = "依個股條件管理"
+
+                # Sprint 18.3：最終只回答四件事：進場、退場、加碼、減碼。
+                _s183_governed = str(_s12_governance.get("governed_action") or "").upper()
+                _s183_trend = str(_s12_governance.get("trend_state") or "").lower()
+                _s183_price_in_entry = bool(
+                    _s12_entry_low <= _s12_price <= _s12_entry_high
+                )
+
+                if not user_holding or _s18_current_shares <= 0:
+                    if _s183_governed in {"PROBE", "BUILD", "BUILD_BASE", "ADD_ON_CONFIRMATION"}:
+                        _s183_trade_decision = "進場"
+                        _s183_trade_reason = "個股條件已允許建立部位。"
+                    elif _s183_price_in_entry and _s183_governed not in {"EXIT", "REDUCE"}:
+                        _s183_trade_decision = "等待進場確認"
+                        _s183_trade_reason = "價格已進入理想區，但確認條件尚未完整。"
+                    else:
+                        _s183_trade_decision = "等待"
+                        _s183_trade_reason = "目前尚未形成足夠的進場條件。"
+                else:
+                    if _s183_governed == "EXIT":
+                        _s183_trade_decision = "退場"
+                        _s183_trade_reason = "個股風控／趨勢條件已進入退出狀態。"
+                    elif _s183_governed == "REDUCE":
+                        _s183_trade_decision = "減碼"
+                        _s183_trade_reason = "個股條件轉弱，先降低持股曝險。"
+                    elif _s183_governed in {"ADD_ON_CONFIRMATION", "BUILD_BASE", "BUILD", "PROBE"}:
+                        _s183_trade_decision = "加碼"
+                        _s183_trade_reason = "既有持股仍成立，且個股條件允許增加部位。"
+                    else:
+                        _s183_trade_decision = "持有"
+                        _s183_trade_reason = "目前尚未出現退場或減碼條件，也未形成新的加碼條件。"
+
+                # 保護價跌破具有最高優先權。
+                if user_holding and _s18_current_shares > 0 and _s12_price <= _s18_stop_fill:
+                    _s183_trade_decision = "退場"
+                    _s183_trade_reason = "現價已觸及或跌破風控保護價。"
 
                 _s18_action_zh = _s12_governance.get(
                     "governed_action_zh",
@@ -4075,6 +4108,8 @@ if stock_input:
                     "profit_giveback_per_share": _s182_profit_giveback_per_share,
                     "profit_giveback_risk": _s182_profit_giveback_risk,
                     "profit_giveback_status": _s182_giveback_status,
+                    "trade_decision": _s183_trade_decision,
+                    "trade_reason": _s183_trade_reason,
                 }
                 st.session_state["_stockpilot4_s18_position"] = _s18_position_plan
 
@@ -4262,60 +4297,43 @@ if stock_input:
                                     if _pnl18 is not None else "未提供成本"
                                 )
 
-                                st.markdown("**三種持倉風險分開看**")
-                                hr1, hr2, hr3 = st.columns(3)
-                                hr1.metric(
+                                st.markdown("**個股操作判斷**")
+                                td1, td2, td3 = st.columns(3)
+                                td1.metric(
+                                    "目前操作",
+                                    str(_p18.get("trade_decision", "持有"))
+                                )
+                                td2.metric(
                                     "本金虧損風險",
                                     f"{float(_p18.get('principal_loss_risk', 0)):,.0f} 元"
                                 )
-                                hr2.metric(
+                                td3.metric(
                                     "獲利可能回吐",
                                     f"{float(_p18.get('profit_giveback_risk', 0)):,.0f} 元"
                                 )
-                                hr3.metric(
-                                    "資金集中度",
-                                    f"{float(_p18.get('exposure_pct', 0) or 0):.1f}%"
-                                )
 
-                                st.write(
-                                    f"本金風險判斷：**{_p18.get('principal_risk_status', '未知')}**"
+                                st.info(
+                                    f"判斷原因：{_p18.get('trade_reason', '目前依個股條件管理。')}"
                                 )
                                 st.write(
-                                    f"獲利回吐判斷：**{_p18.get('profit_giveback_status', '未知')}**"
+                                    f"本金風險：**{_p18.get('principal_risk_status', '未知')}**"
+                                )
+                                st.write(
+                                    f"獲利回吐：**{_p18.get('profit_giveback_status', '未知')}**"
                                 )
                                 st.write(
                                     f"若依目前風控價執行，理論仍可保留約 "
-                                    f"**{float(_p18.get('locked_profit_at_stop', 0)):,.0f} 元** 的帳面獲利。"
-                                )
-                                st.write(
-                                    f"個人部位判斷：**{_p18.get('position_status', '未知')}**"
+                                    f"**{float(_p18.get('locked_profit_at_stop', 0)):,.0f} 元** 帳面獲利。"
                                 )
 
-                                _max_cap18 = int(_p18.get("max_shares_by_capital", 0) or 0)
-
-                                # Sprint 18.2：已獲利持倉不再用「獲利回吐」去強迫砍到風險股數上限。
-                                # 資金池上限只作「集中度與禁止加碼」管理；是否減碼仍由正式策略與風控價決定。
-                                if float(_p18.get("exposure_pct", 0) or 0) > 100:
-                                    st.error(
-                                        f"目前單一股票市值已超過核心資金池。"
-                                        f"依資金池 100% 上限約為 **{_max_cap18:,} 股**；"
-                                        "因此現在禁止再加碼。"
-                                        "但不會只因獲利回吐金額較大，就機械式要求降到風險股數上限。"
-                                    )
-                                elif float(_p18.get("exposure_pct", 0) or 0) >= 70:
-                                    st.warning(
-                                        "目前單一股票集中度偏高，新增部位應更保守。"
-                                    )
+                                if _p18.get("trade_decision") == "加碼":
+                                    st.success("目前個股條件允許加碼；實際加碼仍以價格條件與風控價為準。")
+                                elif _p18.get("trade_decision") == "減碼":
+                                    st.warning("目前個股條件建議減碼，先降低持股曝險。")
+                                elif _p18.get("trade_decision") == "退場":
+                                    st.error("目前個股條件已進入退場狀態。")
                                 else:
-                                    st.success(
-                                        "目前單一股票資金集中度仍在這一版的管理範圍內。"
-                                    )
-
-                                if float(_p18.get("principal_loss_risk", 0) or 0) > float(_p18.get("max_risk_ntd", 0) or 0):
-                                    st.error(
-                                        "依目前成本與風控價計算，本金虧損風險已超過單筆最大風險承受，"
-                                        "應優先降低實際本金風險。"
-                                    )
+                                    st.success("目前沒有退場或減碼訊號，維持既有部位觀察。")
 
                             elif _act18 in {"WAIT", "WAIT_CONFIRMATION", "WAIT_BETTER_ENTRY"}:
                                 st.info(
@@ -4356,17 +4374,10 @@ if stock_input:
                                     )
                                     st.caption(_fraction_text)
                                 else:
-                                    _current18 = int(_p18.get("current_shares", 0) or 0)
-                                    _max_cap18 = int(_p18.get("max_shares_by_capital", 0) or 0)
-                                    _room18 = max(0, _max_cap18 - _current18)
-                                    if _room18 > 0:
-                                        st.write(
-                                            f"在不超過目前資金／風險上限前提下，"
-                                            f"理論剩餘空間約 **{_room18:,} 股**；"
-                                            "是否實際加碼仍需同時符合目前操作建議。"
-                                        )
-                                    else:
-                                        st.write("目前沒有額外加碼空間。")
+                                    st.write(
+                                        "已持有股票時，不再用核心資金池推算可加碼股數；"
+                                        "是否加碼只依個股趨勢、進場區、突破確認與風控條件判斷。"
+                                    )
 
                             if _act18 in {"REDUCE", "EXIT"}:
                                 st.warning(
