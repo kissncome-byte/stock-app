@@ -4723,7 +4723,7 @@ if stock_input:
                     "beta_intraday_invalid": _beta8_invalid_now,
                     "beta_invalidation_price": _beta8_invalidation_price,
                     "beta_strong_breakout": _beta5_confirm,
-                    "decision_stock_id": str(stock_id),
+                    "decision_stock_id": str(res.get("stock_id", stock_input) or stock_input),
                     "decision_complete": True,
                 }
                 st.session_state["_stockpilot4_s18_position"] = _s18_position_plan
@@ -4743,7 +4743,7 @@ if stock_input:
                     "_stockpilot_last_complete_position", {}
                 ) or {}
                 if (
-                    str(_last_complete.get("decision_stock_id", "")) == str(stock_id)
+                    str(_last_complete.get("decision_stock_id", "")) == str(res.get("stock_id", stock_input) or stock_input)
                     and _last_complete.get("decision_complete")
                 ):
                     # 同一檔股票：保留上一個完整日線決策，避免盤中暫時錯誤造成建議歸零。
@@ -4804,7 +4804,7 @@ if stock_input:
                 "beta_confirm_price": _fb_confirm,
                 "beta_invalidation_price": _fb_stop,
                 "fallback_mode": True,
-                "decision_stock_id": str(stock_id),
+                "decision_stock_id": str(res.get("stock_id", stock_input) or stock_input),
                 "decision_complete": False,
             }
 
