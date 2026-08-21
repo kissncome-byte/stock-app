@@ -1302,7 +1302,7 @@ def build_compass_home_summary(res: dict, is_holding: bool) -> dict:
     if quality < 60:
         confidence = min(confidence, 55)
 
-    price = _s19_safe_float(res.get("current_price", 0), 0.0)
+    price = float(res.get("current_price", 0) or 0)
     tick = tick_size(price) if price > 0 else 0.01
     atr = float(res.get("atr", res.get("atr14", 0)) or 0)
     進場區 = float(res.get("expected_進場區_price", price) or price)
@@ -1556,8 +1556,8 @@ def build_ai_investment_committee(res: dict, compass: dict) -> dict:
     stop = float(compass.get("stop", 0) or 0)
     target = float(compass.get("target1", 0) or 0)
     resistance = float(res.get("real_resistance", target) or target)
-    current = _s19_safe_float(res.get("current_price", 0), 0.0)
-    atr = _s19_safe_float(res.get("atr", 0), 0.0)
+    current = float(res.get("current_price", 0) or 0)
+    atr = float(res.get("atr", 0) or 0)
     rr = compass.get("rr")
     stop_pct = ((進場區 - stop) / 進場區 * 100) if 進場區 > 0 and stop > 0 else None
     pressure_pct = ((resistance - current) / current * 100) if current > 0 and resistance > 0 else None
@@ -1716,7 +1716,7 @@ def build_if_i_were_you(
     risk_pct: float,
 ) -> dict:
     """將 Decision Engine 翻成新手可以直接照著執行的今日操作。"""
-    current = _s19_safe_float(res.get("current_price", 0), 0.0)
+    current = float(res.get("current_price", 0) or 0)
     進場區 = float(decision.get("進場區", compass.get("進場區", current)) or current)
     stop = float(decision.get("stop", compass.get("stop", 0)) or 0)
     target1 = float(decision.get("target1", compass.get("target1", 0)) or 0)
@@ -1841,7 +1841,7 @@ def build_if_i_were_you(
 
 def build_ai_forecast(res: dict, compass: dict, decision: dict) -> dict:
     """告訴新手：哪些可觀察條件會讓 AI 升級、維持或轉為風控。"""
-    current = _s19_safe_float(res.get("current_price", 0), 0.0)
+    current = float(res.get("current_price", 0) or 0)
     進場區 = float(decision.get("進場區", compass.get("進場區", current)) or current)
     stop = float(decision.get("stop", compass.get("stop", 0)) or 0)
     target1 = float(decision.get("target1", compass.get("target1", 0)) or 0)
@@ -2082,7 +2082,7 @@ def build_today_action_board(res: dict, compass: dict, decision: dict, user_hold
 
 def build_today_brief(res: dict, compass: dict, decision: dict, user_holding: bool = False) -> dict:
     """將 Decision Engine 轉成今日一句話、三項重點，以及可做／不要做的具體指令。"""
-    current = _s19_safe_float(res.get("current_price", 0), 0.0)
+    current = float(res.get("current_price", 0) or 0)
     進場區 = float(decision.get("進場區", compass.get("進場區", 0)) or 0)
     stop = float(decision.get("stop", compass.get("stop", 0)) or 0)
     target1 = float(decision.get("target1", compass.get("target1", 0)) or 0)
@@ -2159,7 +2159,7 @@ def build_today_brief(res: dict, compass: dict, decision: dict, user_holding: bo
 
 def build_ai_investment_coach(res: dict, compass: dict, committee: dict, user_holding: bool, user_cost: float, capital_wan: float, risk_pct: float, decision_engine: dict = None) -> dict:
     """依使用者是否持有，將既有價位與風險資料整理成可執行的個人化教練指令。"""
-    current = _s19_safe_float(res.get("current_price", 0), 0.0)
+    current = float(res.get("current_price", 0) or 0)
     decision_engine = decision_engine or build_decision_engine(res, compass, committee, user_holding)
     進場區 = float(compass.get("進場區", current) or current)
     stop = float(compass.get("stop", 0) or 0)
@@ -2409,7 +2409,7 @@ def save_daily_decision_snapshot(res: dict, compass: dict, committee: dict, deci
         str(res.get("stock_name", "")),
         now.strftime("%Y-%m-%d"),
         now.strftime("%Y-%m-%d %H:%M:%S"),
-        _s19_safe_float(res.get("current_price", 0), 0.0),
+        float(res.get("current_price", 0) or 0),
         str(decision.get("label", "")),
         str(decision.get("status", "")),
         int(committee.get("cio_confidence", compass.get("confidence", 0)) or 0),
@@ -2546,7 +2546,7 @@ def build_market_regime(res: dict) -> dict:
     ctx = res.get("market_regime_context", {}) or {}
     rs = float(res.get("relative_strength", 0) or 0)
     peer_text = str(res.get("peer_resonance_text", "資料不足"))
-    atr = _s19_safe_float(res.get("atr", 0), 0.0); current = _s19_safe_float(res.get("current_price", 0), 0.0)
+    atr = float(res.get("atr", 0) or 0); current = float(res.get("current_price", 0) or 0)
     stock_atr_pct = atr / current * 100 if current > 0 else 0
     reasons = list(ctx.get("reasons", [])); limitations = []
     factor_rows = []
@@ -2614,11 +2614,11 @@ def build_market_regime(res: dict) -> dict:
 
 def build_price_level_engine(res: dict, compass: dict, market_score: int = 50, market_status: str = "HOLD") -> dict:
     """V3 唯一價格引擎：先依市場狀態決定價位職責，再輸出唯一答案。"""
-    current = _s19_safe_float(res.get("current_price", 0), 0.0)
+    current = float(res.get("current_price", 0) or 0)
     ta = res.get("trend_analysis", {}) or {}
     ma20 = float(res.get("ma20_val", ta.get("ma20", 0)) or 0)
-    ma60 = _s19_safe_float(res.get("ma60_val", 0), 0.0)
-    atr = _s19_safe_float(res.get("atr", 0), 0.0)
+    ma60 = float(res.get("ma60_val", 0) or 0)
+    atr = float(res.get("atr", 0) or 0)
     resistance = float(res.get("real_resistance", 0) or 0)
     structure_raw = float(res.get("structure_stop", 0) or 0)
     tick = tick_size(current) if current > 0 else 0.01
@@ -3569,7 +3569,7 @@ if stock_input:
                 # Sprint 12：Action Governance
                 # Trend 是慢狀態；Action 是快狀態。治理層不改 Trend，只限制「現在能不能進場」。
                 _s12 = shadow_v4.snapshot
-                _s12_price = _s19_safe_float(res.get("current_price", 0), 0.0)
+                _s12_price = float(res.get("current_price", 0) or 0)
                 _s12_levels = decision_snapshot.get("levels", {}) or {}
                 _s12_confirm = float(_s12_levels.get("突破確認價", 0) or 0)
                 _s12_stop = float(_s12_levels.get("protective_stop", 0) or 0)
@@ -3693,8 +3693,8 @@ if stock_input:
                                 _s15_ret5 = (float(_cs15.iloc[-1]) / float(_cs15.iloc[-6]) - 1) * 100
 
                     # A. 均線結構：價格仍守在 MA60 上方，且 MA20 > MA60，視為結構尚未破壞。
-                    _s15_ma20 = _s19_safe_float(res.get("ma20_val", 0), 0.0)
-                    _s15_ma60 = _s19_safe_float(res.get("ma60_val", 0), 0.0)
+                    _s15_ma20 = float(res.get("ma20_val", 0) or 0)
+                    _s15_ma60 = float(res.get("ma60_val", 0) or 0)
                     if _s15_ma20 > 0 and _s15_ma60 > 0:
                         _s15_pullback_checks += 1
                         if _s12_price >= _s15_ma60 and _s15_ma20 >= _s15_ma60:
