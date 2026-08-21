@@ -91,9 +91,9 @@ class CoreInputAdapter:
 
     def _listing_market(self, value: str) -> ListingMarket:
         v = value.strip().lower()
-        if v in {"listed","twse","上市"}:
+        if v in {"listed","twse","tse","上市"}:
             return ListingMarket.LISTED
-        if v in {"otc","tpex","上櫃"}:
+        if v in {"otc","tpex","two","上櫃"}:
             return ListingMarket.OTC
         raise CoreInputAdapterError(f"unsupported listing market: {value}")
 
