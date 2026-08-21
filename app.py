@@ -4041,14 +4041,43 @@ if stock_input:
                 _s19_ma60 = float(res.get("ma60_val", 0) or 0)
                 _s19_current_vol = float(res.get("current_vol", 0) or 0)
                 _s19_vol_ma20 = float(res.get("volume_ma20_shares", 0) or 0)
-                _s19_market_state = str(_s12.market_state.value).lower()
-                _s19_trend_state = str(_s12.trend_state.value).lower()
+                _s19_market_state_raw = str(_s12.market_state.value).strip()
+                _s19_trend_state_raw = str(_s12.trend_state.value).strip()
+
+                def _s19_norm_state(value):
+                    v = str(value or "").strip().lower()
+                    mapping = {
+                        "強勢多頭": "strong_uptrend",
+                        "多頭趨勢": "uptrend",
+                        "中性整理": "neutral",
+                        "中性": "neutral",
+                        "偏弱": "weak",
+                        "空頭": "bearish",
+                        "風險偏高": "risk_off",
+                        "strong uptrend": "strong_uptrend",
+                        "strong_uptrend": "strong_uptrend",
+                        "uptrend": "uptrend",
+                        "neutral": "neutral",
+                        "bullish": "bullish",
+                        "weak": "weak",
+                        "bearish": "bearish",
+                        "risk_off": "risk_off",
+                    }
+                    return mapping.get(v, v)
+
+                _s19_market_state = _s19_norm_state(_s19_market_state_raw)
+                _s19_trend_state = _s19_norm_state(_s19_trend_state_raw)
 
                 _s19_ret3 = None
                 _s19_ret5 = None
                 _s19_ma20_slope5 = None
                 if isinstance(_s19_daily, pd.DataFrame) and not _s19_daily.empty:
                     _c19 = pd.to_numeric(_s19_daily.get("close"), errors="coerce").dropna()
+
+                    if (_s19_ma20 <= 0) and len(_c19) >= 20:
+                        _s19_ma20 = float(_c19.tail(20).mean())
+                    if (_s19_ma60 <= 0) and len(_c19) >= 60:
+                        _s19_ma60 = float(_c19.tail(60).mean())
                     if len(_c19) >= 4 and float(_c19.iloc[-4]) > 0:
                         _s19_ret3 = (float(_c19.iloc[-1]) / float(_c19.iloc[-4]) - 1) * 100
                     if len(_c19) >= 6 and float(_c19.iloc[-6]) > 0:
@@ -4159,7 +4188,7 @@ if stock_input:
                     "大盤不是明顯逆風",
                     bool(_s19_market_state),
                     _s19_market_pass,
-                    _s12_governance.get("market_state_zh", _s19_market_state),
+                    _s12_governance.get("market_state_zh", _s19_market_state_raw),
                     "大盤不要求強多，但不能處於明顯風險狀態"
                 )
 
@@ -4169,7 +4198,7 @@ if stock_input:
                     "個股趨勢已轉多",
                     bool(_s19_trend_state),
                     _s19_trend_pass,
-                    _s12_governance.get("trend_state_zh", _s19_trend_state),
+                    _s12_governance.get("trend_state_zh", _s19_trend_state_raw),
                     "避免短線訊號與中期趨勢完全相反"
                 )
 
@@ -4335,6 +4364,12 @@ if stock_input:
                     "early_entry_checks": _s19_checks,
                     "early_core_ok": _s19_core_ok,
                     "early_not_extended": _s19_not_extended,
+                    "early_market_raw": _s19_market_state_raw,
+                    "early_market_norm": _s19_market_state,
+                    "early_trend_raw": _s19_trend_state_raw,
+                    "early_trend_norm": _s19_trend_state,
+                    "early_ma20": _s19_ma20,
+                    "early_ma60": _s19_ma60,
                 }
                 st.session_state["_stockpilot4_s18_position"] = _s18_position_plan
 
@@ -4517,6 +4552,15 @@ if stock_input:
                                 st.info(
                                     f"判斷原因：{_p18.get('trade_reason', '等待更多確認。')}"
                                 )
+                                st.caption(
+                                    f"系統實際採用：趨勢＝{_p18.get('early_trend_raw', '未知')} "
+                                    f"→ {_p18.get('early_trend_norm', '未知')}；"
+                                    f"大盤＝{_p18.get('early_market_raw', '未知')} "
+                                    f"→ {_p18.get('early_market_norm', '未知')}；"
+                                    f"MA20＝{float(_p18.get('early_ma20', 0) or 0):,.2f}；"
+                                    f"MA60＝{float(_p18.get('early_ma60', 0) or 0):,.2f}"
+                                )
+
                                 _checks19 = _p18.get("early_entry_checks", []) or []
                                 if _checks19:
                                     _df19 = pd.DataFrame([
