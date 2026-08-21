@@ -235,18 +235,50 @@ def compute_live_data(stock_id: str, market_type: str, hist_last_close: float, h
             log_error("TWSE quote", exc)
     return fallback
 
+
+
 # ============ StockPilot 4.0 Shadow Data Bridge ============
 @st.cache_data(ttl=900)
 def get_shadow_market_index_df(market_type: str = "TSE"):
-    """提供 4.0 Shadow 使用的大盤日線；上市=TAIEX、上櫃=TPEx。"""
-    is_otc = any(x in str(market_type).upper() for x in ["OTC", "TWO", "櫃", "上櫃"])
+    """僅供 4.0 Shadow 使用；上市使用 TAIEX，上櫃使用 TPEx，不互相替代。"""
+    is_otc = any(
+        x in str(market_type).upper()
+        for x in ["OTC", "TWO", "櫃", "上櫃"]
+    )
     benchmark_id = "TPEx" if is_otc else "TAIEX"
+
     try:
-        df = get_api().taiwan_stock_daily(
+        raw = get_api().taiwan_stock_daily(
             stock_id=benchmark_id,
             start_date=(datetime.now(TZ) - timedelta(days=240)).strftime("%Y-%m-%d"),
         )
-        return df.copy() if df is not None else pd.DataFrame()
+        if raw is None or raw.empty:
+            return pd.DataFrame()
+
+        df = raw.copy().sort_values("date").drop_duplicates("date")
+        df = df.rename(
+            columns={
+                "max": "high",
+                "min": "low",
+                "Trading_Volume": "vol",
+            }
+        )
+
+        required = ["date", "open", "high", "low", "close"]
+        if not all(col in df.columns for col in required):
+            return pd.DataFrame()
+
+        if "vol" not in df.columns:
+            df["vol"] = np.nan
+
+        for col in ["open", "high", "low", "close", "vol"]:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+
+        return (
+            df[["date", "open", "high", "low", "close", "vol"]]
+            .dropna(subset=["close"])
+            .reset_index(drop=True)
+        )
     except Exception as exc:
         log_error(f"StockPilot 4.0 market bridge {benchmark_id}", exc)
         return pd.DataFrame()
@@ -254,13 +286,28 @@ def get_shadow_market_index_df(market_type: str = "TSE"):
 
 @st.cache_data(ttl=900)
 def get_shadow_margin_df(stock_id: str):
-    """提供 4.0 Shadow 使用的融資融券資料。"""
+    """僅供 4.0 Shadow 使用；保留融資融券原始缺值，不以 0 補值。"""
     try:
-        df = get_api().taiwan_stock_margin_purchase_short_sale(
+        raw = get_api().taiwan_stock_margin_purchase_short_sale(
             stock_id=str(stock_id),
-            start_date=(datetime.now(TZ) - timedelta(days=90)).strftime("%Y-%m-%d"),
+            start_date=(datetime.now(TZ) - timedelta(days=120)).strftime("%Y-%m-%d"),
         )
-        return df.copy() if df is not None else pd.DataFrame()
+        if raw is None or raw.empty:
+            return pd.DataFrame()
+
+        cols = [
+            col
+            for col in [
+                "date",
+                "MarginPurchaseTodayBalance",
+                "ShortSaleTodayBalance",
+            ]
+            if col in raw.columns
+        ]
+        if "date" not in cols or "MarginPurchaseTodayBalance" not in cols:
+            return pd.DataFrame()
+
+        return raw[cols].copy().sort_values("date").reset_index(drop=True)
     except Exception as exc:
         log_error(f"StockPilot 4.0 margin bridge {stock_id}", exc)
         return pd.DataFrame()
@@ -3474,42 +3521,53 @@ if stock_input:
         decision_snapshot["strategy_outcome_validation"] = build_strategy_outcome_validation(res)
         decision_snapshot["strategy_audit"] = build_strategy_consistency_audit(decision_snapshot, strategy_state, user_holding)
 
+        # StockPilot 4.0 Shadow：只做平行比對，不改寫 3.3 正式策略。
         shadow_v4 = None
         shadow_v4_error = None
+
         if ENABLE_STOCKPILOT4_SHADOW:
             try:
-                shadow_market_df = get_shadow_market_index_df(res.get("market_type", "TSE"))
+                shadow_market_df = get_shadow_market_index_df(
+                    res.get("market_type", "TSE")
+                )
                 shadow_margin_df = get_shadow_margin_df(res["stock_id"])
+
                 shadow_payload = build_legacy_payload_from_app(
                     res,
                     market_index_df=shadow_market_df,
                     margin_df=shadow_margin_df,
                     legacy_levels=decision_snapshot.get("levels", {}),
                 )
+
                 shadow_v4 = ShadowIntegration().run(
                     shadow_payload,
                     is_holding=user_holding,
                     cost=user_cost,
                     legacy_action=strategy_state.get("action"),
                 )
+
                 st.session_state["_stockpilot4_shadow"] = shadow_v4
                 st.session_state["_stockpilot4_shadow_error"] = None
+
             except Exception as exc:
                 shadow_v4_error = f"{type(exc).__name__}: {exc}"
                 log_error("StockPilot 4.0 shadow hook", exc)
                 st.session_state["_stockpilot4_shadow"] = None
                 st.session_state["_stockpilot4_shadow_error"] = shadow_v4_error
 
-        # 正式 3.3 決策卡永遠顯示，與 Shadow 成功/失敗完全脫鉤。
+        # 3.3 正式 Decision Center：永遠執行，不依賴 Shadow 成敗。
         compass = decision_snapshot["compass"]
         decision_engine = decision_snapshot["market"]
         portfolio_engine = decision_snapshot["portfolio"]
+
         compass["decision"] = strategy_state["action"]
         compass["strategy"] = "正式趨勢：" + strategy_state["state_label"]
         compass["action"] = strategy_state["change_note"]
         compass["today"] = strategy_state["today_change"]
         compass["confidence"] = strategy_state["trend_score"]
+
         decision_color = strategy_state["color"]
+
         st.markdown(f"""
         <div style="background:linear-gradient(135deg,#0F172A 0%,#1E293B 100%);padding:24px;border-radius:14px;margin:8px 0 18px 0;color:white;border:1px solid #334155;">
           <div style="display:flex;justify-content:space-between;gap:16px;align-items:flex-start;flex-wrap:wrap;">
@@ -3534,41 +3592,81 @@ if stock_input:
         </div>
         """, unsafe_allow_html=True)
 
-        # Shadow panel 永遠出現：成功顯示比對；失敗直接顯示真實錯誤。
+        # Shadow panel：無論成功或失敗都要顯示。
         if SHOW_STOCKPILOT4_SHADOW_PANEL:
-            with st.expander("🧪 StockPilot 4.0 Shadow 比對（測試，不取代正式建議）", expanded=False):
+            with st.expander(
+                "🧪 StockPilot 4.0 Shadow 比對（測試，不取代正式建議）",
+                expanded=False,
+            ):
                 if shadow_v4 is None:
-                    st.error("StockPilot 4.0 Shadow 執行失敗；3.3 正式策略不受影響。")
-                    st.code(shadow_v4_error or st.session_state.get("_stockpilot4_shadow_error") or "未知錯誤")
-                    st.caption("請把這個錯誤內容截圖給我；下一版可直接針對真正失敗點修正。")
+                    st.error(
+                        "StockPilot 4.0 Shadow 執行失敗；"
+                        "3.3 正式策略仍正常運作，不受影響。"
+                    )
+                    st.code(
+                        shadow_v4_error
+                        or st.session_state.get("_stockpilot4_shadow_error")
+                        or "未知錯誤"
+                    )
+                    st.caption(
+                        "請把這個錯誤內容截圖給我，"
+                        "下一步直接針對真正失敗點修正。"
+                    )
                 else:
                     s = shadow_v4.snapshot
                     legacy_action = shadow_v4.legacy_action or "無法辨識"
                     match_text = (
-                        "✅ 同方向" if shadow_v4.same_direction is True
-                        else "⚠️ 不同方向" if shadow_v4.same_direction is False
+                        "✅ 同方向"
+                        if shadow_v4.same_direction is True
+                        else "⚠️ 不同方向"
+                        if shadow_v4.same_direction is False
                         else "⚪ 無法直接比較"
                     )
+
                     sc1, sc2, sc3, sc4 = st.columns(4)
                     sc1.metric("舊版正式動作", legacy_action)
                     sc2.metric("4.0 Shadow 策略", s.strategy.value.upper())
                     sc3.metric("方向比對", match_text)
-                    sc4.metric("4.0 資料品質", f"{float(s.data_quality_score or 0):.0f}%")
+                    sc4.metric(
+                        "4.0 資料品質",
+                        f"{float(s.data_quality_score or 0):.0f}%",
+                    )
+
                     st.caption(
                         f"4.0 正式趨勢：{s.trend_state.value}｜"
                         f"大盤：{s.market_state.value}｜"
                         f"現價：{float(s.current_price or 0):.2f} 元"
                     )
                     st.write("4.0 動作說明：", s.action.detail)
+
                     if s.primary_trigger:
                         st.write("主要 Trigger：", s.primary_trigger)
                     if s.secondary_trigger:
                         st.write("次要 Trigger：", s.secondary_trigger)
+
                     if shadow_v4.differences:
                         st.warning("｜".join(shadow_v4.differences))
                     else:
-                        st.success("目前未偵測到舊版與 4.0 的方向差異。")
+                        st.success(
+                            "目前未偵測到舊版與 4.0 的方向差異。"
+                        )
 
+        # Phase 3：AI 投資委員會正式版（第一層摘要＋分析依據＋信心計算）
+        committee = committee_seed
+        committee = align_committee_with_decision(committee, decision_engine)
+
+        # 「前一交易日比較」已移除：本機 SQLite 只能記錄實際開啟分析的日期，
+        # 且 Streamlit Cloud 重新部署後本機檔案不保證保留，不能冒充完整交易日歷史。
+        data_quality_audit = build_data_quality_audit(res, decision_engine)
+
+        today_board = portfolio_engine
+        if_i_were_you = portfolio_engine
+        ai_forecast = build_ai_forecast(res, compass, decision_engine)
+
+
+
+        # StockPilot 3.0 首頁：State、Action、Evidence、Trigger。
+        lv = decision_snapshot["levels"]
         strategy_state = decision_snapshot["strategy"]
 
         st.markdown("### ① 目前市場狀態（State）")
