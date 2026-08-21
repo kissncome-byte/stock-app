@@ -4071,9 +4071,46 @@ if stock_input:
 
                 _s19_slope20 = _s19_safe_float(_s19_ta.get("slope20", 0), 0.0)
                 _s19_slope60 = _s19_safe_float(_s19_ta.get("slope60", 0), 0.0)
-                _s19_volume_ratio = _s19_ta.get("volume_ratio", None)
-                if _s19_volume_ratio is not None:
-                    _s19_volume_ratio = _s19_safe_float(_s19_volume_ratio, None)
+                # Sprint 19.8：量能來源分流
+                # 正式趨勢若關閉盤中量比，trend_analysis["volume_ratio"] 會刻意為 0；
+                # 起漲偵測不可把這個 0 誤判為「極度無量」。
+                _s19_volume_ratio = None
+                _s19_volume_source = "資料不足"
+
+                _s19_market_data = res.get("market_data", {}) or {}
+                _s19_intraday_volume_valid = bool(
+                    _s19_market_data.get("volume_valid", False)
+                    and _s19_market_data.get("volume_ratio_enabled", False)
+                )
+
+                if _s19_intraday_volume_valid:
+                    _vr19 = _s19_ta.get("volume_ratio", None)
+                    if _vr19 is not None:
+                        _s19_volume_ratio = _s19_safe_float(_vr19, None)
+                        if _s19_volume_ratio is not None and _s19_volume_ratio > 0:
+                            _s19_volume_source = "盤中成交量／20日均量"
+
+                # 若盤中量比停用或不可用，改用最近完整交易日。
+                if _s19_volume_ratio is None or _s19_volume_ratio <= 0:
+                    _s19_df_vol = res.get("daily_df")
+                    if (
+                        isinstance(_s19_df_vol, pd.DataFrame)
+                        and not _s19_df_vol.empty
+                        and "vol" in _s19_df_vol.columns
+                    ):
+                        _v19 = pd.to_numeric(_s19_df_vol["vol"], errors="coerce").dropna()
+                        if len(_v19) >= 21:
+                            _last_vol19 = float(_v19.iloc[-1])
+                            _avg20_vol19 = float(_v19.iloc[-21:-1].mean())
+                            if _avg20_vol19 > 0 and _last_vol19 >= 0:
+                                _s19_volume_ratio = _last_vol19 / _avg20_vol19
+                                _s19_volume_source = "最近完整交易日成交量／前20日均量"
+                        elif len(_v19) >= 20:
+                            _last_vol19 = float(_v19.iloc[-1])
+                            _avg20_vol19 = float(_v19.tail(20).mean())
+                            if _avg20_vol19 > 0 and _last_vol19 >= 0:
+                                _s19_volume_ratio = _last_vol19 / _avg20_vol19
+                                _s19_volume_source = "最近交易日成交量／20日均量"
 
                 _s19_daily = res.get("daily_df")
                 _s19_ret3 = None
@@ -4164,8 +4201,11 @@ if stock_input:
                     "成交量不是極度低迷",
                     _s19_volume_ratio is not None,
                     _s19_volume_ratio >= 0.55 if _s19_volume_ratio is not None else False,
-                    f"20日均量的 {_s19_volume_ratio:.2f} 倍" if _s19_volume_ratio is not None else "缺資料",
-                    "起漲可以先於爆量，但需要基本交易動能",
+                    (
+                        f"{_s19_volume_ratio:.2f} 倍（{_s19_volume_source}）"
+                        if _s19_volume_ratio is not None else "缺資料"
+                    ),
+                    "起漲可以先於爆量；盤中量比停用時，以最近完整交易日量能替代",
                 )
 
                 # 籌碼採主系統 chip_engine：有 veto 直接不加分；沒有 veto 且 warning 不高視為可接受
@@ -4358,6 +4398,8 @@ if stock_input:
                     "early_ma20": _s19_ma20,
                     "early_ma60": _s19_ma60,
                     "early_extension_limit_pct": _s19_extension_limit_pct,
+                    "early_volume_ratio": _s19_volume_ratio,
+                    "early_volume_source": _s19_volume_source,
                 }
                 st.session_state["_stockpilot4_s18_position"] = _s18_position_plan
 
@@ -4560,7 +4602,9 @@ if stock_input:
                                     f"大盤＝{_p18.get('early_market_state', '未知')}／"
                                     f"風險閘門 {_p18.get('early_market_gate', '未知')}；"
                                     f"MA20＝{float(_p18.get('early_ma20', 0) or 0):,.2f}；"
-                                    f"MA60＝{float(_p18.get('early_ma60', 0) or 0):,.2f}"
+                                    f"MA60＝{float(_p18.get('early_ma60', 0) or 0):,.2f}；"
+                                    f"量能＝{float(_p18.get('early_volume_ratio', 0) or 0):.2f} 倍"
+                                    f"（{_p18.get('early_volume_source', '未知來源')}）"
                                 )
 
                                 _checks19 = _p18.get("early_entry_checks", []) or []
