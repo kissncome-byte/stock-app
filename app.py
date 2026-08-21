@@ -4613,8 +4613,10 @@ if stock_input:
                 # 鎖定以「股票 + 台北日期」為單位，不跨交易日延續。
                 _beta84_stock_key = str(res.get("stock_id", stock_input) or stock_input)
                 _beta84_trade_date = str(pd.Timestamp.now(tz="Asia/Taipei").date())
+                # Beta v8.4e：更換穩定器版本 key。
+                # 舊版曾用較寬鬆規則鎖定的狀態不可沿用。
                 _beta84_session_key = (
-                    f"stockpilot_v84_{_beta84_stock_key}_{_beta84_trade_date}"
+                    f"stockpilot_v84e_{_beta84_stock_key}_{_beta84_trade_date}"
                 )
 
                 _beta84_prev = st.session_state.get(_beta84_session_key, {}) or {}
@@ -4665,6 +4667,9 @@ if stock_input:
                     "last_price": float(_s19_price or 0),
                     "invalidation": float(_beta84_invalidation or 0),
                     "invalid_now": _beta84_invalid_now,
+                    "cross_up_today": bool(_beta84d_cross_up),
+                    "prev_price": float(_beta84d_prev_price or 0),
+                    "trigger_price": float(_beta5_probe_trigger or 0),
                 }
 
                 # Beta v8.4c：價格路徑在決策鏈後段才完成，
@@ -4925,6 +4930,10 @@ if stock_input:
                     "一旦拉回轉強試單成立，當日不因觸發價附近的小幅震盪反覆改變；"
                     "只有跌破進場失效價才解除。"
                 )
+                if _p18.get("beta_probe_latched"):
+                    st.caption("本日鎖定來源：今天已確認由觸發價下方重新站上。")
+                else:
+                    st.caption("本日尚未建立新的試單鎖定。")
 
                 st.markdown("### 關鍵價位")
                 p1, p2, p3 = st.columns(3)
