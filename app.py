@@ -4566,6 +4566,9 @@ if stock_input:
                                 )
 
                 # 若近期曾進入觀察區，且現在重新站上試單觸發價，才算真正的「拉回轉強」。
+                # Beta v8.4b：安全初始化，避免不同資料路徑下變數尚未建立。
+                _beta7_reclaim_triggered = False
+
                 if (
                     _beta6_probe_available
                     and _beta7_pullback_seen
