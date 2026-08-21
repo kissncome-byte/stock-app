@@ -4363,10 +4363,17 @@ if stock_input:
 
                 # 轉強試單：反轉結構已成形，動能也轉強，但還不到正式確認。
                 _s21_turn_probe = bool(
-                    _s19_core_ok
-                    and _s19_not_extended
-                    and _s20_momentum_turn
-                    and _s19_early_ratio >= 0.62
+                    (
+                        _s19_core_ok
+                        and _s19_not_extended
+                        and _s20_momentum_turn
+                        and _s19_early_ratio >= 0.62
+                    )
+                    or (
+                        _beta7_reclaim_triggered
+                        and _s21_no_hard_veto
+                        and _s19_not_extended
+                    )
                 )
 
                 # 正式進場：條件完整度較高，或已完成突破確認。
@@ -4521,6 +4528,52 @@ if stock_input:
                     _beta5_probe_trigger = 0
                     _beta6_probe_available = False
 
+                # Beta v7：試單觸發必須具備順序
+                # 不能因為「目前價格本來就在觸發價上方」就算觸發。
+                # 必須先確認近期真的回到拉回觀察區，之後才重新站上觸發價。
+                _beta7_pullback_seen = False
+                _beta7_reclaim_triggered = False
+                _beta7_pullback_days_ago = None
+
+                _beta7_df = res.get("daily_df")
+                if (
+                    isinstance(_beta7_df, pd.DataFrame)
+                    and not _beta7_df.empty
+                    and _beta5_pullback_high > 0
+                ):
+                    # 優先使用 low；沒有 low 才退回 close。
+                    _beta7_price_col = "low" if "low" in _beta7_df.columns else "close"
+                    if _beta7_price_col in _beta7_df.columns:
+                        _beta7_series = pd.to_numeric(
+                            _beta7_df[_beta7_price_col], errors="coerce"
+                        ).dropna()
+
+                        # 只看最近 8 個完整交易日，避免很久以前的回檔誤算成這一波。
+                        _beta7_recent = _beta7_series.tail(8)
+                        if len(_beta7_recent):
+                            _beta7_touch_mask = (
+                                (_beta7_recent >= _beta5_pullback_low)
+                                & (_beta7_recent <= _beta5_pullback_high)
+                            )
+                            if bool(_beta7_touch_mask.any()):
+                                _beta7_pullback_seen = True
+                                _beta7_touch_positions = [
+                                    idx for idx, ok in enumerate(_beta7_touch_mask.tolist()) if ok
+                                ]
+                                _beta7_last_touch_pos = _beta7_touch_positions[-1]
+                                _beta7_pullback_days_ago = (
+                                    len(_beta7_recent) - 1 - _beta7_last_touch_pos
+                                )
+
+                # 若近期曾進入觀察區，且現在重新站上試單觸發價，才算真正的「拉回轉強」。
+                if (
+                    _beta6_probe_available
+                    and _beta7_pullback_seen
+                    and _beta5_probe_trigger > 0
+                    and _s19_price >= _beta5_probe_trigger
+                ):
+                    _beta7_reclaim_triggered = True
+
                 _s18_position_plan = {
                     "action": _s12_action,
                     "action_zh": _s18_action_zh,
@@ -4613,6 +4666,9 @@ if stock_input:
                     "beta_pullback_high": _beta5_pullback_high,
                     "beta_probe_trigger": _beta5_probe_trigger,
                     "beta_probe_available": _beta6_probe_available,
+                    "beta_pullback_seen": _beta7_pullback_seen,
+                    "beta_pullback_days_ago": _beta7_pullback_days_ago,
+                    "beta_reclaim_triggered": _beta7_reclaim_triggered,
                     "beta_strong_breakout": _beta5_confirm,
                 }
                 st.session_state["_stockpilot4_s18_position"] = _s18_position_plan
@@ -4742,6 +4798,23 @@ if stock_input:
                     if _b_invalid > 0 else "進場條件失效價：待建立"
                 )
 
+                if _p18.get("beta_probe_available", True) and _probe_trigger > 0:
+                    if _p18.get("beta_pullback_seen"):
+                        _days_ago = _p18.get("beta_pullback_days_ago")
+                        st.caption(
+                            f"拉回路徑：最近 8 個交易日內已進入過觀察區"
+                            + (
+                                f"（約 {_days_ago} 個交易日前）"
+                                if _days_ago is not None else ""
+                            )
+                            + "；重新站上試單觸發價後才算轉強試單。"
+                        )
+                    else:
+                        st.caption(
+                            "拉回路徑：近期尚未真正進入拉回觀察區；"
+                            "即使現價高於試單觸發價，也不會直接視為已觸發試單。"
+                        )
+
                 if _state_now == "等待拉回" and _pb_low > 0 and _pb_high > 0:
                     if _p18.get("beta_probe_available", True) and _probe_trigger > 0:
                         st.write(
@@ -4818,6 +4891,12 @@ if stock_input:
                         f"{float(_p18.get('beta_pullback_high', 0) or 0):,.2f}｜"
                         f"試單觸發 {_route_probe}｜"
                         f"強勢突破 {float(_p18.get('beta_strong_breakout', 0) or 0):,.2f}"
+                    )
+                    st.caption(
+                        "路徑狀態："
+                        + ("已曾拉回觀察區" if _p18.get("beta_pullback_seen") else "尚未拉回觀察區")
+                        + "｜"
+                        + ("已重新站上試單觸發價" if _p18.get("beta_reclaim_triggered") else "尚未完成拉回後轉強")
                     )
                 _checks = _p18.get("early_entry_checks", []) or []
                 if _checks:
