@@ -4361,6 +4361,9 @@ if stock_input:
                     and _s21_early_turn
                 )
 
+                # Beta v8.4c：拉回轉強旗標必須在任何使用前先建立。
+                _beta7_reclaim_triggered = False
+
                 # 轉強試單：反轉結構已成形，動能也轉強，但還不到正式確認。
                 _s21_turn_probe = bool(
                     (
@@ -4566,8 +4569,8 @@ if stock_input:
                                 )
 
                 # 若近期曾進入觀察區，且現在重新站上試單觸發價，才算真正的「拉回轉強」。
-                # Beta v8.4b：安全初始化，避免不同資料路徑下變數尚未建立。
-                _beta7_reclaim_triggered = False
+                # Beta v8.4c：此處開始計算真正的「先拉回、後站回」狀態。
+                _beta7_reclaim_triggered = bool(_beta7_reclaim_triggered)
 
                 if (
                     _beta6_probe_available
@@ -4635,6 +4638,24 @@ if stock_input:
                     "invalidation": float(_beta84_invalidation or 0),
                     "invalid_now": _beta84_invalid_now,
                 }
+
+                # Beta v8.4c：價格路徑在決策鏈後段才完成，
+                # 因此若「拉回後轉強」成立，要把結果回寫到未持股決策。
+                if (
+                    (not user_holding or _s18_current_shares <= 0)
+                    and _beta7_reclaim_triggered
+                    and _s21_no_hard_veto
+                    and _s19_not_extended
+                    and _s19_early_state not in {"FORMAL_ENTRY", "WAIT_PULLBACK", "NO_ENTRY"}
+                ):
+                    _s21_turn_probe = True
+                    _s19_early_state = "TURN_PROBE"
+                    _s19_early_state_zh = "轉強試單"
+                    _s183_trade_decision = "轉強試單"
+                    _s183_trade_reason = (
+                        "近期已先回到拉回觀察區，之後重新站上試單觸發價；"
+                        "拉回轉強路徑成立，可用小部位試單，正式確認後再加碼。"
+                    )
 
                 _s18_position_plan = {
                     "action": _s12_action,
