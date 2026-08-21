@@ -3651,6 +3651,183 @@ if stock_input:
                             "目前未偵測到舊版與 4.0 的方向差異。"
                         )
 
+                    # Sprint 11：4.0 Decision Audit
+                    # 只讀取已存在的 res / shadow payload / snapshot，不改任何策略或分數。
+                    with st.expander("🔎 4.0 決策稽核｜實際用了哪些數據", expanded=True):
+                        audit_daily = res.get("daily_df")
+                        audit_inst = res.get("institutional_df")
+                        audit_margin = shadow_margin_df if "shadow_margin_df" in locals() else pd.DataFrame()
+                        audit_market = shadow_market_df if "shadow_market_df" in locals() else pd.DataFrame()
+
+                        audit_price = float(res.get("current_price", 0) or 0)
+                        audit_ma20 = float(res.get("ma20_val", 0) or 0)
+                        audit_ma60 = float(res.get("ma60_val", 0) or 0)
+                        audit_atr = float(res.get("atr", 0) or 0)
+                        audit_confirm = float(decision_snapshot.get("levels", {}).get("confirmation", 0) or 0)
+                        audit_stop = float(decision_snapshot.get("levels", {}).get("protective_stop", 0) or 0)
+
+                        def _audit_slope(series, periods=5):
+                            try:
+                                s = pd.to_numeric(series, errors="coerce").dropna()
+                                if len(s) <= periods:
+                                    return None
+                                base = float(s.iloc[-periods-1])
+                                last = float(s.iloc[-1])
+                                if base == 0:
+                                    return None
+                                return (last / base - 1.0) * 100.0
+                            except Exception:
+                                return None
+
+                        audit_close_slope = None
+                        audit_ma20_slope = None
+                        audit_ma60_slope = None
+                        audit_volume_ratio = None
+                        audit_last_volume = None
+                        audit_avg20_volume = None
+
+                        if isinstance(audit_daily, pd.DataFrame) and not audit_daily.empty:
+                            close_s = pd.to_numeric(audit_daily.get("close"), errors="coerce")
+                            audit_close_slope = _audit_slope(close_s, 5)
+
+                            if len(close_s.dropna()) >= 60:
+                                ma20_series = close_s.rolling(20).mean()
+                                ma60_series = close_s.rolling(60).mean()
+                                audit_ma20_slope = _audit_slope(ma20_series, 5)
+                                audit_ma60_slope = _audit_slope(ma60_series, 5)
+
+                            vol_col = "vol" if "vol" in audit_daily.columns else (
+                                "Trading_Volume" if "Trading_Volume" in audit_daily.columns else None
+                            )
+                            if vol_col:
+                                vol_s = pd.to_numeric(audit_daily[vol_col], errors="coerce").dropna()
+                                if len(vol_s) >= 20:
+                                    audit_last_volume = float(vol_s.iloc[-1])
+                                    audit_avg20_volume = float(vol_s.tail(20).mean())
+                                    if audit_avg20_volume > 0:
+                                        audit_volume_ratio = audit_last_volume / audit_avg20_volume
+
+                        def _fmt_pct(v):
+                            return "缺資料" if v is None else f"{v:+.2f}%"
+
+                        def _fmt_num(v, digits=2):
+                            return "缺資料" if v is None else f"{v:,.{digits}f}"
+
+                        st.markdown("##### A. 價格與趨勢原始數據")
+                        trend_rows = [
+                            {"資料": "現價", "實際值": f"{audit_price:,.2f} 元", "判讀": "高於 MA20" if audit_ma20 and audit_price > audit_ma20 else "低於/等於 MA20"},
+                            {"資料": "MA20", "實際值": f"{audit_ma20:,.2f} 元", "判讀": "高於 MA60" if audit_ma60 and audit_ma20 > audit_ma60 else "低於/等於 MA60"},
+                            {"資料": "MA60", "實際值": f"{audit_ma60:,.2f} 元", "判讀": "中期趨勢基準"},
+                            {"資料": "近5日收盤變化", "實際值": _fmt_pct(audit_close_slope), "判讀": "短線價格斜率"},
+                            {"資料": "MA20 近5日斜率", "實際值": _fmt_pct(audit_ma20_slope), "判讀": "短均線方向"},
+                            {"資料": "MA60 近5日斜率", "實際值": _fmt_pct(audit_ma60_slope), "判讀": "中期均線方向"},
+                            {"資料": "ATR", "實際值": f"{audit_atr:,.2f}", "判讀": "波動風險"},
+                        ]
+                        st.dataframe(pd.DataFrame(trend_rows), use_container_width=True, hide_index=True)
+
+                        st.markdown("##### B. BUILD 與 Trigger 一致性檢查")
+                        confirm_gap = ((audit_confirm / audit_price - 1) * 100) if audit_price > 0 and audit_confirm > 0 else None
+                        below_confirmation = bool(audit_confirm > 0 and audit_price < audit_confirm)
+                        trigger_rows = [
+                            {"項目": "4.0 Strategy", "值": s.strategy.value.upper(), "檢查": "Shadow 實際輸出"},
+                            {"項目": "現價", "值": f"{audit_price:,.2f} 元", "檢查": ""},
+                            {"項目": "確認價", "值": f"{audit_confirm:,.2f} 元" if audit_confirm else "缺資料", "檢查": f"距現價 {_fmt_pct(confirm_gap)}" if confirm_gap is not None else ""},
+                            {"項目": "保護價", "值": f"{audit_stop:,.2f} 元" if audit_stop else "缺資料", "檢查": ""},
+                        ]
+                        st.dataframe(pd.DataFrame(trigger_rows), use_container_width=True, hide_index=True)
+                        if s.strategy.value == "build" and below_confirmation:
+                            st.error(
+                                "⚠️ 稽核警示：4.0 目前輸出 BUILD，但現價仍低於確認價。"
+                                "這不是自動改答案；此處只標記決策規則與 Trigger 可能不一致，"
+                                "下一步應檢查 Strategy Engine 的進場門檻。"
+                            )
+                        elif s.strategy.value == "build":
+                            st.success("BUILD 與確認價條件目前未偵測到直接衝突。")
+
+                        st.markdown("##### C. 成交量、法人、融資")
+                        chip_rows = []
+                        chip_rows.append({
+                            "資料": "最新成交量",
+                            "實際值": _fmt_num(audit_last_volume, 0),
+                            "比較/方向": (
+                                f"20日均量 {_fmt_num(audit_avg20_volume, 0)}；量比 {audit_volume_ratio:.2f}x"
+                                if audit_volume_ratio is not None else "缺少可比較資料"
+                            ),
+                        })
+
+                        if isinstance(audit_inst, pd.DataFrame) and not audit_inst.empty:
+                            for label, col in [("外資", "外資(張)"), ("投信", "投信(張)"), ("自營商", "自營商總計(張)")]:
+                                if col in audit_inst.columns:
+                                    ser = pd.to_numeric(audit_inst[col], errors="coerce").dropna()
+                                    latest = float(ser.iloc[-1]) if len(ser) else None
+                                    sum5 = float(ser.tail(5).sum()) if len(ser) else None
+                                    chip_rows.append({
+                                        "資料": label,
+                                        "實際值": f"最新 {latest:+,.0f} 張" if latest is not None else "缺資料",
+                                        "比較/方向": f"近5日 {sum5:+,.0f} 張" if sum5 is not None else "缺資料",
+                                    })
+                        else:
+                            chip_rows.extend([
+                                {"資料": "外資", "實際值": "缺資料", "比較/方向": "不應視為 0"},
+                                {"資料": "投信", "實際值": "缺資料", "比較/方向": "不應視為 0"},
+                            ])
+
+                        if isinstance(audit_margin, pd.DataFrame) and not audit_margin.empty and "MarginPurchaseTodayBalance" in audit_margin.columns:
+                            mser = pd.to_numeric(audit_margin["MarginPurchaseTodayBalance"], errors="coerce").dropna()
+                            m_latest = float(mser.iloc[-1]) if len(mser) else None
+                            m_5ago = float(mser.iloc[-6]) if len(mser) >= 6 else None
+                            m_change = ((m_latest / m_5ago - 1) * 100) if m_latest is not None and m_5ago not in (None, 0) else None
+                            chip_rows.append({
+                                "資料": "融資餘額",
+                                "實際值": _fmt_num(m_latest, 0),
+                                "比較/方向": f"近5期 {_fmt_pct(m_change)}",
+                            })
+                        else:
+                            chip_rows.append({"資料": "融資餘額", "實際值": "缺資料", "比較/方向": "不應視為 0"})
+
+                        st.dataframe(pd.DataFrame(chip_rows), use_container_width=True, hide_index=True)
+
+                        st.markdown("##### D. 大盤實際採用資料")
+                        audit_market_name = "TPEx" if any(
+                            x in str(res.get("market_type", "TSE")).upper()
+                            for x in ["OTC", "TWO", "櫃", "上櫃"]
+                        ) else "TAIEX"
+                        market_rows = []
+                        if isinstance(audit_market, pd.DataFrame) and not audit_market.empty:
+                            mclose = pd.to_numeric(audit_market.get("close"), errors="coerce").dropna()
+                            m_last = float(mclose.iloc[-1]) if len(mclose) else None
+                            m_ma20 = float(mclose.tail(20).mean()) if len(mclose) >= 20 else None
+                            m_ma60 = float(mclose.tail(60).mean()) if len(mclose) >= 60 else None
+                            m_slope5 = _audit_slope(mclose, 5)
+                            market_rows = [
+                                {"資料": "採用指數", "實際值": audit_market_name, "用途": "4.0 Market Engine 對應市場"},
+                                {"資料": "指數最新收盤", "實際值": _fmt_num(m_last, 2), "用途": "大盤價格"},
+                                {"資料": "指數 MA20", "實際值": _fmt_num(m_ma20, 2), "用途": "短期市場趨勢"},
+                                {"資料": "指數 MA60", "實際值": _fmt_num(m_ma60, 2), "用途": "中期市場趨勢"},
+                                {"資料": "指數近5日變化", "實際值": _fmt_pct(m_slope5), "用途": "近期市場方向"},
+                                {"資料": "4.0 Market State", "實際值": s.market_state.value, "用途": "最終市場分類"},
+                            ]
+                        else:
+                            market_rows = [
+                                {"資料": "採用指數", "實際值": audit_market_name, "用途": "應採用但目前缺資料"},
+                                {"資料": "4.0 Market State", "實際值": s.market_state.value, "用途": "需確認是否因缺資料降級"},
+                            ]
+                        st.dataframe(pd.DataFrame(market_rows), use_container_width=True, hide_index=True)
+
+                        st.markdown("##### E. 4.0 最終決策路徑")
+                        path_rows = [
+                            {"階段": "Trend Engine", "輸出": s.trend_state.value, "說明": "由價格/均線/結構等形成趨勢狀態"},
+                            {"階段": "Market Engine", "輸出": s.market_state.value, "說明": f"使用 {audit_market_name} 對應市場"},
+                            {"階段": "Strategy", "輸出": s.strategy.value.upper(), "說明": s.action.detail},
+                            {"階段": "Primary Trigger", "輸出": str(s.primary_trigger or "無"), "說明": "主要確認條件"},
+                            {"階段": "Secondary Trigger", "輸出": str(s.secondary_trigger or "無"), "說明": "次要風險條件"},
+                        ]
+                        st.dataframe(pd.DataFrame(path_rows), use_container_width=True, hide_index=True)
+                        st.caption(
+                            "注意：Sprint 11 只做可視化稽核。上述表格不會修改 3.3 或 4.0 的任何分數、"
+                            "Trend State、Strategy 或 Trigger。"
+                        )
+
         # Phase 3：AI 投資委員會正式版（第一層摘要＋分析依據＋信心計算）
         committee = committee_seed
         committee = align_committee_with_decision(committee, decision_engine)
