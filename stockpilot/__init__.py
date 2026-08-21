@@ -1,0 +1,1 @@
+"""StockPilot core package."""

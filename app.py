@@ -3,11 +3,13 @@ import pandas as pd
 import numpy as np
 import streamlit as st
 import xml.etree.ElementTree as ET
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from FinMind.data import DataLoader
+from stockpilot.adapters import build_legacy_payload_from_app
+from stockpilot.services.shadow_integration import ShadowIntegration
 
 # ============ 1. Page Config ============
 st.set_page_config(page_title="Project Compass V3｜單一決策執行中心", layout="wide")
@@ -19,6 +21,10 @@ FUGLE_TOKEN = os.getenv("FUGLE_TOKEN", "") or st.secrets.get("FUGLE_TOKEN", "")
 
 # 即時成交量來源單位與更新時點不穩定，暫停使用「當日成交量比率」做顯示與決策。
 USE_INTRADAY_VOLUME_RATIO = False
+
+# StockPilot 4.0 Shadow Mode：舊版仍是正式輸出，4.0 僅背景比對。
+ENABLE_STOCKPILOT4_SHADOW = True
+SHOW_STOCKPILOT4_SHADOW_PANEL = True
 
 # ============ 3. Helper Functions ============
 def safe_float(x, default=0.0):
@@ -3436,6 +3442,30 @@ if stock_input:
         decision_snapshot["strategy_stability_validation"] = build_strategy_stability_validation(res)
         decision_snapshot["strategy_outcome_validation"] = build_strategy_outcome_validation(res)
         decision_snapshot["strategy_audit"] = build_strategy_consistency_audit(decision_snapshot, strategy_state, user_holding)
+
+shadow_v4 = None
+if ENABLE_STOCKPILOT4_SHADOW:
+    try:
+        shadow_market_df = get_shadow_market_index_df(
+            res.get("market_type", "TSE")
+        )
+        shadow_margin_df = get_shadow_margin_df(res["stock_id"])
+        shadow_payload = build_legacy_payload_from_app(
+            res,
+            market_index_df=shadow_market_df,
+            margin_df=shadow_margin_df,
+            legacy_levels=decision_snapshot.get("levels", {}),
+        )
+        shadow_v4 = ShadowIntegration().run(
+            shadow_payload,
+            is_holding=user_holding,
+            cost=user_cost,
+            legacy_action=strategy_state.get("action"),
+        )
+        st.session_state["_stockpilot4_shadow"] = shadow_v4
+    except Exception as exc:
+        log_error("StockPilot 4.0 shadow hook", exc)
+        st.session_state["_stockpilot4_shadow"] = None
         compass = decision_snapshot["compass"]
         decision_engine = decision_snapshot["market"]
         portfolio_engine = decision_snapshot["portfolio"]
@@ -3468,6 +3498,41 @@ if stock_input:
           <div style="margin-top:17px;background:rgba(255,255,255,.07);padding:14px;border-radius:9px;line-height:1.75;border:1px solid rgba(255,255,255,.08);"><b>一句話結論：</b>{compass['today']}</div>
         </div>
         """, unsafe_allow_html=True)
+
+
+if SHOW_STOCKPILOT4_SHADOW_PANEL and shadow_v4 is not None:
+    with st.expander("🧪 StockPilot 4.0 Shadow 比對（測試，不取代正式建議）"):
+        s = shadow_v4.snapshot
+        legacy_action = shadow_v4.legacy_action or "無法辨識"
+        match_text = (
+            "✅ 同方向"
+            if shadow_v4.same_direction is True
+            else "⚠️ 不同方向"
+            if shadow_v4.same_direction is False
+            else "⚪ 無法直接比較"
+        )
+        sc1, sc2, sc3, sc4 = st.columns(4)
+        sc1.metric("舊版正式動作", legacy_action)
+        sc2.metric("4.0 Shadow 策略", s.strategy.value.upper())
+        sc3.metric("方向比對", match_text)
+        sc4.metric(
+            "4.0 資料品質",
+            f"{float(s.data_quality_score or 0):.0f}%",
+        )
+        st.caption(
+            f"4.0 正式趨勢：{s.trend_state.value}｜"
+            f"大盤：{s.market_state.value}｜"
+            f"現價：{float(s.current_price or 0):.2f} 元"
+        )
+        st.write("4.0 動作說明：", s.action.detail)
+        if s.primary_trigger:
+            st.write("主要 Trigger：", s.primary_trigger)
+        if s.secondary_trigger:
+            st.write("次要 Trigger：", s.secondary_trigger)
+        if shadow_v4.differences:
+            st.warning("｜".join(shadow_v4.differences))
+        else:
+            st.success("目前未偵測到舊版與 4.0 的方向差異。")
 
         # Phase 3：AI 投資委員會正式版（第一層摘要＋分析依據＋信心計算）
         committee = committee_seed
