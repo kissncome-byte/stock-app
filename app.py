@@ -4585,10 +4585,31 @@ if stock_input:
                     _beta8_latched_probe = True
 
                 # 只有真正跌破進場失效價，才解除當日試單鎖定。
+                # Beta v8.2：進場失效價直接由既有正式風控價與進場區重建，
+                # 不引用不存在的舊失效價變數。
+                _beta8_entry_low = float(_s14_進場區_low or 0)
+                _beta8_stop = float(_s12_stop or 0)
+                _beta8_entry_tick = (
+                    tick_size(_beta8_entry_low)
+                    if _beta8_entry_low > 0 else 1.0
+                )
+                _beta8_invalidation_price = (
+                    min(
+                        _beta8_stop,
+                        _beta8_entry_low - _beta8_entry_tick
+                    )
+                    if _beta8_stop > 0 and _beta8_entry_low > 0
+                    else (
+                        _beta8_stop
+                        if _beta8_stop > 0
+                        else max(_beta8_entry_low - _beta8_entry_tick, 0)
+                    )
+                )
+
                 _beta8_invalid_now = bool(
                     float(_s19_price or 0) > 0
-                    and float(_s14_invalid or 0) > 0
-                    and float(_s19_price or 0) <= float(_s14_invalid or 0)
+                    and _beta8_invalidation_price > 0
+                    and float(_s19_price or 0) <= _beta8_invalidation_price
                 )
                 if _beta8_invalid_now:
                     _beta8_latched_probe = False
@@ -4700,9 +4721,13 @@ if stock_input:
                     "beta_reclaim_triggered": _beta7_reclaim_triggered,
                     "beta_probe_latched": _beta8_latched_probe,
                     "beta_intraday_invalid": _beta8_invalid_now,
+                    "beta_invalidation_price": _beta8_invalidation_price,
                     "beta_strong_breakout": _beta5_confirm,
+                    "decision_stock_id": str(stock_id),
+                    "decision_complete": True,
                 }
                 st.session_state["_stockpilot4_s18_position"] = _s18_position_plan
+                st.session_state["_stockpilot_last_complete_position"] = dict(_s18_position_plan)
 
                 st.session_state["_stockpilot4_shadow"] = shadow_v4
                 st.session_state["_stockpilot4_shadow_error"] = None
@@ -4713,7 +4738,18 @@ if stock_input:
                 shadow_v4 = None
                 st.session_state["_stockpilot4_shadow"] = None
                 st.session_state["_stockpilot4_shadow_error"] = shadow_v4_error
-                st.session_state["_stockpilot4_s18_position"] = {}
+
+                _last_complete = st.session_state.get(
+                    "_stockpilot_last_complete_position", {}
+                ) or {}
+                if (
+                    str(_last_complete.get("decision_stock_id", "")) == str(stock_id)
+                    and _last_complete.get("decision_complete")
+                ):
+                    # 同一檔股票：保留上一個完整日線決策，避免盤中暫時錯誤造成建議歸零。
+                    st.session_state["_stockpilot4_s18_position"] = dict(_last_complete)
+                else:
+                    st.session_state["_stockpilot4_s18_position"] = {}
 
         # 3.3 正式 Decision Center：永遠執行，不依賴 Shadow 成敗。
         compass = decision_snapshot["compass"]
@@ -4731,7 +4767,7 @@ if stock_input:
         # Beta v2：只顯示最新版操作畫面
         _p18 = st.session_state.get("_stockpilot4_s18_position", {}) or {}
 
-        # Beta v8.1 hotfix：Shadow 任一子模組失敗時，不得讓主決策畫面整段空白。
+        # Beta v8.2：正常情況應使用完整決策鏈；以下只作最後一道異常保險。
         # 以正式 Decision Center 的日線趨勢與關鍵價位建立可用的保底決策；
         # Shadow 恢復後仍優先採用完整的未持股/持股決策鏈。
         if not _p18:
@@ -4768,6 +4804,8 @@ if stock_input:
                 "beta_confirm_price": _fb_confirm,
                 "beta_invalidation_price": _fb_stop,
                 "fallback_mode": True,
+                "decision_stock_id": str(stock_id),
+                "decision_complete": False,
             }
 
         _stock_name_beta = str(res.get("stock_name", "") or "").strip()
@@ -4803,6 +4841,12 @@ if stock_input:
             _decision_now = str(_p18.get("trade_decision", "等待"))
             _decision_reason = str(_p18.get("trade_reason", "等待更多確認。"))
             _state_now = str(_p18.get("early_entry_state_zh", ""))
+
+            if _p18.get("fallback_mode"):
+                st.error(
+                    "目前顯示的是異常保底判斷，不是完整決策鏈。"
+                    "正常情況下不應出現此訊息；請查看錯誤紀錄。"
+                )
 
             c1, c2, c3 = st.columns([1.3, 1, 1])
             with c1:
