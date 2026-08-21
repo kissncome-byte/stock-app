@@ -4533,6 +4533,31 @@ if stock_input:
         # Beta v2：只顯示最新版操作畫面
         _p18 = st.session_state.get("_stockpilot4_s18_position", {}) or {}
 
+        _stock_name_beta = str(res.get("stock_name", "") or "").strip()
+        _stock_id_beta = str(res.get("stock_id", stock_input) or stock_input).strip()
+        _current_price_beta = float(res.get("current_price", 0) or 0)
+
+        st.markdown(
+            f"""
+            <div style="
+                border:1px solid #d9dee8;
+                border-radius:14px;
+                padding:18px 22px;
+                margin:8px 0 20px 0;
+                background:#ffffff;
+            ">
+              <div style="font-size:13px;color:#64748b;font-weight:700;">目前分析個股</div>
+              <div style="font-size:30px;font-weight:900;color:#0f172a;margin-top:4px;">
+                {_stock_name_beta} <span style="color:#2563eb;">({_stock_id_beta})</span>
+              </div>
+              <div style="font-size:17px;color:#475569;margin-top:6px;">
+                現價 <b style="font-size:22px;color:#0f172a;">{_current_price_beta:,.2f}</b> 元
+              </div>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+
         st.markdown("## 最新操作建議")
 
         if not _p18:
@@ -4546,7 +4571,7 @@ if stock_input:
             with c1:
                 st.metric("目前操作", _decision_now)
             with c2:
-                st.metric("現價", f"{float(res.get('current_price', 0) or 0):,.2f} 元")
+                st.metric("個股", f"{_stock_name_beta}（{_stock_id_beta}）")
             with c3:
                 st.metric("資料可信度", f"{int(decision_snapshot.get('data_reliability', 0) or 0)}%")
 
