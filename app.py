@@ -4790,7 +4790,19 @@ if stock_input:
         st.markdown("## 最新操作建議")
 
         if not _p18:
-            st.error("最新操作模組目前沒有產生結果，請重新整理或查看程式錯誤紀錄。")
+            _decision_module_error = str(
+                st.session_state.get("_stockpilot4_shadow_error", "")
+                or "未知錯誤：決策模組未產生 position plan"
+            )
+            st.error(
+                "最新操作模組計算失敗。以下為真正錯誤：\n\n"
+                + _decision_module_error
+            )
+            with st.expander("查看完整決策模組錯誤"):
+                st.code(_decision_module_error, language="text")
+                st.caption(
+                    "請直接把這一段錯誤訊息貼回來；不需要再到 Streamlit Manage app 找 logs。"
+                )
         else:
             _decision_now = str(_p18.get("trade_decision", "等待"))
             _decision_reason = str(_p18.get("trade_reason", "等待更多確認。"))
