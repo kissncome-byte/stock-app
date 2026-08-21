@@ -4489,6 +4489,11 @@ if stock_input:
                     "today_pct": _s20_today_pct,
                     "ret2_live": _s20_ret2_live,
                     "reclaim_2d": _s20_reclaim_2d,
+                    # Beta v1：直接給使用者可執行的關鍵價位，不再只顯示「等待」。
+                    "beta_entry_low": _s14_進場區_low,
+                    "beta_entry_high": _s14_進場區_high,
+                    "beta_confirm_price": _s12_confirm,
+                    "beta_invalidation_price": _s12_stop,
                 }
                 st.session_state["_stockpilot4_s18_position"] = _s18_position_plan
 
@@ -4705,6 +4710,21 @@ if stock_input:
                                         "目前存在明確風險條件，暫不建立新部位。"
                                     )
 
+                                # Beta v1：把判斷翻成下一步可執行價位。
+                                _b_low = float(_p18.get("beta_entry_low", 0) or 0)
+                                _b_high = float(_p18.get("beta_entry_high", 0) or 0)
+                                _b_confirm = float(_p18.get("beta_confirm_price", 0) or 0)
+                                _b_invalid = float(_p18.get("beta_invalidation_price", 0) or 0)
+                                st.markdown("**下一步關鍵價位**")
+                                bc1, bc2, bc3 = st.columns(3)
+                                bc1.metric("低風險進場區", f"{_b_low:,.2f}～{_b_high:,.2f} 元" if _b_low > 0 and _b_high > 0 else "待建立")
+                                bc2.metric("突破確認價", f"{_b_confirm:,.2f} 元" if _b_confirm > 0 else "待建立")
+                                bc3.metric("結構失效／防守價", f"{_b_invalid:,.2f} 元" if _b_invalid > 0 else "待建立")
+                                if _entry_state20 == "等待拉回" and _b_high > 0:
+                                    st.info(f"執行方式：先不要追價；價格回到 {_b_low:,.2f}～{_b_high:,.2f} 元附近時重新評估。若未拉回而直接轉強，則以 {_b_confirm:,.2f} 元突破確認條件重新判斷。")
+                                elif _entry_state20 in {"起漲試單", "確認進場"}:
+                                    st.info("執行方式：目前已進入可執行狀態；是否由試單升級為正式進場，交由即時動能與突破確認條件決定。")
+
                                 if _p18.get("early_reversal_structure") and not _p18.get("early_formal_trend_bull"):
                                     st.success(
                                         "正式趨勢尚未翻多，但價格與均線已形成『反轉起漲結構』；"
@@ -4755,7 +4775,7 @@ if stock_input:
 
                             if user_holding and int(_p18.get("current_shares", 0) or 0) > 0:
                                 st.markdown("**目前實際持倉**")
-                                hc1, hc2, hc3, hc4 = st.columns(4)
+                                hc1, hc2, hc3 = st.columns(3)
                                 hc1.metric(
                                     "目前持股",
                                     f"{int(_p18.get('current_shares', 0)):,} 股"
@@ -4764,14 +4784,8 @@ if stock_input:
                                     "目前市值",
                                     f"{float(_p18.get('market_value', 0)):,.0f} 元"
                                 )
-                                _exp18 = _p18.get("exposure_pct")
-                                hc3.metric(
-                                    "占核心資金池",
-                                    f"{float(_exp18):.1f}%"
-                                    if _exp18 is not None else "無法計算"
-                                )
                                 _pnl18 = _p18.get("unrealized_pnl")
-                                hc4.metric(
+                                hc3.metric(
                                     "未實現損益",
                                     f"{float(_pnl18):+,.0f} 元"
                                     if _pnl18 is not None else "未提供成本"
