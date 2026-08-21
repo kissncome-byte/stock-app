@@ -4572,11 +4572,39 @@ if stock_input:
                 # Beta v8.4c：此處開始計算真正的「先拉回、後站回」狀態。
                 _beta7_reclaim_triggered = bool(_beta7_reclaim_triggered)
 
+                # Beta v8.4d：真正的「重新站上」必須是穿越事件，
+                # 不能只因為目前本來就在觸發價上方就視為今天觸發。
+                _beta84d_prev_price = 0.0
+
+                # 優先使用即時資料提供的昨收；沒有時，再使用完整日線最後一筆收盤。
+                _beta84d_prev_price = _s19_safe_float(
+                    res.get("previous_close", res.get("prev_close", 0)),
+                    0.0
+                )
+
+                if (
+                    _beta84d_prev_price <= 0
+                    and isinstance(_beta7_df, pd.DataFrame)
+                    and not _beta7_df.empty
+                    and "close" in _beta7_df.columns
+                ):
+                    _beta84d_close = pd.to_numeric(
+                        _beta7_df["close"], errors="coerce"
+                    ).dropna()
+                    if len(_beta84d_close) >= 1:
+                        _beta84d_prev_price = float(_beta84d_close.iloc[-1])
+
+                _beta84d_cross_up = bool(
+                    _beta5_probe_trigger > 0
+                    and _beta84d_prev_price > 0
+                    and _beta84d_prev_price < _beta5_probe_trigger
+                    and _s19_price >= _beta5_probe_trigger
+                )
+
                 if (
                     _beta6_probe_available
                     and _beta7_pullback_seen
-                    and _beta5_probe_trigger > 0
-                    and _s19_price >= _beta5_probe_trigger
+                    and _beta84d_cross_up
                 ):
                     _beta7_reclaim_triggered = True
 
@@ -4752,6 +4780,8 @@ if stock_input:
                     "beta_pullback_seen": _beta7_pullback_seen,
                     "beta_pullback_days_ago": _beta7_pullback_days_ago,
                     "beta_reclaim_triggered": _beta7_reclaim_triggered,
+                    "beta_prev_price": _beta84d_prev_price,
+                    "beta_cross_up_today": _beta84d_cross_up,
                     "beta_probe_latched": _beta84_latched_probe,
                     "beta_intraday_invalid": _beta84_invalid_now,
                     "beta_stable_invalidation": _beta84_invalidation,
@@ -5027,6 +5057,15 @@ if stock_input:
                             else "試單訊號尚未鎖定"
                         )
                         + f"｜失效價 {float(_p18.get('beta_stable_invalidation', 0) or 0):,.2f}"
+                    )
+                    st.caption(
+                        "觸發檢查："
+                        + (
+                            "今天確實由觸發價下方重新站上"
+                            if _p18.get("beta_cross_up_today")
+                            else "今天沒有新的由下往上穿越事件"
+                        )
+                        + f"｜前一有效價格 {float(_p18.get('beta_prev_price', 0) or 0):,.2f}"
                     )
                 _checks = _p18.get("early_entry_checks", []) or []
                 if _checks:
