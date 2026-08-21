@@ -4246,7 +4246,7 @@ if stock_input:
                 _s183_governed = str(_s12_governance.get("governed_action") or "").upper()
                 _s183_trend = str(_s12_governance.get("trend_state") or "").lower()
                 _s183_price_in_entry = bool(
-                    _s12_entry_low <= _s12_price <= _s12_entry_high
+                    _s14_進場區_low <= _s12_price <= _s14_進場區_high
                 )
 
                 if not user_holding or _s18_current_shares <= 0:
