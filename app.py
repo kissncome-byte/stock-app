@@ -4574,6 +4574,35 @@ if stock_input:
                 ):
                     _beta7_reclaim_triggered = True
 
+                # Beta v8：盤中決策穩定器
+                # 正式趨勢來自完整日線；即時價格只觸發操作，不重寫正式趨勢。
+                _beta8_session_key = f"stockpilot_v8_{stock_id}"
+                _beta8_prev = st.session_state.get(_beta8_session_key, {})
+                _beta8_latched_probe = bool(_beta8_prev.get("probe_latched", False))
+
+                # 一旦「拉回後重新站上試單價」成立，當日鎖定。
+                if _beta7_reclaim_triggered:
+                    _beta8_latched_probe = True
+
+                # 只有真正跌破進場失效價，才解除當日試單鎖定。
+                _beta8_invalid_now = bool(
+                    float(_s19_price or 0) > 0
+                    and float(_s14_invalid or 0) > 0
+                    and float(_s19_price or 0) <= float(_s14_invalid or 0)
+                )
+                if _beta8_invalid_now:
+                    _beta8_latched_probe = False
+
+                # 把鎖定後的狀態回寫，避免盤中價格在觸發價上下震盪造成建議反覆。
+                if _beta8_latched_probe:
+                    _beta7_reclaim_triggered = True
+
+                st.session_state[_beta8_session_key] = {
+                    "probe_latched": _beta8_latched_probe,
+                    "last_price": float(_s19_price or 0),
+                    "invalid_now": _beta8_invalid_now,
+                }
+
                 _s18_position_plan = {
                     "action": _s12_action,
                     "action_zh": _s18_action_zh,
@@ -4669,6 +4698,8 @@ if stock_input:
                     "beta_pullback_seen": _beta7_pullback_seen,
                     "beta_pullback_days_ago": _beta7_pullback_days_ago,
                     "beta_reclaim_triggered": _beta7_reclaim_triggered,
+                    "beta_probe_latched": _beta8_latched_probe,
+                    "beta_intraday_invalid": _beta8_invalid_now,
                     "beta_strong_breakout": _beta5_confirm,
                 }
                 st.session_state["_stockpilot4_s18_position"] = _s18_position_plan
@@ -4774,6 +4805,33 @@ if stock_input:
                 _pb_high = float(_p18.get("beta_pullback_high", _b_high) or 0)
                 _probe_trigger = float(_p18.get("beta_probe_trigger", 0) or 0)
                 _strong_breakout = float(_p18.get("beta_strong_breakout", _b_confirm) or 0)
+
+                st.markdown("### 決策穩定器")
+                _trend_label_v8 = str(
+                    res.get("trend_label")
+                    or res.get("formal_trend")
+                    or res.get("trend")
+                    or "依完整日線判定"
+                )
+                _strategy_label_v8 = str(_p18.get("state", _state_now) or _state_now)
+                _trigger_label_v8 = (
+                    "已觸發並鎖定"
+                    if _p18.get("beta_probe_latched")
+                    else (
+                        "失效價已跌破"
+                        if _p18.get("beta_intraday_invalid")
+                        else "尚未觸發"
+                    )
+                )
+                _v8a, _v8b, _v8c = st.columns(3)
+                _v8a.metric("主趨勢（日線）", _trend_label_v8)
+                _v8b.metric("目前策略", _strategy_label_v8)
+                _v8c.metric("盤中觸發", _trigger_label_v8)
+
+                st.caption(
+                    "主趨勢以完整日線資料為準；盤中價格只負責觸發操作。"
+                    "觸發後不因價格短暫跌回觸發價下方就反轉建議，只有跌破失效價才解除。"
+                )
 
                 st.markdown("### 關鍵價位")
                 p1, p2, p3 = st.columns(3)
@@ -4897,6 +4955,15 @@ if stock_input:
                         + ("已曾拉回觀察區" if _p18.get("beta_pullback_seen") else "尚未拉回觀察區")
                         + "｜"
                         + ("已重新站上試單觸發價" if _p18.get("beta_reclaim_triggered") else "尚未完成拉回後轉強")
+                    )
+                    st.caption(
+                        "穩定器："
+                        + (
+                            "試單訊號已鎖定；盤中小幅震盪不會取消"
+                            if _p18.get("beta_probe_latched")
+                            else "尚未鎖定試單訊號"
+                        )
+                        + "｜只有跌破進場失效價才解除"
                     )
                 _checks = _p18.get("early_entry_checks", []) or []
                 if _checks:
