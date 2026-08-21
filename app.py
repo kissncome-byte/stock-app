@@ -4473,6 +4473,49 @@ if stock_input:
                     _s12_action
                 )
 
+                # Beta v5：未持股三層價格路徑
+                _beta5_entry_low = float(_s14_進場區_low or 0)
+                _beta5_entry_high = float(_s14_進場區_high or 0)
+                _beta5_confirm = float(_s12_confirm or 0)
+                _beta5_ma20 = float(_s19_ma20 or 0)
+                _beta5_atr = float(_s19_atr or 0)
+
+                # 拉回觀察區：不只看舊 entry zone，也允許靠近 MA20 的較高一層觀察帶。
+                _beta5_pullback_low = _beta5_entry_low
+                _beta5_pullback_high = _beta5_entry_high
+                if _beta5_ma20 > 0:
+                    _beta5_ma20_band_low = _beta5_ma20 * 0.99
+                    _beta5_ma20_band_high = _beta5_ma20 * 1.05
+                    if _beta5_pullback_low <= 0:
+                        _beta5_pullback_low = _beta5_ma20_band_low
+                    else:
+                        _beta5_pullback_low = min(_beta5_pullback_low, _beta5_ma20_band_low)
+
+                    if _beta5_pullback_high <= 0:
+                        _beta5_pullback_high = _beta5_ma20_band_high
+                    else:
+                        _beta5_pullback_high = max(_beta5_pullback_high, _beta5_ma20_band_high)
+
+                # 試單觸發價：拉回後重新轉強時，不必等到遠端突破價。
+                # 以 MA20 上方約 3% 或 ATR 緩衝建立中間觸發層。
+                _beta5_tick = tick_size(_s19_price) if _s19_price > 0 else 1.0
+                _beta5_trigger_buffer = max(
+                    _beta5_ma20 * 0.03 if _beta5_ma20 > 0 else 0,
+                    _beta5_atr * 0.35 if _beta5_atr > 0 else 0,
+                    _beta5_tick
+                )
+                _beta5_probe_trigger = (
+                    ceil_to_tick(_beta5_ma20 + _beta5_trigger_buffer, _beta5_tick)
+                    if _beta5_ma20 > 0 else 0
+                )
+
+                # 避免試單觸發價高於遠端確認價。
+                if _beta5_confirm > 0 and _beta5_probe_trigger >= _beta5_confirm:
+                    _beta5_probe_trigger = floor_to_tick(
+                        max(_beta5_confirm - _beta5_tick, 0),
+                        _beta5_tick
+                    )
+
                 _s18_position_plan = {
                     "action": _s12_action,
                     "action_zh": _s18_action_zh,
@@ -4561,6 +4604,10 @@ if stock_input:
                         if float(_s14_進場區_low or 0) > 0
                         else float(_s12_stop or 0)
                     ),
+                    "beta_pullback_low": _beta5_pullback_low,
+                    "beta_pullback_high": _beta5_pullback_high,
+                    "beta_probe_trigger": _beta5_probe_trigger,
+                    "beta_strong_breakout": _beta5_confirm,
                 }
                 st.session_state["_stockpilot4_s18_position"] = _s18_position_plan
 
@@ -4661,26 +4708,37 @@ if stock_input:
                 else:
                     st.info("目前繼續觀察，等待新的價格或動能觸發。")
 
+                _pb_low = float(_p18.get("beta_pullback_low", _b_low) or 0)
+                _pb_high = float(_p18.get("beta_pullback_high", _b_high) or 0)
+                _probe_trigger = float(_p18.get("beta_probe_trigger", 0) or 0)
+                _strong_breakout = float(_p18.get("beta_strong_breakout", _b_confirm) or 0)
+
                 st.markdown("### 關鍵價位")
                 p1, p2, p3 = st.columns(3)
                 p1.metric(
-                    "低風險進場區",
-                    f"{_b_low:,.2f}～{_b_high:,.2f} 元"
-                    if _b_low > 0 and _b_high > 0 else "待建立"
+                    "拉回觀察區",
+                    f"{_pb_low:,.2f}～{_pb_high:,.2f} 元"
+                    if _pb_low > 0 and _pb_high > 0 else "待建立"
                 )
                 p2.metric(
-                    "突破確認價",
-                    f"{_b_confirm:,.2f} 元" if _b_confirm > 0 else "待建立"
+                    "試單觸發價",
+                    f"{_probe_trigger:,.2f} 元" if _probe_trigger > 0 else "待建立"
                 )
                 p3.metric(
-                    "進場條件失效價",
-                    f"{_b_invalid:,.2f} 元" if _b_invalid > 0 else "待建立"
+                    "強勢突破價",
+                    f"{_strong_breakout:,.2f} 元" if _strong_breakout > 0 else "待建立"
                 )
 
-                if _state_now == "等待拉回" and _b_low > 0 and _b_high > 0:
+                st.caption(
+                    f"進場條件失效價：{_b_invalid:,.2f} 元"
+                    if _b_invalid > 0 else "進場條件失效價：待建立"
+                )
+
+                if _state_now == "等待拉回" and _pb_low > 0 and _pb_high > 0:
                     st.write(
-                        f"**下一步：**先不要追價。價格回到 **{_b_low:,.2f}～{_b_high:,.2f} 元**附近時重新評估；"
-                        f"若沒有拉回而直接轉強，則觀察 **{_b_confirm:,.2f} 元**的突破確認。"
+                        f"**下一步：**先不要追價。若回到 **{_pb_low:,.2f}～{_pb_high:,.2f} 元**附近，進入拉回觀察；"
+                        f"若之後重新站上 **{_probe_trigger:,.2f} 元**，可評估小部位試單；"
+                        f"若一路不回檔而直接轉強，則以 **{_strong_breakout:,.2f} 元**作為強勢突破路徑。"
                     )
                 elif _state_now == "低檔試單":
                     st.write("**下一步：**只用很小部位試單；若短線動能、量價與趨勢持續改善，再升級為轉強試單或正式進場。")
@@ -4733,6 +4791,12 @@ if stock_input:
                         f"低檔條件={'成立' if _p18.get('low_probe') else '未成立'}｜"
                         f"轉強條件={'成立' if _p18.get('turn_probe') else '未成立'}｜"
                         f"正式進場={'成立' if _p18.get('formal_entry') else '未成立'}"
+                    )
+                    st.caption(
+                        f"價格路徑：拉回觀察區 {float(_p18.get('beta_pullback_low', 0) or 0):,.2f}～"
+                        f"{float(_p18.get('beta_pullback_high', 0) or 0):,.2f}｜"
+                        f"試單觸發 {float(_p18.get('beta_probe_trigger', 0) or 0):,.2f}｜"
+                        f"強勢突破 {float(_p18.get('beta_strong_breakout', 0) or 0):,.2f}"
                     )
                 _checks = _p18.get("early_entry_checks", []) or []
                 if _checks:
