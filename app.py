@@ -4574,54 +4574,63 @@ if stock_input:
                 ):
                     _beta7_reclaim_triggered = True
 
-                # Beta v8：盤中決策穩定器
-                # 正式趨勢來自完整日線；即時價格只觸發操作，不重寫正式趨勢。
-                _beta8_session_key = f"stockpilot_v8_{stock_id}"
-                _beta8_prev = st.session_state.get(_beta8_session_key, {})
-                _beta8_latched_probe = bool(_beta8_prev.get("probe_latched", False))
+                # Beta v8.4 CLEAN：決策穩定器
+                # 主趨勢仍由完整日線策略決定；即時價格只負責觸發。
+                # 鎖定以「股票 + 台北日期」為單位，不跨交易日延續。
+                _beta84_stock_key = str(res.get("stock_id", stock_input) or stock_input)
+                _beta84_trade_date = str(pd.Timestamp.now(tz="Asia/Taipei").date())
+                _beta84_session_key = (
+                    f"stockpilot_v84_{_beta84_stock_key}_{_beta84_trade_date}"
+                )
 
-                # 一旦「拉回後重新站上試單價」成立，當日鎖定。
+                _beta84_prev = st.session_state.get(_beta84_session_key, {}) or {}
+                _beta84_latched_probe = bool(
+                    _beta84_prev.get("probe_latched", False)
+                )
+
+                # 真正完成「先拉回、後重新站上試單價」後，當日鎖定。
                 if _beta7_reclaim_triggered:
-                    _beta8_latched_probe = True
+                    _beta84_latched_probe = True
 
-                # 只有真正跌破進場失效價，才解除當日試單鎖定。
-                # Beta v8.2：進場失效價直接由既有正式風控價與進場區重建，
-                # 不引用不存在的舊失效價變數。
-                _beta8_entry_low = float(_s14_進場區_low or 0)
-                _beta8_stop = float(_s12_stop or 0)
-                _beta8_entry_tick = (
-                    tick_size(_beta8_entry_low)
-                    if _beta8_entry_low > 0 else 1.0
+                # 未持股進場失效價：正式防守價與進場區下緣兩者取較低者。
+                _beta84_entry_low = float(_s14_進場區_low or 0)
+                _beta84_stop = float(_s12_stop or 0)
+                _beta84_tick = (
+                    tick_size(_beta84_entry_low)
+                    if _beta84_entry_low > 0 else 1.0
                 )
-                _beta8_invalidation_price = (
-                    min(
-                        _beta8_stop,
-                        _beta8_entry_low - _beta8_entry_tick
+                if _beta84_entry_low > 0 and _beta84_stop > 0:
+                    _beta84_invalidation = min(
+                        _beta84_stop,
+                        _beta84_entry_low - _beta84_tick
                     )
-                    if _beta8_stop > 0 and _beta8_entry_low > 0
-                    else (
-                        _beta8_stop
-                        if _beta8_stop > 0
-                        else max(_beta8_entry_low - _beta8_entry_tick, 0)
+                elif _beta84_stop > 0:
+                    _beta84_invalidation = _beta84_stop
+                elif _beta84_entry_low > 0:
+                    _beta84_invalidation = max(
+                        _beta84_entry_low - _beta84_tick, 0
                     )
-                )
+                else:
+                    _beta84_invalidation = 0.0
 
-                _beta8_invalid_now = bool(
-                    float(_s19_price or 0) > 0
-                    and _beta8_invalidation_price > 0
-                    and float(_s19_price or 0) <= _beta8_invalidation_price
+                # 只有跌破真正的進場失效價才解除，不因觸發價附近震盪解除。
+                _beta84_invalid_now = bool(
+                    _s19_price > 0
+                    and _beta84_invalidation > 0
+                    and _s19_price <= _beta84_invalidation
                 )
-                if _beta8_invalid_now:
-                    _beta8_latched_probe = False
+                if _beta84_invalid_now:
+                    _beta84_latched_probe = False
 
-                # 把鎖定後的狀態回寫，避免盤中價格在觸發價上下震盪造成建議反覆。
-                if _beta8_latched_probe:
+                # 已鎖定時，讓本日拉回轉強狀態維持成立。
+                if _beta84_latched_probe:
                     _beta7_reclaim_triggered = True
 
-                st.session_state[_beta8_session_key] = {
-                    "probe_latched": _beta8_latched_probe,
+                st.session_state[_beta84_session_key] = {
+                    "probe_latched": _beta84_latched_probe,
                     "last_price": float(_s19_price or 0),
-                    "invalid_now": _beta8_invalid_now,
+                    "invalidation": float(_beta84_invalidation or 0),
+                    "invalid_now": _beta84_invalid_now,
                 }
 
                 _s18_position_plan = {
@@ -4719,15 +4728,12 @@ if stock_input:
                     "beta_pullback_seen": _beta7_pullback_seen,
                     "beta_pullback_days_ago": _beta7_pullback_days_ago,
                     "beta_reclaim_triggered": _beta7_reclaim_triggered,
-                    "beta_probe_latched": _beta8_latched_probe,
-                    "beta_intraday_invalid": _beta8_invalid_now,
-                    "beta_invalidation_price": _beta8_invalidation_price,
+                    "beta_probe_latched": _beta84_latched_probe,
+                    "beta_intraday_invalid": _beta84_invalid_now,
+                    "beta_stable_invalidation": _beta84_invalidation,
                     "beta_strong_breakout": _beta5_confirm,
-                    "decision_stock_id": str(res.get("stock_id", stock_input) or stock_input),
-                    "decision_complete": True,
                 }
                 st.session_state["_stockpilot4_s18_position"] = _s18_position_plan
-                st.session_state["_stockpilot_last_complete_position"] = dict(_s18_position_plan)
 
                 st.session_state["_stockpilot4_shadow"] = shadow_v4
                 st.session_state["_stockpilot4_shadow_error"] = None
@@ -4738,18 +4744,7 @@ if stock_input:
                 shadow_v4 = None
                 st.session_state["_stockpilot4_shadow"] = None
                 st.session_state["_stockpilot4_shadow_error"] = shadow_v4_error
-
-                _last_complete = st.session_state.get(
-                    "_stockpilot_last_complete_position", {}
-                ) or {}
-                if (
-                    str(_last_complete.get("decision_stock_id", "")) == str(res.get("stock_id", stock_input) or stock_input)
-                    and _last_complete.get("decision_complete")
-                ):
-                    # 同一檔股票：保留上一個完整日線決策，避免盤中暫時錯誤造成建議歸零。
-                    st.session_state["_stockpilot4_s18_position"] = dict(_last_complete)
-                else:
-                    st.session_state["_stockpilot4_s18_position"] = {}
+                st.session_state["_stockpilot4_s18_position"] = {}
 
         # 3.3 正式 Decision Center：永遠執行，不依賴 Shadow 成敗。
         compass = decision_snapshot["compass"]
@@ -4766,47 +4761,6 @@ if stock_input:
 
         # Beta v2：只顯示最新版操作畫面
         _p18 = st.session_state.get("_stockpilot4_s18_position", {}) or {}
-
-        # Beta v8.2：正常情況應使用完整決策鏈；以下只作最後一道異常保險。
-        # 以正式 Decision Center 的日線趨勢與關鍵價位建立可用的保底決策；
-        # Shadow 恢復後仍優先採用完整的未持股/持股決策鏈。
-        if not _p18:
-            _fb_levels = decision_snapshot.get("levels", {}) or {}
-            _fb_price = float(res.get("current_price", 0) or 0)
-            _fb_ma20 = float(res.get("ma20", 0) or 0)
-            _fb_ma60 = float(res.get("ma60", 0) or 0)
-            _fb_confirm = float(_fb_levels.get("突破確認價", 0) or 0)
-            _fb_stop = float(_fb_levels.get("protective_stop", 0) or 0)
-            _fb_action = str(strategy_state.get("action", "等待") or "等待")
-            _fb_state = str(strategy_state.get("state_label", "") or "")
-            if user_holding:
-                _fb_decision = _fb_action if _fb_action in {"持有", "加碼", "減碼", "退場"} else "持有"
-                _fb_state_zh = _fb_decision
-                _fb_reason = "完整快速決策模組暫時不可用；目前先依正式日線趨勢與風控狀態維持穩定判斷。"
-            else:
-                if _fb_stop > 0 and _fb_price < _fb_stop:
-                    _fb_decision, _fb_state_zh = "不宜進場", "不宜進場"
-                elif _fb_confirm > 0 and _fb_price >= _fb_confirm:
-                    _fb_decision, _fb_state_zh = "正式進場", "正式進場"
-                elif _fb_ma20 > 0 and _fb_price > _fb_ma20 * 1.10:
-                    _fb_decision, _fb_state_zh = "等待拉回", "等待拉回"
-                else:
-                    _fb_decision, _fb_state_zh = "繼續等待", "繼續等待"
-                _fb_reason = "完整快速決策模組暫時不可用；目前先依正式日線趨勢與關鍵價位判斷，避免盤中雜訊造成反覆切換。"
-            _p18 = {
-                "trade_decision": _fb_decision,
-                "trade_reason": _fb_reason,
-                "early_entry_state_zh": _fb_state_zh,
-                "early_entry_ratio": 0.0,
-                "current_shares": int(res.get("current_shares", 0) or 0) if user_holding else 0,
-                "beta_entry_low": float(_fb_levels.get("ideal_entry_low", 0) or 0),
-                "beta_entry_high": float(_fb_levels.get("ideal_entry_high", 0) or 0),
-                "beta_confirm_price": _fb_confirm,
-                "beta_invalidation_price": _fb_stop,
-                "fallback_mode": True,
-                "decision_stock_id": str(res.get("stock_id", stock_input) or stock_input),
-                "decision_complete": False,
-            }
 
         _stock_name_beta = str(res.get("stock_name", "") or "").strip()
         _stock_id_beta = str(res.get("stock_id", stock_input) or stock_input).strip()
@@ -4836,17 +4790,11 @@ if stock_input:
         st.markdown("## 最新操作建議")
 
         if not _p18:
-            st.error("決策資料暫時無法建立；請查看進階診斷中的錯誤紀錄。")
+            st.error("最新操作模組目前沒有產生結果，請重新整理或查看程式錯誤紀錄。")
         else:
             _decision_now = str(_p18.get("trade_decision", "等待"))
             _decision_reason = str(_p18.get("trade_reason", "等待更多確認。"))
             _state_now = str(_p18.get("early_entry_state_zh", ""))
-
-            if _p18.get("fallback_mode"):
-                st.error(
-                    "目前顯示的是異常保底判斷，不是完整決策鏈。"
-                    "正常情況下不應出現此訊息；請查看錯誤紀錄。"
-                )
 
             c1, c2, c3 = st.columns([1.3, 1, 1])
             with c1:
@@ -4890,30 +4838,26 @@ if stock_input:
                 _strong_breakout = float(_p18.get("beta_strong_breakout", _b_confirm) or 0)
 
                 st.markdown("### 決策穩定器")
-                _trend_label_v8 = str(
-                    res.get("trend_label")
-                    or res.get("formal_trend")
-                    or res.get("trend")
-                    or "依完整日線判定"
+                _stable_trend_label = str(
+                    strategy_state.get("state_label", "資料不足") or "資料不足"
                 )
-                _strategy_label_v8 = str(_p18.get("state", _state_now) or _state_now)
-                _trigger_label_v8 = (
-                    "已觸發並鎖定"
-                    if _p18.get("beta_probe_latched")
-                    else (
-                        "失效價已跌破"
-                        if _p18.get("beta_intraday_invalid")
-                        else "尚未觸發"
-                    )
-                )
-                _v8a, _v8b, _v8c = st.columns(3)
-                _v8a.metric("主趨勢（日線）", _trend_label_v8)
-                _v8b.metric("目前策略", _strategy_label_v8)
-                _v8c.metric("盤中觸發", _trigger_label_v8)
+                _stable_strategy_label = _state_now or _decision_now
+                if _p18.get("beta_probe_latched"):
+                    _stable_trigger_label = "已觸發・本日鎖定"
+                elif _p18.get("beta_intraday_invalid"):
+                    _stable_trigger_label = "失效條件成立"
+                else:
+                    _stable_trigger_label = "尚未觸發"
+
+                _st1, _st2, _st3 = st.columns(3)
+                _st1.metric("主趨勢（日線）", _stable_trend_label)
+                _st2.metric("目前策略", _stable_strategy_label)
+                _st3.metric("盤中觸發", _stable_trigger_label)
 
                 st.caption(
-                    "主趨勢以完整日線資料為準；盤中價格只負責觸發操作。"
-                    "觸發後不因價格短暫跌回觸發價下方就反轉建議，只有跌破失效價才解除。"
+                    "趨勢決定方向，盤中價格只決定是否到達執行點。"
+                    "一旦拉回轉強試單成立，當日不因觸發價附近的小幅震盪反覆改變；"
+                    "只有跌破進場失效價才解除。"
                 )
 
                 st.markdown("### 關鍵價位")
@@ -5040,13 +4984,13 @@ if stock_input:
                         + ("已重新站上試單觸發價" if _p18.get("beta_reclaim_triggered") else "尚未完成拉回後轉強")
                     )
                     st.caption(
-                        "穩定器："
+                        "決策穩定："
                         + (
-                            "試單訊號已鎖定；盤中小幅震盪不會取消"
+                            "試單訊號已鎖定，本交易日盤中震盪不取消"
                             if _p18.get("beta_probe_latched")
-                            else "尚未鎖定試單訊號"
+                            else "試單訊號尚未鎖定"
                         )
-                        + "｜只有跌破進場失效價才解除"
+                        + f"｜失效價 {float(_p18.get('beta_stable_invalidation', 0) or 0):,.2f}"
                     )
                 _checks = _p18.get("early_entry_checks", []) or []
                 if _checks:
