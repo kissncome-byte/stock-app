@@ -3721,14 +3721,28 @@ if stock_input:
                         _s15_pullback_score / _s15_pullback_checks
                         if _s15_pullback_checks else 0
                     )
-                    if _s15_pullback_ratio >= 0.80:
+
+                    # 只有價格接近或進入理想進場區時，回檔品質才具有操作意義。
+                    _s16_entry_near = (
+                        _s14_entry_low > 0
+                        and _s14_entry_high > 0
+                        and _s12_price <= _s14_entry_high * 1.03
+                    )
+                    _s16_pullback_active = bool(_s14_in_entry_zone or _s16_entry_near)
+
+                    if not _s16_pullback_active:
+                        _s15_pullback_quality = "NOT_APPLICABLE"
+                        _s15_pullback_quality_zh = "尚未進入回檔評估區"
+                    elif _s15_pullback_ratio >= 0.80:
                         _s15_pullback_quality = "HEALTHY"
                         _s15_pullback_quality_zh = "健康回檔"
-                    elif _s15_pullback_ratio >= 0.60:
+                    elif _s16_pullback_active and _s15_pullback_ratio >= 0.60:
                         _s15_pullback_quality = "ACCEPTABLE"
                         _s15_pullback_quality_zh = "可觀察的正常整理"
-                    else:
+                    elif _s16_pullback_active:
                         _s15_pullback_quality = "WEAKENING"
+                    else:
+                        _s15_pullback_quality = "NOT_APPLICABLE"
                         _s15_pullback_quality_zh = "回檔品質不足／可能轉弱"
 
                     # 第一層：突破確認價後，且至少有部分外部條件支持，才允許加碼。
@@ -3824,6 +3838,7 @@ if stock_input:
                     "pullback_checks": locals().get("_s15_pullback_checks", 0),
                     "pullback_ret5": locals().get("_s15_ret5", None),
                     "pullback_reasons": locals().get("_s15_pullback_reasons", []),
+                    "pullback_active": locals().get("_s16_pullback_active", False),
                     "reasons": _s12_reasons,
                 }
                 st.session_state["_stockpilot4_s12_governance"] = _s12_governance
@@ -3932,16 +3947,19 @@ if stock_input:
                         f"{float(s.data_quality_score or 0):.0f}%",
                     )
 
+                    _summary_g = st.session_state.get("_stockpilot4_s12_governance", {}) or {}
+                    _trend_zh = _summary_g.get("trend_state_zh", s.trend_state.value)
+                    _market_zh = _summary_g.get("market_state_zh", s.market_state.value)
                     st.caption(
-                        f"4.0 正式趨勢：{s.trend_state.value}｜"
-                        f"大盤：{s.market_state.value}｜"
+                        f"4.0 趨勢狀態：{_trend_zh}｜"
+                        f"大盤：{_market_zh}｜"
                         f"現價：{float(s.current_price or 0):.2f} 元"
                     )
-                    st.write("4.0 原始動作說明：", s.action.detail)
+                    st.write("4.0 原始策略說明：", s.action.detail)
 
                     _s12g = st.session_state.get("_stockpilot4_s12_governance", {}) or {}
                     if _s12g:
-                        st.markdown("**Sprint 15｜分層進場＋回檔品質判斷**")
+                        st.markdown("**Sprint 16｜目前決策摘要**")
                         st.write(
                             f"趨勢狀態：**{_s12g.get('trend_state_zh', '未知')}** → "
                             f"原始策略：**{_s12g.get('raw_strategy_zh', '未知')}** → "
@@ -3956,16 +3974,23 @@ if stock_input:
                         if _cf > 0:
                             st.write(f"突破確認價：{_cf:,.2f} 元")
 
-                        st.write(
-                            f"回檔品質：**{_s12g.get('pullback_quality_zh', '資料不足')}**"
-                        )
-                        _pb_score = int(_s12g.get("pullback_score", 0) or 0)
-                        _pb_checks = int(_s12g.get("pullback_checks", 0) or 0)
-                        if _pb_checks:
-                            st.caption(f"回檔品質檢查：{_pb_score}/{_pb_checks} 項通過")
-                        if _s12g.get("pullback_reasons"):
-                            for _pb_reason in _s12g["pullback_reasons"]:
-                                st.caption(f"注意：{_pb_reason}")
+                        if _s12g.get("pullback_active"):
+                            st.write(
+                                f"回檔品質：**{_s12g.get('pullback_quality_zh', '資料不足')}**"
+                            )
+                            _pb_score = int(_s12g.get("pullback_score", 0) or 0)
+                            _pb_checks = int(_s12g.get("pullback_checks", 0) or 0)
+                            if _pb_checks:
+                                st.caption(f"回檔品質檢查：{_pb_score}/{_pb_checks} 項通過")
+                            if _s12g.get("pullback_reasons"):
+                                for _pb_reason in _s12g["pullback_reasons"]:
+                                    st.caption(f"注意：{_pb_reason}")
+                        else:
+                            st.write("回檔品質：**尚未進入評估區**")
+                            st.caption(
+                                "目前股價仍高於理想進場區，先觀察是否回到較有利的位置；"
+                                "未進入該區前，不把回檔品質當成買進依據。"
+                            )
 
                         if _s12g.get("reasons"):
                             st.markdown("**判斷原因：**")
@@ -4000,17 +4025,26 @@ if stock_input:
                             )
 
                     if s.primary_trigger:
-                        st.write("主要 Trigger：", s.primary_trigger)
+                        st.write("主要確認條件：", s.primary_trigger)
                     if s.secondary_trigger:
-                        st.write("次要 Trigger：", s.secondary_trigger)
+                        st.write("次要風控條件：", s.secondary_trigger)
 
                     if shadow_v4.differences:
-                        st.warning("｜".join(shadow_v4.differences))
+                        st.info("新舊系統目前判斷不同；主畫面以中文決策結果為主，內部差異請看下方進階診斷。")
                     else:
-                        st.success(
-                            "目前未偵測到舊版與 4.0 的方向差異。"
-                        )
+                        st.success("目前未偵測到新舊系統的方向差異。")
 
+
+                    with st.expander("🛠 進階診斷｜內部代碼與新舊系統差異", expanded=False):
+                        _diag_g = st.session_state.get("_stockpilot4_s12_governance", {}) or {}
+                        st.write("內部趨勢代碼：", _diag_g.get("trend_state", s.trend_state.value))
+                        st.write("內部原始策略代碼：", _diag_g.get("raw_strategy", s.strategy.value.upper()))
+                        st.write("內部治理動作代碼：", _diag_g.get("governed_action", "未知"))
+                        st.write("內部大盤代碼：", _diag_g.get("market_state", s.market_state.value))
+                        if shadow_v4.differences:
+                            st.write("新舊系統技術差異：")
+                            for _d in shadow_v4.differences:
+                                st.code(str(_d))
 
                     # Sprint 13：Trigger Audit
                     # 目的：追查 confirmation / protective_stop / structure_stop 的實際生成來源。
@@ -4165,10 +4199,10 @@ if stock_input:
                         )
                         _role_rows13 = [
                             {"問題": "1200 是什麼？", "判定": _role13, "依據": _source13 or _confirm_branch13},
-                            {"問題": "離現價多遠？", "判定": f"{_distance13:+.2f}%" if _distance13 is not None else "缺資料", "依據": "confirmation / current - 1"},
+                            {"問題": "離現價多遠？", "判定": f"{_distance13:+.2f}%" if _distance13 is not None else "缺資料", "依據": "確認價 ÷ 現價 − 1"},
                             {"問題": "程式是否另有理想進場區？", "判定": "有", "依據": f"{_entry_low13:,.2f} ～ {_entry_high13:,.2f}"},
                             {"問題": "現價與理想進場區關係", "判定": _entry_relation13, "依據": f"現價 {_p13:,.2f}"},
-                            {"問題": "確認價能否直接等同首次買進價？", "判定": "不能直接等同", "依據": "原價格引擎同時存在 entry 與 confirmation，兩者本來就是不同欄位／職責"},
+                            {"問題": "確認價能否直接等同首次買進價？", "判定": "不能直接等同", "依據": "原價格引擎同時存在 理想進場區與突破確認價，兩者本來就是不同欄位／職責"},
                         ]
                         st.dataframe(pd.DataFrame(_role_rows13), use_container_width=True, hide_index=True)
 
