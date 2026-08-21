@@ -3914,10 +3914,77 @@ if stock_input:
 
                 _s18_current_position_risk = None
                 if user_holding and _s18_current_shares > 0 and user_cost > 0:
+                    # 成本基準風險：若保護價已高於成本，可能為 0。
                     _s18_current_position_risk = max(
                         float(user_cost) - _s18_stop_fill,
                         0.0
                     ) * _s18_current_shares
+
+                # Sprint 18.1：現有部位必須用「從現在到保護價」衡量曝險，
+                # 不能因為成本很低、保護價高於成本，就把風險誤算成 0。
+                _s181_market_value = _s18_current_shares * _s12_price
+                _s181_cost_value = (
+                    _s18_current_shares * float(user_cost or 0)
+                    if user_holding else 0.0
+                )
+                _s181_unrealized_pnl = (
+                    _s181_market_value - _s181_cost_value
+                    if user_holding and _s18_current_shares > 0 and user_cost > 0
+                    else None
+                )
+                _s181_exposure_pct = (
+                    _s181_market_value / _s18_capital_ntd * 100.0
+                    if _s18_capital_ntd > 0 else None
+                )
+
+                # 從目前價格跌到含滑價後保護價，可能回吐的市值。
+                _s181_mark_to_stop_risk_per_share = max(
+                    _s12_price - _s18_stop_fill,
+                    0.0
+                )
+                _s181_mark_to_stop_risk = (
+                    _s181_mark_to_stop_risk_per_share * _s18_current_shares
+                )
+
+                # 資金池硬上限：單一個股市值不能超過整個核心資金池。
+                _s181_max_shares_by_capital = (
+                    int(_s18_capital_ntd // _s12_price)
+                    if _s18_capital_ntd > 0 and _s12_price > 0 else 0
+                )
+
+                # 風險上限：依「從現價到保護價」的每股風險反推最大股數。
+                _s181_max_shares_by_risk = (
+                    int(_s18_max_risk_ntd // _s181_mark_to_stop_risk_per_share)
+                    if _s18_max_risk_ntd > 0 and _s181_mark_to_stop_risk_per_share > 0
+                    else 0
+                )
+
+                _s181_effective_max_shares = min(
+                    x for x in [
+                        _s181_max_shares_by_capital,
+                        _s181_max_shares_by_risk,
+                    ] if x >= 0
+                ) if (_s181_max_shares_by_capital or _s181_max_shares_by_risk) else 0
+
+                _s181_excess_shares = max(
+                    0,
+                    _s18_current_shares - _s181_effective_max_shares
+                )
+
+                # 個人部位判斷與股票方向分開。
+                if not user_holding or _s18_current_shares <= 0:
+                    _s181_position_status = "未持有"
+                elif _s181_exposure_pct is not None and _s181_exposure_pct > 100:
+                    _s181_position_status = "部位超過資金池上限"
+                elif (
+                    _s181_mark_to_stop_risk > _s18_max_risk_ntd
+                    and _s18_max_risk_ntd > 0
+                ):
+                    _s181_position_status = "部位風險超過單筆上限"
+                elif _s181_exposure_pct is not None and _s181_exposure_pct >= 70:
+                    _s181_position_status = "部位集中度偏高"
+                else:
+                    _s181_position_status = "部位在目前上限內"
 
                 _s18_action_zh = _s12_governance.get(
                     "governed_action_zh",
@@ -3943,6 +4010,17 @@ if stock_input:
                     "additional_amount": _s18_additional_amount,
                     "current_position_risk": _s18_current_position_risk,
                     "holding_quantity_missing": _s18_holding_quantity_missing,
+                    "market_value": _s181_market_value,
+                    "cost_value": _s181_cost_value,
+                    "unrealized_pnl": _s181_unrealized_pnl,
+                    "exposure_pct": _s181_exposure_pct,
+                    "mark_to_stop_risk_per_share": _s181_mark_to_stop_risk_per_share,
+                    "mark_to_stop_risk": _s181_mark_to_stop_risk,
+                    "max_shares_by_capital": _s181_max_shares_by_capital,
+                    "max_shares_by_risk": _s181_max_shares_by_risk,
+                    "effective_max_shares": _s181_effective_max_shares,
+                    "excess_shares": _s181_excess_shares,
+                    "position_status": _s181_position_status,
                 }
                 st.session_state["_stockpilot4_s18_position"] = _s18_position_plan
 
@@ -4100,72 +4178,138 @@ if stock_input:
                             for _reason in _s12g["reasons"]:
                                 st.write("•", _reason)
 
-                        # Sprint 18：部位決策
+                        # Sprint 18.1：部位決策＋實際持股風險
                         _p18 = st.session_state.get("_stockpilot4_s18_position", {}) or {}
                         if _p18:
                             st.markdown("### 💰 部位決策")
                             _act18 = _p18.get("action")
-                            if _act18 in {"WAIT", "WAIT_CONFIRMATION", "WAIT_BETTER_ENTRY"}:
-                                st.info(
-                                    "目前建議部位：**0 股**。"
-                                    "現在的重點是等待價格或確認條件改善，不因趨勢偏多就提前追價。"
-                                )
-                            elif _act18 in {"PROBE", "BUILD_BASE", "ADD_ON_CONFIRMATION", "BUILD"}:
-                                _fraction_text = {
-                                    "PROBE": "使用單筆最大風險額度的 25%",
-                                    "BUILD_BASE": "使用單筆最大風險額度的 50%",
-                                    "ADD_ON_CONFIRMATION": "最多使用單筆最大風險額度的 100%",
-                                    "BUILD": "使用單筆最大風險額度的 50%",
-                                }.get(_act18, "依風險額度計算")
 
-                                pc1, pc2, pc3, pc4 = st.columns(4)
-                                pc1.metric(
+                            if user_holding and int(_p18.get("current_shares", 0) or 0) > 0:
+                                st.markdown("**目前實際持倉**")
+                                hc1, hc2, hc3, hc4 = st.columns(4)
+                                hc1.metric(
+                                    "目前持股",
+                                    f"{int(_p18.get('current_shares', 0)):,} 股"
+                                )
+                                hc2.metric(
+                                    "目前市值",
+                                    f"{float(_p18.get('market_value', 0)):,.0f} 元"
+                                )
+                                _exp18 = _p18.get("exposure_pct")
+                                hc3.metric(
+                                    "占核心資金池",
+                                    f"{float(_exp18):.1f}%"
+                                    if _exp18 is not None else "無法計算"
+                                )
+                                _pnl18 = _p18.get("unrealized_pnl")
+                                hc4.metric(
+                                    "未實現損益",
+                                    f"{float(_pnl18):+,.0f} 元"
+                                    if _pnl18 is not None else "未提供成本"
+                                )
+
+                                hr1, hr2, hr3, hr4 = st.columns(4)
+                                hr1.metric(
+                                    "從現價到保護價每股風險",
+                                    f"{float(_p18.get('mark_to_stop_risk_per_share', 0)):,.2f} 元"
+                                )
+                                hr2.metric(
+                                    "目前部位回吐風險",
+                                    f"{float(_p18.get('mark_to_stop_risk', 0)):,.0f} 元"
+                                )
+                                hr3.metric(
                                     "單筆最大可承受損失",
                                     f"{float(_p18.get('max_risk_ntd', 0)):,.0f} 元"
                                 )
-                                pc2.metric(
-                                    "本階段使用風險額度",
-                                    f"{float(_p18.get('target_risk_ntd', 0)):,.0f} 元"
+                                hr4.metric(
+                                    "個人部位判斷",
+                                    str(_p18.get("position_status", "未知"))
                                 )
-                                pc3.metric(
-                                    "本階段目標股數",
-                                    f"{int(_p18.get('target_shares', 0)):,} 股"
+
+                                _max_cap18 = int(_p18.get("max_shares_by_capital", 0) or 0)
+                                _max_risk18 = int(_p18.get("max_shares_by_risk", 0) or 0)
+                                _max_eff18 = int(_p18.get("effective_max_shares", 0) or 0)
+                                _excess18 = int(_p18.get("excess_shares", 0) or 0)
+
+                                st.write(
+                                    f"依資金池上限：約 **{_max_cap18:,} 股**；"
+                                    f"依目前保護價與單筆風險上限：約 **{_max_risk18:,} 股**；"
+                                    f"兩者取較嚴格後，目前建議上限約 **{_max_eff18:,} 股**。"
                                 )
-                                pc4.metric(
-                                    "估計投入金額",
-                                    f"{float(_p18.get('target_amount', 0)):,.0f} 元"
+
+                                if _excess18 > 0:
+                                    st.error(
+                                        f"股票方向可以仍是「{_s12g.get('governed_action_zh', '持有')}」，"
+                                        f"但你的個人部位已超過目前風險／資金上限約 **{_excess18:,} 股**。"
+                                        "在部位回到上限內以前，不應再加碼。"
+                                    )
+                                else:
+                                    st.success(
+                                        "目前持股數量未超過這一版的資金池與風險雙重上限。"
+                                    )
+
+                            elif _act18 in {"WAIT", "WAIT_CONFIRMATION", "WAIT_BETTER_ENTRY"}:
+                                st.info(
+                                    "目前尚未持有時，建議新建部位：**0 股**。"
+                                    "先等待價格或確認條件改善。"
                                 )
-                                st.caption(_fraction_text)
+
+                            if _act18 in {"PROBE", "BUILD_BASE", "ADD_ON_CONFIRMATION", "BUILD"}:
+                                _fraction_text = {
+                                    "PROBE": "試探性進場：使用單筆最大風險額度的 25%",
+                                    "BUILD_BASE": "建立基本部位：使用單筆最大風險額度的 50%",
+                                    "ADD_ON_CONFIRMATION": "突破確認後加碼：最高使用單筆最大風險額度的 100%",
+                                    "BUILD": "建立部位：使用單筆最大風險額度的 50%",
+                                }.get(_act18, "依風險額度計算")
 
                                 if _p18.get("holding_quantity_missing"):
                                     st.warning(
-                                        "你已勾選『已持有』，但目前持有股數仍為 0。"
-                                        "請輸入實際持有股數後，系統才能計算還能加碼多少。"
+                                        "你已勾選『已持有』，但目前持有股數仍為 0；"
+                                        "請輸入實際股數後再計算加碼空間。"
                                     )
-                                elif user_holding:
-                                    _add_shares18 = int(_p18.get("additional_shares", 0) or 0)
-                                    if _add_shares18 > 0:
+                                elif not user_holding:
+                                    pc1, pc2, pc3, pc4 = st.columns(4)
+                                    pc1.metric(
+                                        "單筆最大可承受損失",
+                                        f"{float(_p18.get('max_risk_ntd', 0)):,.0f} 元"
+                                    )
+                                    pc2.metric(
+                                        "本階段使用風險額度",
+                                        f"{float(_p18.get('target_risk_ntd', 0)):,.0f} 元"
+                                    )
+                                    pc3.metric(
+                                        "本階段目標股數",
+                                        f"{int(_p18.get('target_shares', 0)):,} 股"
+                                    )
+                                    pc4.metric(
+                                        "估計投入金額",
+                                        f"{float(_p18.get('target_amount', 0)):,.0f} 元"
+                                    )
+                                    st.caption(_fraction_text)
+                                else:
+                                    _current18 = int(_p18.get("current_shares", 0) or 0)
+                                    _max_eff18 = int(_p18.get("effective_max_shares", 0) or 0)
+                                    _room18 = max(0, _max_eff18 - _current18)
+                                    if _room18 > 0:
                                         st.write(
-                                            f"依目前風險額度，尚可增加約 **{_add_shares18:,} 股**；"
-                                            f"估計新增金額約 **{float(_p18.get('additional_amount', 0)):,.0f} 元**。"
+                                            f"在不超過目前資金／風險上限前提下，"
+                                            f"理論剩餘空間約 **{_room18:,} 股**；"
+                                            "是否實際加碼仍需同時符合目前操作建議。"
                                         )
                                     else:
-                                        st.write(
-                                            "依目前輸入的持有股數與風險額度，"
-                                            "暫無額外加碼空間。"
-                                        )
+                                        st.write("目前沒有額外加碼空間。")
 
-                                st.caption(
-                                    f"估計進場價 {_p18.get('entry_price', 0):,.2f} 元｜"
-                                    f"保護價 {_p18.get('protective_stop', 0):,.2f} 元｜"
-                                    f"含預估滑價後風險價 {_p18.get('estimated_stop_fill', 0):,.2f} 元｜"
-                                    f"每股估計風險 {_p18.get('risk_per_share', 0):,.2f} 元"
-                                )
-                            elif _act18 in {"REDUCE", "EXIT"}:
+                            if _act18 in {"REDUCE", "EXIT"}:
                                 st.warning(
-                                    "目前不計算新增買進部位；"
-                                    "此狀態應優先處理既有風險。"
+                                    "目前股票策略已進入降低風險／退出狀態，"
+                                    "不計算任何新增買進部位。"
                                 )
+
+                            st.caption(
+                                f"目前價 {float(_p18.get('entry_price', 0)):,.2f} 元｜"
+                                f"保護價 {float(_p18.get('protective_stop', 0)):,.2f} 元｜"
+                                f"含預估滑價後風險價 {float(_p18.get('estimated_stop_fill', 0)):,.2f} 元"
+                            )
 
                         _ga = _s12g.get("governed_action")
                         if _ga == "WAIT_BETTER_ENTRY":
