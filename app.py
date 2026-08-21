@@ -54,7 +54,7 @@ def ceil_to_tick(x: float, t: float) -> float:
     return math.ceil((x - 1e-12) / t) * t
 
 def log_error(area: str, exc: Exception):
-    # 正式部署可改接 logging / Sentry；前台不暴露金鑰與完整堆疊。
+    # 正式部署可改接 logging / S進場區；前台不暴露金鑰與完整堆疊。
     print(f"[{area}] {type(exc).__name__}: {exc}")
 
 def custom_hud_box(title, value, font_color="#1E293B"):
@@ -917,7 +917,7 @@ def classify_trend_and_models(df: pd.DataFrame, weekly: pd.DataFrame, current_pr
     return {"long_term":long_label, "medium_term":medium_label, "short_term":short_label, "weekly_desc":weekly_desc,
             "trend_strength":trend_strength, "adx":adx, "structure":structure, "drawdown_pct":drawdown,
             "volume_ratio":volume_ratio, "volume_valid":volume_valid, "pullback_volume_ratio":pullback_volume_ratio, "price_volume":price_volume,
-            "accumulation":accumulation, "volume_divergence":divergence, "entry_model":model, "entry_ready":model_ready,
+            "accumulation":accumulation, "volume_divergence":divergence, "進場區_model":model, "進場區_ready":model_ready,
             "breakout_model":breakout, "pullback_model":pullback, "retest_model":retest, "base_model":base_turn,
             "stop_candle":stop_candle, "ma10":ma10, "ma120":ma120, "ma240":ma240,
             "slope20":slope20, "slope60":slope60, "slope120":slope120}
@@ -938,9 +938,9 @@ def resolve_trend_state(stock_id: str, analysis: dict, current_price: float, str
     elif break_days>=2 or (structural_break and volume_ratio>=1.5): state="趨勢破壞"
     elif weak_days>=2: state="多頭轉弱警戒"
     elif analysis["medium_term"]=="多頭正常拉回": state="多頭正常拉回"
-    elif analysis["entry_model"]=="突破進場" and analysis["entry_ready"]: state="突破確認"
+    elif analysis["進場區_model"]=="突破進場" and analysis["進場區_ready"]: state="突破確認"
     elif analysis["medium_term"]=="主升段": state="多頭持有"
-    elif analysis["entry_model"]=="築底轉強": state="趨勢轉強"
+    elif analysis["進場區_model"]=="築底轉強": state="趨勢轉強"
     elif analysis["medium_term"]=="築底": state="築底"
     else: state="觀察"
     volume_reason = f"{volume_ratio:.2f}" if analysis.get("volume_valid", False) else "尚未更新"
@@ -954,7 +954,7 @@ def resolve_trend_state(stock_id: str, analysis: dict, current_price: float, str
     st.session_state[key]=now
     return now
 
-def unified_institutional_brain(res_dict, df_hist, is_holding=False, entry_cost=0.0, sector_panic=False):
+def unified_institutional_brain(res_dict, df_hist, is_holding=False, 進場區_cost=0.0, sector_panic=False):
     p=res_dict["current_price"]; q=res_dict.get("data_quality_score",0); state=res_dict.get("trend_state","觀察")
     ta=res_dict.get("trend_analysis",{}); chip=f"投信：{res_dict.get('sitc_trend')}；融資：{res_dict.get('margin_trend')}。"
     structure_stop=res_dict.get("structure_stop",res_dict["stop_brk"])
@@ -962,7 +962,7 @@ def unified_institutional_brain(res_dict, df_hist, is_holding=False, entry_cost=
         return {"strategy_name":"⚪ 資料不足","color":"#64748B","action_now":"只觀察，不產生方向","signal":"關鍵資料未完整","blueprint":{"停損防守":"待資料恢復","移動停利":"不適用","預期目標":"不提供"},"desc":f"資料完整度 {q:.0f}%，不足以形成可靠方向。"}
     if sector_panic:
         return {"strategy_name":"🟠 族群風險升高","color":"#F59E0B","action_now":"暫停新增部位","signal":"同產業集體轉弱","blueprint":{"停損防守":f"結構線 {structure_stop:.2f} 元","移動停利":"縮小風險","預期目標":"待族群止穩"},"desc":"族群同步下跌時，個股拉回較可能演變成趨勢破壞。"}
-    if is_holding and entry_cost>0:
+    if is_holding and 進場區_cost>0:
         if state in ["趨勢破壞","空頭"]:
             return {"strategy_name":"🔴 波段結構已破壞","color":"#EF4444","action_now":"依計畫減碼或退出","signal":"結構低點與中期趨勢同時失守","blueprint":{"停損防守":f"結構線 {structure_stop:.2f} 元","移動停利":"已觸發","預期目標":"先控制風險"},"desc":"不是因為單日跌破5日線，而是波段低點、60日線或放量賣壓已共同惡化。"}
         if state=="多頭轉弱警戒":
@@ -970,9 +970,9 @@ def unified_institutional_brain(res_dict, df_hist, is_holding=False, entry_cost=
         if state=="多頭正常拉回":
             return {"strategy_name":"🟢 多頭趨勢正常拉回","color":"#10B981","action_now":"續抱，不因短線跌破而殺出","signal":"週線與中長期結構仍完整，拉回量縮","blueprint":{"停損防守":f"結構線 {structure_stop:.2f} 元","移動停利":f"ATR線 {res_dict['trailing_stop_value']:.2f} 元","預期目標":f"前高 {res_dict['real_resistance']:.2f} 元"},"desc":f"目前損益 {res_dict['pnl_pct']:+.1f}%。短線降溫不等於趨勢反轉；{chip}"}
         return {"strategy_name":"🟢 趨勢持有","color":"#10B981","action_now":"續抱並上移防守","signal":f"狀態：{state}","blueprint":{"停損防守":f"結構線 {structure_stop:.2f} 元","移動停利":f"ATR線 {res_dict['trailing_stop_value']:.2f} 元","預期目標":f"情境價 {res_dict['target_brk']:.2f} 元"},"desc":f"趨勢尚未被結構性破壞。{chip}"}
-    model=ta.get("entry_model","等待")
+    model=ta.get("進場區_model","等待")
     if model=="多頭拉回":
-        action="可小額分批" if ta.get("entry_ready") else "等待止跌確認"
+        action="可小額分批" if ta.get("進場區_ready") else "等待止跌確認"
         return {"strategy_name":"🟢 多頭拉回機會","color":"#10B981","action_now":action,"signal":"長中期多頭、回檔量縮且未破前低","blueprint":{"停損防守":f"結構線 {structure_stop:.2f} 元","移動停利":"站回MA20後再上移","預期目標":f"前高 {res_dict['real_resistance']:.2f} 元"},"desc":"這是低價拉回模型，不必等到再創新高才追價；仍建議分批，而非一次買滿。"}
     if model=="突破後回測":
         return {"strategy_name":"🟢 突破後回測","color":"#10B981","action_now":"確認止跌後分批","signal":"原壓力轉支撐且回測量縮","blueprint":{"停損防守":f"突破失效線 {structure_stop:.2f} 元","移動停利":"續強後上移","預期目標":f"情境價 {res_dict['target_brk']:.2f} 元"},"desc":"通常比直接追突破有較好的風險報酬。"}
@@ -983,7 +983,7 @@ def unified_institutional_brain(res_dict, df_hist, is_holding=False, entry_cost=
     return {"strategy_name":"⚪ 等待更好位置","color":"#64748B","action_now":"不追價，等待拉回或確認","signal":"尚未符合四種進場模型","blueprint":{"停損防守":"未進場不設定","移動停利":"不適用","預期目標":"等待條件"},"desc":f"目前不必勉強交易。{chip}"}
 
 # ============ 9. Main Core Executor ============
-def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, slip_ticks: int, is_holding=False, entry_cost=0.0, sector_panic=False):
+def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, slip_ticks: int, is_holding=False, 進場區_cost=0.0, sector_panic=False):
     today_str = datetime.now(TZ).strftime("%Y-%m-%d")
     pnl_pct = 0.0
     res_dict = {}
@@ -1165,7 +1165,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
         try: pb_ratio, bvps = calculate_dynamic_pb(current_price, fin_df)
         except Exception: pass
 
-    pnl_pct = ((current_price - entry_cost) / entry_cost * 100) if (is_holding and entry_cost > 0) else 0.0
+    pnl_pct = ((current_price - 進場區_cost) / 進場區_cost * 100) if (is_holding and 進場區_cost > 0) else 0.0
     
     short_term_trend = f"{trend_analysis['short_term']}（KD：{kd_status}）"
     long_term_trend = f"{trend_analysis['long_term']}；{trend_analysis['weekly_desc']}；MA60五日斜率 {trend_analysis['slope60']:+.2f}%"
@@ -1268,23 +1268,23 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     res_dict["data_quality_score"] = quality_score
     res_dict["missing_data"] = missing_data
 
-    res_dict["tactical_blueprint"] = unified_institutional_brain(res_dict, df.copy(), is_holding=is_holding, entry_cost=entry_cost, sector_panic=sector_panic)
+    res_dict["tactical_blueprint"] = unified_institutional_brain(res_dict, df.copy(), is_holding=is_holding, 進場區_cost=進場區_cost, sector_panic=sector_panic)
     
     slippage = slip_ticks * t
-    estimated_entry = ceil_to_tick(current_price + slippage, t)
+    estimated_進場區 = ceil_to_tick(current_price + slippage, t)
     estimated_stop_fill = floor_to_tick(structure_stop - slippage, t)
     # 粗估雙邊手續費與賣出證交稅；實際折扣及商品稅率仍依券商/商品而異。
-    estimated_cost_per_share = estimated_entry * (0.001425 * 2 + 0.003)
-    risk_per_share = max(estimated_entry - estimated_stop_fill + estimated_cost_per_share, 0)
+    estimated_cost_per_share = estimated_進場區 * (0.001425 * 2 + 0.003)
+    risk_per_share = max(estimated_進場區 - estimated_stop_fill + estimated_cost_per_share, 0)
     capital_ntd = total_capital * 10000
     risk_budget = capital_ntd * (risk_per_trade / 100)
     max_shares_by_risk = int(risk_budget / risk_per_share) if risk_per_share > 0 else 0
-    max_shares_by_cash = int(capital_ntd / max(estimated_entry * 1.001425, 0.01))
+    max_shares_by_cash = int(capital_ntd / max(estimated_進場區 * 1.001425, 0.01))
     suggested_shares = max(0, min(max_shares_by_risk, max_shares_by_cash))
     suggested_lots = suggested_shares // 1000
     suggested_odd_lot = suggested_shares % 1000
     res_dict.update({"suggested_lots": suggested_lots, "suggested_odd_lot": suggested_odd_lot,
-                     "suggested_shares": suggested_shares, "expected_entry_price": estimated_entry,
+                     "suggested_shares": suggested_shares, "expected_進場區_price": estimated_進場區,
                      "expected_stop_price": estimated_stop_fill, "expected_target_price": target_brk,
                      "estimated_cost_per_share": estimated_cost_per_share})
     return res_dict
@@ -1305,14 +1305,14 @@ def build_compass_home_summary(res: dict, is_holding: bool) -> dict:
     price = float(res.get("current_price", 0) or 0)
     tick = tick_size(price) if price > 0 else 0.01
     atr = float(res.get("atr", res.get("atr14", 0)) or 0)
-    entry = float(res.get("expected_entry_price", price) or price)
-    if entry <= 0:
-        entry = price
+    進場區 = float(res.get("expected_進場區_price", price) or price)
+    if 進場區 <= 0:
+        進場區 = price
 
     issues = []
     raw_stop = float(res.get("structure_stop", res.get("expected_stop_price", 0)) or 0)
     stop = raw_stop
-    stop_ceiling = min(x for x in [price, entry] if x > 0) if any(x > 0 for x in [price, entry]) else 0
+    stop_ceiling = min(x for x in [price, 進場區] if x > 0) if any(x > 0 for x in [price, 進場區]) else 0
     if stop_ceiling > 0 and (stop <= 0 or stop >= stop_ceiling):
         fallback_gap = max(2.0 * atr, stop_ceiling * 0.03, tick)
         stop = floor_to_tick(max(tick, stop_ceiling - fallback_gap), tick)
@@ -1320,40 +1320,40 @@ def build_compass_home_summary(res: dict, is_holding: bool) -> dict:
 
     raw_resistance = float(res.get("real_resistance", 0) or 0)
     model_target = float(res.get("expected_target_price", 0) or 0)
-    valid_targets = sorted(x for x in [raw_resistance, model_target] if x > entry)
-    target1 = valid_targets[0] if valid_targets else entry + max(2.0 * atr, entry * 0.05, tick)
+    valid_targets = sorted(x for x in [raw_resistance, model_target] if x > 進場區)
+    target1 = valid_targets[0] if valid_targets else 進場區 + max(2.0 * atr, 進場區 * 0.05, tick)
     target2 = valid_targets[-1] if valid_targets else target1
     target_kind = "第一目標區"
 
     # 第一目標必須是可操作的近端目標；過遠的原始壓力改列為中長期延伸目標。
-    if entry > 0 and (target1 - entry) / entry > 0.25:
+    if 進場區 > 0 and (target1 - 進場區) / 進場區 > 0.25:
         target2 = target1
-        target1 = ceil_to_tick(entry + max(2.0 * atr, entry * 0.08), tick)
-        target1 = min(target1, ceil_to_tick(entry * 1.15, tick))
+        target1 = ceil_to_tick(進場區 + max(2.0 * atr, 進場區 * 0.08), tick)
+        target1 = min(target1, ceil_to_tick(進場區 * 1.15, tick))
         target_kind = "近端第一目標區"
         issues.append("原始目標距離評估價超過 25%，已改列為中長期延伸目標，並建立較近的第一目標區。")
-    if target1 <= entry:
-        target1 = ceil_to_tick(entry + max(2.0 * atr, entry * 0.05, tick), tick)
+    if target1 <= 進場區:
+        target1 = ceil_to_tick(進場區 + max(2.0 * atr, 進場區 * 0.05, tick), tick)
         issues.append("原始目標未高於評估價，已依 ATR 建立替代目標。")
     target2 = max(target2, target1)
 
-    risk = max(entry - stop, 0)
-    reward = max(target1 - entry, 0)
+    risk = max(進場區 - stop, 0)
+    reward = max(target1 - 進場區, 0)
     rr = reward / risk if risk > 0 else None
     if risk <= 0:
         issues.append("風險防線與評估價無法形成有效風險距離，決策引擎將否決進場。")
     if rr is not None and rr < 1.0:
         issues.append(f"近端風險報酬比僅 {rr:.2f}，不符合積極進場條件。")
 
-    entry_gap_pct = ((price - entry) / entry * 100) if price > 0 and entry > 0 else None
-    if entry_gap_pct is not None and abs(entry_gap_pct) <= 1.0:
-        entry_zone_text = "目前已進入建議評估區"
-    elif entry_gap_pct is not None and entry_gap_pct > 3.0:
-        entry_zone_text = "目前高於建議評估區，不宜因條件達標而追高"
-    elif entry_gap_pct is not None and entry_gap_pct < -3.0:
-        entry_zone_text = "目前低於建議評估區，需先確認趨勢未失效"
+    進場區_gap_pct = ((price - 進場區) / 進場區 * 100) if price > 0 and 進場區 > 0 else None
+    if 進場區_gap_pct is not None and abs(進場區_gap_pct) <= 1.0:
+        進場區_zone_text = "目前已進入建議評估區"
+    elif 進場區_gap_pct is not None and 進場區_gap_pct > 3.0:
+        進場區_zone_text = "目前高於建議評估區，不宜因條件達標而追高"
+    elif 進場區_gap_pct is not None and 進場區_gap_pct < -3.0:
+        進場區_zone_text = "目前低於建議評估區，需先確認趨勢未失效"
     else:
-        entry_zone_text = "目前接近建議評估區"
+        進場區_zone_text = "目前接近建議評估區"
 
     if quality < 60:
         decision = "等待"
@@ -1387,10 +1387,10 @@ def build_compass_home_summary(res: dict, is_holding: bool) -> dict:
 
     return {
         "decision": decision, "strategy": strategy, "action": action, "confidence": confidence,
-        "today": today, "entry": entry, "stop": stop, "target1": target1, "target2": target2,
+        "today": today, "進場區": 進場區, "stop": stop, "target1": target1, "target2": target2,
         "target_kind": target_kind, "rr": rr, "pros": pros[:3], "cons": cons[:3],
-        "issues": issues, "plan_valid": risk > 0 and target1 > entry,
-        "entry_zone_text": entry_zone_text, "entry_gap_pct": entry_gap_pct,
+        "issues": issues, "plan_valid": risk > 0 and target1 > 進場區,
+        "進場區_zone_text": 進場區_zone_text, "進場區_gap_pct": 進場區_gap_pct,
         "raw_stop": raw_stop, "raw_resistance": raw_resistance,
     }
 
@@ -1552,14 +1552,14 @@ def build_ai_investment_committee(res: dict, compass: dict) -> dict:
     ]
 
     # 4) 風控分析師
-    entry = float(compass.get("entry", 0) or 0)
+    進場區 = float(compass.get("進場區", 0) or 0)
     stop = float(compass.get("stop", 0) or 0)
     target = float(compass.get("target1", 0) or 0)
     resistance = float(res.get("real_resistance", target) or target)
     current = float(res.get("current_price", 0) or 0)
     atr = float(res.get("atr", 0) or 0)
     rr = compass.get("rr")
-    stop_pct = ((entry - stop) / entry * 100) if entry > 0 and stop > 0 else None
+    stop_pct = ((進場區 - stop) / 進場區 * 100) if 進場區 > 0 and stop > 0 else None
     pressure_pct = ((resistance - current) / current * 100) if current > 0 and resistance > 0 else None
     risk_score = 58
     risk_breakdown = []
@@ -1589,7 +1589,7 @@ def build_ai_investment_committee(res: dict, compass: dict) -> dict:
     if risk_label == "保守":
         risk_summary = f"距離壓力區約 {pressure_text}，風險報酬比 {rr_text}；目前不建議一次重押或追高。"
     else:
-        risk_summary = f"評估價 {entry:.2f}、趨勢失效價（風險防線）{stop:.2f}，風險報酬比 {rr_text}；仍應採分批，並遵守風險防線。"
+        risk_summary = f"評估價 {進場區:.2f}、趨勢失效價（風險防線）{stop:.2f}，風險報酬比 {rr_text}；仍應採分批，並遵守風險防線。"
     risk_evidence = [
         ("ATR14", fmt_num(atr)), ("趨勢失效價（風險防線）", fmt_num(stop)),
         ("MA60", fmt_num(res.get("ma60_val", 0))), ("距離壓力區", pressure_text),
@@ -1644,7 +1644,7 @@ def build_ai_investment_committee(res: dict, compass: dict) -> dict:
 def build_decision_engine(res: dict, compass: dict, committee: dict = None, user_holding: bool = False) -> dict:
     """大盤環境判斷：只分析市場，不使用持股成本或帳面損益。"""
     ta=res.get("trend_analysis",{}) or {}
-    current=float(res.get("current_price",0) or 0); entry=float(compass.get("entry",current) or current)
+    current=float(res.get("current_price",0) or 0); 進場區=float(compass.get("進場區",current) or current)
     stop=float(compass.get("stop",0) or 0); target1=float(compass.get("target1",0) or 0)
     ma20=float(res.get("ma20_val",ta.get("ma20",0)) or 0); slope20=float(ta.get("slope20",0) or 0)
     adx=float(ta.get("adx",0) or 0); accumulation=str(ta.get("accumulation","資料不足")); price_volume=str(ta.get("price_volume","資料不足"))
@@ -1660,19 +1660,19 @@ def build_decision_engine(res: dict, compass: dict, committee: dict = None, user
       "trend":max(0,min(100,50+(20 if ma20_ok else -22)+(12 if any(k in direction_text for k in bullish) else 0)+(8 if adx_ok else -4))),
       "chips":max(0,min(100,50+(25 if chip_positive else 5 if chip_neutral else -25))),
       "momentum":max(0,min(100,50+(18 if adx_ok else -5)+(10 if pv_ok else -20))),
-      "price_position":max(0,min(100,60+(10 if current>=entry else -8)-(22 if entry>0 and current>entry*1.05 else 0)-(12 if target1>0 and current>=target1*.95 else 0))),
+      "price_position":max(0,min(100,60+(10 if current>=進場區 else -8)-(22 if 進場區>0 and current>進場區*1.05 else 0)-(12 if target1>0 and current>=target1*.95 else 0))),
       "risk":max(0,min(100,70-(65 if stop>0 and current<=stop else 0)-(20 if quality<60 else 0)-(15 if not direction_ok else 0))),
       "data":max(0,min(100,quality)),
     }
     weights={"trend":.35,"chips":.20,"momentum":.15,"price_position":.10,"risk":.15,"data":.05}
     market_score=int(round(sum(components[k]*weights[k] for k in weights)))
     stop_broken=stop>0 and current<=stop; trend_veto=any(k in direction_text for k in ["空頭","趨勢破壞","下跌段"])
-    data_veto=quality<50; hard_veto=stop_broken or trend_veto or data_veto; overextended=entry>0 and current>entry*1.05; near_pressure=target1>0 and current>=target1*.95
+    data_veto=quality<50; hard_veto=stop_broken or trend_veto or data_veto; overextended=進場區>0 and current>進場區*1.05; near_pressure=target1>0 and current>=target1*.95
     checklist=[
       {"key":"trend","name":"中期趨勢維持","passed":direction_ok and ma20_ok,"current":f"{long_term}／{medium_term}｜MA20 {ma20:.2f}、斜率 {slope20:+.2f}%","why":"方向與均線共同決定是否值得持有。"},
       {"key":"chips","name":"籌碼沒有明顯惡化","passed":chip_neutral,"current":accumulation,"why":"市場資金是否撤退比使用者成本重要。"},
       {"key":"momentum","name":"動能與價量未轉空","passed":adx_ok and pv_ok,"current":f"ADX {adx:.1f}｜{price_volume}","why":"確認趨勢強度與賣壓。"},
-      {"key":"price","name":"價格位置仍具合理風險報酬","passed":not overextended and not near_pressure and not stop_broken,"current":f"現價 {current:.2f}｜評估價 {entry:.2f}｜目標 {target1:.2f}","why":"避免接近壓力或過度延伸時新增。"},
+      {"key":"price","name":"價格位置仍具合理風險報酬","passed":not overextended and not near_pressure and not stop_broken,"current":f"現價 {current:.2f}｜評估價 {進場區:.2f}｜目標 {target1:.2f}","why":"避免接近壓力或過度延伸時新增。"},
     ]
     completed=sum(bool(x["passed"]) for x in checklist); veto=[]
     if stop_broken: veto.append(f"收盤價已到或跌破 {stop:.2f} 元趨勢失效價")
@@ -1687,7 +1687,7 @@ def build_decision_engine(res: dict, compass: dict, committee: dict = None, user
     return {"engine":"market","market_score":market_score,"components":components,"weights":weights,"status":status,"label":label,"color":color,"summary":summary,
       "buy":buy,"add":buy,"reduce_or_exit":status in ["REDUCE","EXIT"],"completed":completed,"total":len(checklist),"missing":[x["name"] for x in checklist if not x["passed"]],
       "checklist":checklist,"stop_broken":stop_broken,"near_pressure":near_pressure,"overextended":overextended,"hard_veto":hard_veto,"veto_reasons":veto,
-      "entry":entry,"stop":stop,"target1":target1,"trend_state":trend_state,"quality":quality,"rr":rr}
+      "進場區":進場區,"stop":stop,"target1":target1,"trend_state":trend_state,"quality":quality,"rr":rr}
 
 
 def align_committee_with_decision(committee: dict, decision: dict) -> dict:
@@ -1717,7 +1717,7 @@ def build_if_i_were_you(
 ) -> dict:
     """將 Decision Engine 翻成新手可以直接照著執行的今日操作。"""
     current = float(res.get("current_price", 0) or 0)
-    entry = float(decision.get("entry", compass.get("entry", current)) or current)
+    進場區 = float(decision.get("進場區", compass.get("進場區", current)) or current)
     stop = float(decision.get("stop", compass.get("stop", 0)) or 0)
     target1 = float(decision.get("target1", compass.get("target1", 0)) or 0)
     completed = int(decision.get("completed", 0) or 0)
@@ -1725,10 +1725,10 @@ def build_if_i_were_you(
     pnl_pct = ((current / user_cost) - 1) * 100 if user_holding and user_cost > 0 and current > 0 else None
     capital_ntd = max(float(capital_wan or 0), 0) * 10000
     max_risk_ntd = capital_ntd * max(float(risk_pct or 0), 0) / 100
-    per_share_risk = max(entry - stop, 0)
+    per_share_risk = max(進場區 - stop, 0)
     max_shares = int(max_risk_ntd // per_share_risk) if per_share_risk > 0 else 0
     first_batch_shares = int(max_shares * 0.30 // 1000 * 1000) if max_shares >= 1000 else 0
-    first_batch_amount = first_batch_shares * entry
+    first_batch_amount = first_batch_shares * 進場區
 
     actions = []
     warnings = []
@@ -1842,7 +1842,7 @@ def build_if_i_were_you(
 def build_ai_forecast(res: dict, compass: dict, decision: dict) -> dict:
     """告訴新手：哪些可觀察條件會讓 AI 升級、維持或轉為風控。"""
     current = float(res.get("current_price", 0) or 0)
-    entry = float(decision.get("entry", compass.get("entry", current)) or current)
+    進場區 = float(decision.get("進場區", compass.get("進場區", current)) or current)
     stop = float(decision.get("stop", compass.get("stop", 0)) or 0)
     target1 = float(decision.get("target1", compass.get("target1", 0)) or 0)
     checklist = decision.get("checklist", []) or []
@@ -1860,7 +1860,7 @@ def build_ai_forecast(res: dict, compass: dict, decision: dict) -> dict:
         })
     elif decision.get("buy"):
         scenarios.append({
-            "title": f"若收盤持續站穩 {entry:.2f} 元，且五項條件不轉弱",
+            "title": f"若收盤持續站穩 {進場區:.2f} 元，且五項條件不轉弱",
             "result": "🟢 維持可分批布局",
             "detail": "仍只執行第一筆，不因單日上漲改成一次買滿。",
             "color": "#16A34A",
@@ -1898,8 +1898,8 @@ def build_ai_forecast(res: dict, compass: dict, decision: dict) -> dict:
             "color": "#DC2626",
         })
 
-    if entry > 0 and not decision.get("overextended"):
-        chase_price = entry * 1.03
+    if 進場區 > 0 and not decision.get("overextended"):
+        chase_price = 進場區 * 1.03
         scenarios.append({
             "title": f"若股價快速高於約 {chase_price:.2f} 元",
             "result": "🟠 即使轉強也不追價",
@@ -1913,7 +1913,7 @@ def build_ai_forecast(res: dict, compass: dict, decision: dict) -> dict:
 def build_holding_value_analysis(res: dict, market: dict, regime: dict, levels: dict, user_holding: bool, user_cost: float) -> dict:
     """持股價值引擎：成本只描述損益，不決定方向；核心是剩餘報酬是否值得承擔下行風險。"""
     current = float(levels.get("current", res.get("current_price", 0)) or 0)
-    confirmation = float(levels.get("confirmation", 0) or 0)
+    突破確認價 = float(levels.get("突破確認價", 0) or 0)
     protective = float(levels.get("protective_stop", 0) or 0)
     structural = float(levels.get("structure_stop", 0) or 0)
     target = float(levels.get("target1", 0) or 0)
@@ -1924,10 +1924,10 @@ def build_holding_value_analysis(res: dict, market: dict, regime: dict, levels: 
 
     # 偏弱市場不把遠端多頭目標當成可實現報酬；只採用反彈確認價。
     if status in ["REDUCE", "EXIT"] or market_score < 55:
-        reward_price = confirmation if confirmation > current else max(current, target)
+        reward_price = 突破確認價 if 突破確認價 > current else max(current, target)
         reward_role = "反彈確認價"
     else:
-        reward_price = target if target > current else confirmation
+        reward_price = target if target > current else 突破確認價
         reward_role = str(levels.get("target_role", "第一目標"))
 
     risk_price = protective if 0 < protective < current else structural
@@ -2001,7 +2001,7 @@ def build_today_action_board(res: dict, compass: dict, decision: dict, user_hold
     levels = levels or {}
     holding_value = holding_value or {}
     current = float(levels.get("current", res.get("current_price", 0)) or 0)
-    confirm = float(levels.get("confirmation", 0) or 0)
+    confirm = float(levels.get("突破確認價", 0) or 0)
     protective = float(levels.get("protective_stop", 0) or 0)
     structural = float(levels.get("structure_stop", 0) or 0)
     target = float(levels.get("target1", 0) or 0)
@@ -2083,7 +2083,7 @@ def build_today_action_board(res: dict, compass: dict, decision: dict, user_hold
 def build_today_brief(res: dict, compass: dict, decision: dict, user_holding: bool = False) -> dict:
     """將 Decision Engine 轉成今日一句話、三項重點，以及可做／不要做的具體指令。"""
     current = float(res.get("current_price", 0) or 0)
-    entry = float(decision.get("entry", compass.get("entry", 0)) or 0)
+    進場區 = float(decision.get("進場區", compass.get("進場區", 0)) or 0)
     stop = float(decision.get("stop", compass.get("stop", 0)) or 0)
     target1 = float(decision.get("target1", compass.get("target1", 0)) or 0)
     checklist = decision.get("checklist", []) or []
@@ -2142,11 +2142,11 @@ def build_today_brief(res: dict, compass: dict, decision: dict, user_holding: bo
         can_do = ["先執行第一筆小部位", f"將 {stop:.2f} 元寫入交易計畫" if stop > 0 else "先確認風險防線", "保留後續加碼資金"]
         avoid = ["不要一次買滿", "不要因盤中急漲追價", "不要在未設定風險前下單"]
     elif user_holding:
-        can_do = [f"收盤守住 {stop:.2f} 元才維持續抱" if stop > 0 else "先補齊趨勢失效價", f"接近 {target1:.2f} 元時分批停利" if target1 > 0 else "目標價資料不足時不新增", f"收盤站上 {entry:.2f} 元且市場評級改善後才考慮加碼" if entry > 0 else "條件完整後才考慮加碼"]
+        can_do = [f"收盤守住 {stop:.2f} 元才維持續抱" if stop > 0 else "先補齊趨勢失效價", f"接近 {target1:.2f} 元時分批停利" if target1 > 0 else "目標價資料不足時不新增", f"收盤站上 {進場區:.2f} 元且市場評級改善後才考慮加碼" if 進場區 > 0 else "條件完整後才考慮加碼"]
         avoid = ["不要在條件未齊時加碼", "不要因短線震盪隨意改計畫", "不要忽略風險防線"]
     else:
         first_missing = short_name(failed[0]) if failed else "進場條件"
-        can_do = [f"等待 {first_missing} 達標", f"在 {entry:.2f} 元附近觀察收盤" if entry > 0 else "等待有效評估價", "先規劃第一筆部位與風險"]
+        can_do = [f"等待 {first_missing} 達標", f"在 {進場區:.2f} 元附近觀察收盤" if 進場區 > 0 else "等待有效評估價", "先規劃第一筆部位與風險"]
         avoid = ["不要只因價格接近評估價就買", "不要把盤中觸價當成收盤確認", "不要在條件不足時提前重押"]
 
     return {
@@ -2161,16 +2161,16 @@ def build_ai_investment_coach(res: dict, compass: dict, committee: dict, user_ho
     """依使用者是否持有，將既有價位與風險資料整理成可執行的個人化教練指令。"""
     current = float(res.get("current_price", 0) or 0)
     decision_engine = decision_engine or build_decision_engine(res, compass, committee, user_holding)
-    entry = float(compass.get("entry", current) or current)
+    進場區 = float(compass.get("進場區", current) or current)
     stop = float(compass.get("stop", 0) or 0)
     target1 = float(compass.get("target1", 0) or 0)
     target2 = float(compass.get("target2", target1) or target1)
     confidence = int(committee.get("cio_confidence", compass.get("confidence", 0)) or 0)
     capital_ntd = max(float(capital_wan or 0), 0) * 10000
     max_risk_ntd = capital_ntd * max(float(risk_pct or 0), 0) / 100
-    per_share_risk = max(entry - stop, 0)
+    per_share_risk = max(進場區 - stop, 0)
     shares_by_risk = int(max_risk_ntd // per_share_risk) if per_share_risk > 0 else 0
-    shares_by_cash = int(capital_ntd // entry) if entry > 0 else 0
+    shares_by_cash = int(capital_ntd // 進場區) if 進場區 > 0 else 0
     suggested_shares = max(0, min(shares_by_risk, shares_by_cash))
     suggested_lots = suggested_shares / 1000
 
@@ -2205,9 +2205,9 @@ def build_ai_investment_coach(res: dict, compass: dict, committee: dict, user_ho
             "不要因短線震盪任意放寬原本停損",
         ]
     else:
-        if current > entry * 1.03 and entry > 0:
+        if current > 進場區 * 1.03 and 進場區 > 0:
             headline = "不是不能買，而是不值得追高"
-            primary = f"現價明顯高於建議評估價 {entry:.2f} 元，等待拉回或突破後回測再分批。"
+            primary = f"現價明顯高於建議評估價 {進場區:.2f} 元，等待拉回或突破後回測再分批。"
             status = "等待買點"
             color = "#D97706"
         elif stop > 0 and current <= stop:
@@ -2237,7 +2237,7 @@ def build_ai_investment_coach(res: dict, compass: dict, committee: dict, user_ho
         "max_risk_ntd": max_risk_ntd, "per_share_risk": per_share_risk,
         "suggested_shares": suggested_shares, "suggested_lots": suggested_lots,
         "sizing_note": sizing_note, "confidence": confidence,
-        "entry": entry, "stop": stop, "target1": target1, "target2": target2,
+        "進場區": 進場區, "stop": stop, "target1": target1, "target2": target2,
         "decision_engine": decision_engine,
     }
 
@@ -2358,7 +2358,7 @@ def init_decision_history_db() -> None:
                     confidence INTEGER,
                     completed INTEGER,
                     total INTEGER,
-                    entry_price REAL,
+                    進場區_price REAL,
                     stop_price REAL,
                     target_price REAL,
                     data_quality REAL,
@@ -2415,7 +2415,7 @@ def save_daily_decision_snapshot(res: dict, compass: dict, committee: dict, deci
         int(committee.get("cio_confidence", compass.get("confidence", 0)) or 0),
         int(decision.get("completed", 0) or 0),
         int(decision.get("total", 0) or 0),
-        float(decision.get("entry", compass.get("entry", 0)) or 0),
+        float(decision.get("進場區", compass.get("進場區", 0)) or 0),
         float(decision.get("stop", compass.get("stop", 0)) or 0),
         float(decision.get("target1", compass.get("target1", 0)) or 0),
         float(res.get("data_quality_score", 0) or 0),
@@ -2428,7 +2428,7 @@ def save_daily_decision_snapshot(res: dict, compass: dict, committee: dict, deci
                 INSERT INTO decision_history (
                     stock_id, stock_name, decision_date, captured_at, current_price,
                     decision_label, decision_status, confidence, completed, total,
-                    entry_price, stop_price, target_price, data_quality,
+                    進場區_price, stop_price, target_price, data_quality,
                     missing_conditions, veto_reasons
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(stock_id, decision_date) DO UPDATE SET
@@ -2440,7 +2440,7 @@ def save_daily_decision_snapshot(res: dict, compass: dict, committee: dict, deci
                     confidence=excluded.confidence,
                     completed=excluded.completed,
                     total=excluded.total,
-                    entry_price=excluded.entry_price,
+                    進場區_price=excluded.進場區_price,
                     stop_price=excluded.stop_price,
                     target_price=excluded.target_price,
                     data_quality=excluded.data_quality,
@@ -2626,14 +2626,14 @@ def build_price_level_engine(res: dict, compass: dict, market_score: int = 50, m
 
     # 唯一確認價：優先 MA20；若已站上 MA20，才使用最近壓力；不再使用合理評估價。
     if ma20 > 0 and ma20 >= current * 0.97:
-        confirmation = ma20
-        confirmation_source = "收盤站上 MA20"
+        突破確認價 = ma20
+        突破確認價_source = "收盤站上 MA20"
     elif resistance > current:
-        confirmation = resistance
-        confirmation_source = "收盤突破最近壓力"
+        突破確認價 = resistance
+        突破確認價_source = "收盤突破最近壓力"
     else:
-        confirmation = ceil_to_tick(current + max(atr_eff * 0.5, current * 0.02), tick)
-        confirmation_source = "收盤突破短線確認價"
+        突破確認價 = ceil_to_tick(current + max(atr_eff * 0.5, current * 0.02), tick)
+        突破確認價_source = "收盤突破短線確認價"
 
     # 移動保護價負責減碼；結構失效價負責退出。兩者不能混稱同一停損。
     protective_candidates = [x for x in [ma60 * 0.98 if ma60 > 0 else 0, current - max(atr_eff * 1.25, current * 0.03)] if 0 < x < current]
@@ -2643,19 +2643,19 @@ def build_price_level_engine(res: dict, compass: dict, market_score: int = 50, m
     protective_stop = floor_to_tick(protective_stop, tick)
     structure_stop = floor_to_tick(min(structure_stop, protective_stop - tick), tick)
 
-    entry_center = ma20 if ma20 > 0 else current
+    進場區_center = ma20 if ma20 > 0 else current
     buffer_amt = max(atr_eff * 0.35, current * 0.01)
-    entry_low = floor_to_tick(max(tick, entry_center - buffer_amt), tick)
-    entry_high = ceil_to_tick(entry_center + buffer_amt, tick)
+    進場區_low = floor_to_tick(max(tick, 進場區_center - buffer_amt), tick)
+    進場區_high = ceil_to_tick(進場區_center + buffer_amt, tick)
 
     # 市場狀態決定「目標」的含義。
     if market_score < 60 or market_status in ["REDUCE", "EXIT"]:
-        target1 = confirmation
+        target1 = 突破確認價
         target_role = "反彈確認／減碼區"
-        target_source = f"偏弱狀態不顯示遠端多頭目標；以{confirmation_source}作為反彈處理區"
+        target_source = f"偏弱狀態不顯示遠端多頭目標；以{突破確認價_source}作為反彈處理區"
         target2 = 0.0
     else:
-        candidates = [x for x in [resistance, float(compass.get("target1", 0) or 0), current + max(atr_eff * 2.5, current * 0.06)] if x > max(current, confirmation)]
+        candidates = [x for x in [resistance, float(compass.get("target1", 0) or 0), current + max(atr_eff * 2.5, current * 0.06)] if x > max(current, 突破確認價)]
         target1 = min(candidates) if candidates else current + max(atr_eff * 2.5, current * 0.06)
         target1 = ceil_to_tick(target1, tick)
         target_role = "第一停利區"
@@ -2666,17 +2666,17 @@ def build_price_level_engine(res: dict, compass: dict, market_score: int = 50, m
     reward_pct = (target1 - current) / current * 100 if target1 > current > 0 else None
     rr = reward_pct / risk_pct if risk_pct and reward_pct is not None and risk_pct > 0 else None
     return {
-        "current": current, "entry": entry_center, "entry_low": entry_low, "entry_high": entry_high,
-        "confirmation": round(confirmation, 2), "confirmation_source": confirmation_source,
+        "current": current, "進場區": 進場區_center, "進場區_low": 進場區_low, "進場區_high": 進場區_high,
+        "突破確認價": round(突破確認價, 2), "突破確認價_source": 突破確認價_source,
         "protective_stop": protective_stop, "structure_stop": structure_stop, "invalidation": structure_stop,
         "target1": round(target1, 2), "target2": round(target2, 2), "target_role": target_role,
         "risk_pct": risk_pct, "reward_pct": reward_pct, "rr": rr,
         "sources": {
-            "confirmation": f"唯一確認事件：{confirmation_source}",
+            "突破確認價": f"唯一確認事件：{突破確認價_source}",
             "protective_stop": "MA60 與 ATR 防線中較接近現價者；跌破後執行減碼",
             "structure_stop": "結構低點／原結構價；跌破後退出剩餘波段部位",
             "target1": target_source,
-            "entry": "MA20 中心加入 ATR 緩衝；僅供偏多狀態評估，不等於買進命令",
+            "進場區": "MA20 中心加入 ATR 緩衝；僅供偏多狀態評估，不等於買進命令",
         },
     }
 
@@ -2787,8 +2787,8 @@ def build_decision_snapshot(res: dict, compass: dict, committee: dict, user_hold
 
     levels = build_price_level_engine(res, compass, adjusted, market["status"])
     unified_compass = dict(compass)
-    unified_compass.update({"entry":levels["entry"], "stop":levels["structure_stop"], "target1":levels["target1"], "target2":levels["target2"], "rr":levels["rr"]})
-    market.update({"entry":levels["entry"], "stop":levels["structure_stop"], "target1":levels["target1"], "rr":levels["rr"]})
+    unified_compass.update({"進場區":levels["進場區"], "stop":levels["structure_stop"], "target1":levels["target1"], "target2":levels["target2"], "rr":levels["rr"]})
+    market.update({"進場區":levels["進場區"], "stop":levels["structure_stop"], "target1":levels["target1"], "rr":levels["rr"]})
 
     # 正式趨勢不再使用 Streamlit 工作階段記憶覆寫。
     # 跨日穩定性由最近 120 個交易日日線重新推演的 Strategy State Machine 負責，
@@ -3056,7 +3056,7 @@ def build_strategy_state_machine(res: dict, decision_snapshot: dict, user_holdin
     current = safe_float(res.get("current_price"), 0)
     protective = safe_float(levels.get("protective_stop"), 0)
     structure_stop = safe_float(levels.get("structure_stop"), 0)
-    confirmation = safe_float(levels.get("confirmation"), 0)
+    突破確認價 = safe_float(levels.get("突破確認價"), 0)
     target = safe_float(levels.get("target1"), 0)
 
     positive, negative = [], []
@@ -3127,8 +3127,8 @@ def build_strategy_state_machine(res: dict, decision_snapshot: dict, user_holdin
         action_code, action, color = "REDUCE", "部分減碼", "#F97316"
 
     trigger_rows = []
-    if confirmation > 0:
-        trigger_rows.append({"condition":f"收盤站上 {confirmation:.2f} 元並維持", "effect":"解除警訊／評估升級策略"})
+    if 突破確認價 > 0:
+        trigger_rows.append({"condition":f"收盤站上 {突破確認價:.2f} 元並維持", "effect":"解除警訊／評估升級策略"})
     if protective > 0:
         trigger_rows.append({"condition":f"收盤跌破 {protective:.2f} 元", "effect":"部分減碼或提高現金部位"})
     if structure_stop > 0:
@@ -3148,7 +3148,7 @@ def build_strategy_state_machine(res: dict, decision_snapshot: dict, user_holdin
         "warnings":warnings,"warning_threshold":warning_threshold,"changed":changed,
         "change_note":change_note,"today_change":today_change,"trigger_rows":trigger_rows,
         "method_note":"正式趨勢由最近120個交易日日線重新推演；一般升降級需連續兩日，重大結構破壞可立即降級。",
-        "current":current,"confirmation":confirmation,"protective_stop":protective,"structure_stop":structure_stop,"target":target,
+        "current":current,"突破確認價":突破確認價,"protective_stop":protective,"structure_stop":structure_stop,"target":target,
     }
 
 
@@ -3345,7 +3345,7 @@ def build_strategy_consistency_audit(snapshot: dict, strategy: dict, user_holdin
     chip = snapshot.get("chip_engine", {}) or {}
     volume = snapshot.get("volume_engine", {}) or {}
     current = safe_float(lv.get("current"), 0)
-    confirm = safe_float(lv.get("confirmation"), 0)
+    confirm = safe_float(lv.get("突破確認價"), 0)
     protective = safe_float(lv.get("protective_stop"), 0)
     structural = safe_float(lv.get("structure_stop"), 0)
     target = safe_float(lv.get("target1"), 0)
@@ -3400,7 +3400,7 @@ def build_decision_stability_view(snapshot: dict) -> dict:
     current = float(lv.get("current", 0) or 0)
     distances = []
     for name, value in [
-        ("確認價", lv.get("confirmation")),
+        ("確認價", lv.get("突破確認價")),
         ("移動保護價", lv.get("protective_stop")),
         ("結構退出價", lv.get("structure_stop")),
     ]:
@@ -3439,7 +3439,7 @@ def build_if_i_were_you_text(snapshot: dict, user_holding: bool, user_cost: floa
     if user_holding and hv.get("available"):
         rr_text = f"風險報酬比 {hv['rr']:.2f}" if hv.get("rr") is not None else "風險報酬比資料不足"
         parts.append(f"持股價值評為「{hv.get('grade','—')}」：上漲空間 {hv.get('upside_pct',0):.1f}%、下跌風險 {hv.get('downside_pct',0):.1f}%、{rr_text}。")
-    parts.append(f"收盤站上 {lv['confirmation']:.2f} 元，才視為確認成功。")
+    parts.append(f"收盤站上 {lv['突破確認價']:.2f} 元，才視為確認成功。")
     parts.append(f"跌破 {lv['protective_stop']:.2f} 元，執行第一層風險處理；跌破 {lv['structure_stop']:.2f} 元，退出剩餘波段部位。")
     return " ".join(parts)
 
@@ -3452,7 +3452,7 @@ def build_decision_tree(snapshot: dict) -> list:
     else:
         success = "先保留剩餘部位；反彈站不穩則分批調節"
     return [
-        {"price": lv["confirmation"], "condition": "收盤站上", "yes": success, "no": "檢查下一道保護價"},
+        {"price": lv["突破確認價"], "condition": "收盤站上", "yes": success, "no": "檢查下一道保護價"},
         {"price": lv["protective_stop"], "condition": "收盤跌破", "yes": "減碼或提高現金部位", "no": "維持目前建議"},
         {"price": lv["structure_stop"], "condition": "收盤跌破", "yes": "退出剩餘波段部位", "no": "繼續依原計畫管理"},
     ]
@@ -3500,7 +3500,7 @@ with u_col1: user_holding = st.checkbox("📊 我手中「已持有」此個股"
 with u_col2: user_cost = st.number_input("每股真實持股成本 (元)", value=0.0, step=1.0, min_value=0.0, disabled=not user_holding)
 
 if stock_input:
-    res = evaluate_stock(stock_input, capital, risk_pct, slip_input, is_holding=user_holding, entry_cost=user_cost, sector_panic=sector_panic_toggle)
+    res = evaluate_stock(stock_input, capital, risk_pct, slip_input, is_holding=user_holding, 進場區_cost=user_cost, sector_panic=sector_panic_toggle)
     if res is None:
         st.error("無法取得這檔股票的日線資料。程式已依序嘗試 Yahoo 上市、Yahoo 上櫃與 FinMind；請確認代碼，或稍後再重新整理。")
         st.caption(f"本次查詢代碼：{stock_input}。3274 為上櫃股，程式會優先查詢 3274.TWO。")
@@ -3551,7 +3551,7 @@ if stock_input:
                 _s12 = shadow_v4.snapshot
                 _s12_price = float(res.get("current_price", 0) or 0)
                 _s12_levels = decision_snapshot.get("levels", {}) or {}
-                _s12_confirm = float(_s12_levels.get("confirmation", 0) or 0)
+                _s12_confirm = float(_s12_levels.get("突破確認價", 0) or 0)
                 _s12_stop = float(_s12_levels.get("protective_stop", 0) or 0)
 
                 _s12_daily = res.get("daily_df")
@@ -3582,11 +3582,11 @@ if stock_input:
                 _s12_raw_strategy = str(_s12.strategy.value).lower()
                 _s12_reasons = []
 
-                # Sprint 14：BUILD 分層進場治理
+                # Sprint 14：允許建立部位 分層進場治理
                 # Trend 只回答方向；Governance 回答「現在是否適合進場、適合做到哪一層」。
-                _s14_entry_low = float(_s12_levels.get("entry_low", 0) or 0)
-                _s14_entry_high = float(_s12_levels.get("entry_high", 0) or 0)
-                _s14_entry = float(_s12_levels.get("entry", 0) or 0)
+                _s14_進場區_low = float(_s12_levels.get("進場區_low", 0) or 0)
+                _s14_進場區_high = float(_s12_levels.get("進場區_high", 0) or 0)
+                _s14_進場區 = float(_s12_levels.get("進場區", 0) or 0)
 
                 _s14_labels = {
                     "strong_uptrend": "強勢多頭",
@@ -3595,12 +3595,12 @@ if stock_input:
                     "weak": "偏弱",
                     "bearish": "空頭",
                     "risk_off": "風險偏高",
-                    "BUILD": "允許建立部位",
+                    "允許建立部位": "允許建立部位",
                     "WAIT_BETTER_ENTRY": "等待較佳進場位置",
                     "PROBE": "試探性進場",
-                    "BUILD_BASE": "建立基本部位",
+                    "允許建立部位_BASE": "建立基本部位",
                     "ADD_ON_CONFIRMATION": "突破確認後加碼",
-                    "WAIT_CONFIRMATION": "等待進場條件確認",
+                    "等待突破確認": "等待進場條件確認",
                     "HOLD": "持有",
                     "REDUCE": "減碼",
                     "EXIT": "退出",
@@ -3610,13 +3610,13 @@ if stock_input:
                 _s12_action = _s12_raw_strategy.upper()
 
                 if _s12_raw_strategy == "build":
-                    _s14_in_entry_zone = (
-                        _s14_entry_low > 0
-                        and _s14_entry_high > 0
-                        and _s14_entry_low <= _s12_price <= _s14_entry_high
+                    _s14_in_進場區_zone = (
+                        _s14_進場區_low > 0
+                        and _s14_進場區_high > 0
+                        and _s14_進場區_low <= _s12_price <= _s14_進場區_high
                     )
-                    _s14_above_entry = (
-                        _s14_entry_high > 0 and _s12_price > _s14_entry_high
+                    _s14_above_進場區 = (
+                        _s14_進場區_high > 0 and _s12_price > _s14_進場區_high
                     )
                     _s14_confirmed = (
                         _s12_confirm > 0 and _s12_price >= _s12_confirm
@@ -3723,12 +3723,12 @@ if stock_input:
                     )
 
                     # 只有價格接近或進入理想進場區時，回檔品質才具有操作意義。
-                    _s16_entry_near = (
-                        _s14_entry_low > 0
-                        and _s14_entry_high > 0
-                        and _s12_price <= _s14_entry_high * 1.03
+                    _s16_進場區_near = (
+                        _s14_進場區_low > 0
+                        and _s14_進場區_high > 0
+                        and _s12_price <= _s14_進場區_high * 1.03
                     )
-                    _s16_pullback_active = bool(_s14_in_entry_zone or _s16_entry_near)
+                    _s16_pullback_active = bool(_s14_in_進場區_zone or _s16_進場區_near)
 
                     if not _s16_pullback_active:
                         _s15_pullback_quality = "NOT_APPLICABLE"
@@ -3755,59 +3755,59 @@ if stock_input:
                                 "且量能、法人、大盤至少有兩項提供支持"
                             )
                         else:
-                            _s12_action = "WAIT_CONFIRMATION"
+                            _s12_action = "等待突破確認"
                             _s12_reasons.insert(
                                 0,
                                 f"股價雖已達 {_s12_confirm:,.2f} 元確認價，"
                                 "但量能、法人與大盤的配合仍不足，暫不追價"
                             )
 
-                    # 第二層：位於既有 Entry Zone，外部條件普通可試單，較佳可建基本部位。
-                    elif _s14_in_entry_zone:
+                    # 第二層：位於既有 理想進場區，外部條件普通可試單，較佳可建基本部位。
+                    elif _s14_in_進場區_zone:
                         if _s15_pullback_quality == "WEAKENING":
-                            _s12_action = "WAIT_CONFIRMATION"
+                            _s12_action = "等待突破確認"
                             _s12_reasons.insert(
                                 0,
-                                f"現價雖進入理想進場區 {_s14_entry_low:,.2f}～"
-                                f"{_s14_entry_high:,.2f} 元，但回檔品質不足，不能只因價格變便宜就承接"
+                                f"現價雖進入理想進場區 {_s14_進場區_low:,.2f}～"
+                                f"{_s14_進場區_high:,.2f} 元，但回檔品質不足，不能只因價格變便宜就承接"
                             )
                         elif _s15_pullback_quality == "HEALTHY" and _s14_support_score >= 2:
-                            _s12_action = "BUILD_BASE"
+                            _s12_action = "允許建立部位_BASE"
                             _s12_reasons.insert(
                                 0,
-                                f"現價位於理想進場區 {_s14_entry_low:,.2f}～"
-                                f"{_s14_entry_high:,.2f} 元，回檔結構健康且外部條件已有一定支持"
+                                f"現價位於理想進場區 {_s14_進場區_low:,.2f}～"
+                                f"{_s14_進場區_high:,.2f} 元，回檔結構健康且外部條件已有一定支持"
                             )
                         elif _s15_pullback_quality in {"HEALTHY", "ACCEPTABLE"} and _s14_support_score >= 1:
                             _s12_action = "PROBE"
                             _s12_reasons.insert(
                                 0,
-                                f"現價位於理想進場區 {_s14_entry_low:,.2f}～"
-                                f"{_s14_entry_high:,.2f} 元，回檔尚未破壞主要結構，"
+                                f"現價位於理想進場區 {_s14_進場區_low:,.2f}～"
+                                f"{_s14_進場區_high:,.2f} 元，回檔尚未破壞主要結構，"
                                 "但確認條件未完全到位，只適合小部位試探"
                             )
                         else:
-                            _s12_action = "WAIT_CONFIRMATION"
+                            _s12_action = "等待突破確認"
                             _s12_reasons.insert(
                                 0,
-                                f"現價雖位於理想進場區 {_s14_entry_low:,.2f}～"
-                                f"{_s14_entry_high:,.2f} 元，但回檔品質或外部條件仍不足"
+                                f"現價雖位於理想進場區 {_s14_進場區_low:,.2f}～"
+                                f"{_s14_進場區_high:,.2f} 元，但回檔品質或外部條件仍不足"
                             )
 
-                    # 第三層：已高於 Entry Zone、尚未突破 Confirmation。
+                    # 第三層：已高於 理想進場區、尚未突破 Confirmation。
                     # 這裡不因 Trend 看多就追價。
-                    elif _s14_above_entry:
+                    elif _s14_above_進場區:
                         _s12_action = "WAIT_BETTER_ENTRY"
                         _s12_reasons.insert(
                             0,
                             f"現價 {_s12_price:,.2f} 元已高於既有理想進場區 "
-                            f"{_s14_entry_low:,.2f}～{_s14_entry_high:,.2f} 元，"
+                            f"{_s14_進場區_low:,.2f}～{_s14_進場區_high:,.2f} 元，"
                             f"但尚未突破 {_s12_confirm:,.2f} 元確認價，暫不追價"
                         )
 
-                    # 第四層：低於 Entry Zone，不把「便宜」直接當買點。
+                    # 第四層：低於 理想進場區，不把「便宜」直接當買點。
                     else:
-                        _s12_action = "WAIT_CONFIRMATION"
+                        _s12_action = "等待突破確認"
                         _s12_reasons.insert(
                             0,
                             f"現價尚未進入可確認的進場結構，先等待價格與趨勢重新取得一致"
@@ -3821,10 +3821,10 @@ if stock_input:
                     "governed_action": _s12_action,
                     "governed_action_zh": _s14_labels.get(_s12_action, _s12_action),
                     "price": _s12_price,
-                    "confirmation": _s12_confirm,
+                    "突破確認價": _s12_confirm,
                     "protective_stop": _s12_stop,
-                    "entry_low": _s14_entry_low,
-                    "entry_high": _s14_entry_high,
+                    "進場區_low": _s14_進場區_low,
+                    "進場區_high": _s14_進場區_high,
                     "volume_ratio": _s12_vol_ratio,
                     "foreign_5d": _s12_foreign5,
                     "trust_5d": _s12_trust5,
@@ -3959,16 +3959,16 @@ if stock_input:
 
                     _s12g = st.session_state.get("_stockpilot4_s12_governance", {}) or {}
                     if _s12g:
-                        st.markdown("**Sprint 16｜目前決策摘要**")
+                        st.markdown("**目前決策摘要**")
                         st.write(
                             f"趨勢狀態：**{_s12g.get('trend_state_zh', '未知')}** → "
                             f"原始策略：**{_s12g.get('raw_strategy_zh', '未知')}** → "
                             f"目前建議：**{_s12g.get('governed_action_zh', '未知')}**"
                         )
 
-                        _el = float(_s12g.get("entry_low", 0) or 0)
-                        _eh = float(_s12g.get("entry_high", 0) or 0)
-                        _cf = float(_s12g.get("confirmation", 0) or 0)
+                        _el = float(_s12g.get("進場區_low", 0) or 0)
+                        _eh = float(_s12g.get("進場區_high", 0) or 0)
+                        _cf = float(_s12g.get("突破確認價", 0) or 0)
                         if _el > 0 and _eh > 0:
                             st.write(f"理想進場區：{_el:,.2f}～{_eh:,.2f} 元")
                         if _cf > 0:
@@ -4008,7 +4008,7 @@ if stock_input:
                                 "目前只適合小部位試探，不代表完整進場；"
                                 "後續仍需觀察量能、法人籌碼與大盤是否改善。"
                             )
-                        elif _ga == "BUILD_BASE":
+                        elif _ga == "允許建立部位_BASE":
                             st.success(
                                 "目前價格位置與外部條件已具備建立基本部位的條件，"
                                 "但仍不是滿倉訊號。"
@@ -4046,10 +4046,10 @@ if stock_input:
                             for _d in shadow_v4.differences:
                                 st.code(str(_d))
 
-                    # Sprint 13：Trigger Audit
-                    # 目的：追查 confirmation / protective_stop / structure_stop 的實際生成來源。
+                    # Sprint 13：條件 Audit
+                    # 目的：追查 突破確認價 / protective_stop / structure_stop 的實際生成來源。
                     # 純顯示，不修改任何價格、Trend、Strategy 或 Governance。
-                    with st.expander("🎯 價格關卡稽核｜確認價與風控價怎麼來的", expanded=True):
+                    with st.expander("🎯 價格關卡說明", expanded=True):
                         _lv13 = decision_snapshot.get("levels", {}) or {}
                         _p13 = float(res.get("current_price", 0) or 0)
                         _ma20_13 = float(res.get("ma20_val", 0) or 0)
@@ -4057,12 +4057,12 @@ if stock_input:
                         _atr13 = float(res.get("atr", 0) or 0)
                         _res13 = float(res.get("real_resistance", 0) or 0)
                         _struct_raw13 = float(res.get("structure_stop", 0) or 0)
-                        _confirm13 = float(_lv13.get("confirmation", 0) or 0)
+                        _confirm13 = float(_lv13.get("突破確認價", 0) or 0)
                         _protect13 = float(_lv13.get("protective_stop", 0) or 0)
                         _structure13 = float(_lv13.get("structure_stop", 0) or 0)
-                        _entry13 = float(_lv13.get("entry", 0) or 0)
-                        _entry_low13 = float(_lv13.get("entry_low", 0) or 0)
-                        _entry_high13 = float(_lv13.get("entry_high", 0) or 0)
+                        _進場區13 = float(_lv13.get("進場區", 0) or 0)
+                        _進場區_low13 = float(_lv13.get("進場區_low", 0) or 0)
+                        _進場區_high13 = float(_lv13.get("進場區_high", 0) or 0)
 
                         _tick13 = tick_size(_p13) if _p13 > 0 else 0.01
                         _atr_eff13 = max(_atr13, _p13 * 0.02, _tick13)
@@ -4092,7 +4092,7 @@ if stock_input:
                             {"項目": "ATR", "實際值": f"{_atr13:,.2f}", "用途": f"ATR_eff = max(ATR, 現價2%, tick) = {_atr_eff13:,.2f}"},
                             {"項目": "實際命中分支", "實際值": _confirm_branch13, "用途": _confirm_formula13},
                             {"項目": "重建候選確認價", "實際值": f"{_confirm_candidate13:,.2f}", "用途": "依目前程式原始公式重建"},
-                            {"項目": "decision_snapshot 確認價", "實際值": f"{_confirm13:,.2f}", "用途": str((_lv13.get("sources", {}) or {}).get("confirmation", "未提供來源文字"))},
+                            {"項目": "decision_snapshot 確認價", "實際值": f"{_confirm13:,.2f}", "用途": str((_lv13.get("sources", {}) or {}).get("突破確認價", "未提供來源文字"))},
                         ]
                         st.dataframe(pd.DataFrame(_confirm_rows13), use_container_width=True, hide_index=True)
 
@@ -4158,30 +4158,30 @@ if stock_input:
                             _tick13
                         )
 
-                        _entry_center13 = _ma20_13 if _ma20_13 > 0 else _p13
-                        _entry_buffer13 = max(_atr_eff13 * 0.35, _p13 * 0.01)
-                        _entry_low_re13 = floor_to_tick(
-                            max(_tick13, _entry_center13 - _entry_buffer13), _tick13
+                        _進場區_center13 = _ma20_13 if _ma20_13 > 0 else _p13
+                        _進場區_buffer13 = max(_atr_eff13 * 0.35, _p13 * 0.01)
+                        _進場區_low_re13 = floor_to_tick(
+                            max(_tick13, _進場區_center13 - _進場區_buffer13), _tick13
                         )
-                        _entry_high_re13 = ceil_to_tick(
-                            _entry_center13 + _entry_buffer13, _tick13
+                        _進場區_high_re13 = ceil_to_tick(
+                            _進場區_center13 + _進場區_buffer13, _tick13
                         )
 
                         st.markdown("##### C. 結構失效價與既有理想進場區")
-                        _entry_rows13 = [
+                        _進場區_rows13 = [
                             {"項目": "原始 structure_stop", "數值": f"{_struct_raw13:,.2f}", "意義": "個股結構資料"},
                             {"項目": "Compass stop", "數值": f"{_compass_stop13:,.2f}", "意義": "既有 Compass 風控價"},
                             {"項目": "重建 structure_stop", "數值": f"{_struct_rebuilt13:,.2f}", "意義": "跌破後退出剩餘波段部位"},
                             {"項目": "snapshot structure_stop", "數值": f"{_structure13:,.2f}", "意義": str((_lv13.get("sources", {}) or {}).get("structure_stop", "未提供來源文字"))},
-                            {"項目": "理想進場中心", "數值": f"{_entry_center13:,.2f}", "意義": "目前程式其實以 MA20 作為偏多評估中心"},
-                            {"項目": "理想進場區下緣（重建）", "數值": f"{_entry_low_re13:,.2f}", "意義": "MA20 − max(0.35×ATR_eff, 現價1%)"},
-                            {"項目": "理想進場區上緣（重建）", "數值": f"{_entry_high_re13:,.2f}", "意義": "MA20 + max(0.35×ATR_eff, 現價1%)"},
-                            {"項目": "系統理想進場區", "數值": f"{_entry_low13:,.2f} ～ {_entry_high13:,.2f}", "意義": str((_lv13.get("sources", {}) or {}).get("entry", "未提供來源文字"))},
+                            {"項目": "理想進場中心", "數值": f"{_進場區_center13:,.2f}", "意義": "目前程式其實以 MA20 作為偏多評估中心"},
+                            {"項目": "理想進場區下緣（重建）", "數值": f"{_進場區_low_re13:,.2f}", "意義": "MA20 − max(0.35×ATR_eff, 現價1%)"},
+                            {"項目": "理想進場區上緣（重建）", "數值": f"{_進場區_high_re13:,.2f}", "意義": "MA20 + max(0.35×ATR_eff, 現價1%)"},
+                            {"項目": "系統理想進場區", "數值": f"{_進場區_low13:,.2f} ～ {_進場區_high13:,.2f}", "意義": str((_lv13.get("sources", {}) or {}).get("進場區", "未提供來源文字"))},
                         ]
-                        st.dataframe(pd.DataFrame(_entry_rows13), use_container_width=True, hide_index=True)
+                        st.dataframe(pd.DataFrame(_進場區_rows13), use_container_width=True, hide_index=True)
 
-                        st.markdown("##### D. 價格關卡的角色判定")
-                        _source13 = str(_lv13.get("confirmation_source", ""))
+                        st.markdown("##### D. 價格關卡說明")
+                        _source13 = str(_lv13.get("突破確認價_source", ""))
                         _role13 = (
                             "突破／壓力確認價"
                             if ("壓力" in _source13 or _confirm_branch13.startswith("②"))
@@ -4190,31 +4190,31 @@ if stock_input:
                             else "短線價格確認價"
                         )
                         _distance13 = ((_confirm13 / _p13 - 1) * 100) if _p13 > 0 and _confirm13 > 0 else None
-                        _entry_relation13 = (
-                            "現價高於既有 Entry Zone"
-                            if _entry_high13 > 0 and _p13 > _entry_high13
-                            else "現價位於既有 Entry Zone"
-                            if _entry_low13 <= _p13 <= _entry_high13 and _entry_high13 > 0
-                            else "現價低於既有 Entry Zone"
+                        _進場區_relation13 = (
+                            "現價高於既有 理想進場區"
+                            if _進場區_high13 > 0 and _p13 > _進場區_high13
+                            else "現價位於既有 理想進場區"
+                            if _進場區_low13 <= _p13 <= _進場區_high13 and _進場區_high13 > 0
+                            else "現價低於既有 理想進場區"
                         )
                         _role_rows13 = [
-                            {"問題": "1200 是什麼？", "判定": _role13, "依據": _source13 or _confirm_branch13},
+                            {"問題": "突破確認價是什麼？", "判定": _role13, "依據": _source13 or _confirm_branch13},
                             {"問題": "離現價多遠？", "判定": f"{_distance13:+.2f}%" if _distance13 is not None else "缺資料", "依據": "確認價 ÷ 現價 − 1"},
-                            {"問題": "程式是否另有理想進場區？", "判定": "有", "依據": f"{_entry_low13:,.2f} ～ {_entry_high13:,.2f}"},
-                            {"問題": "現價與理想進場區關係", "判定": _entry_relation13, "依據": f"現價 {_p13:,.2f}"},
-                            {"問題": "確認價能否直接等同首次買進價？", "判定": "不能直接等同", "依據": "原價格引擎同時存在 理想進場區與突破確認價，兩者本來就是不同欄位／職責"},
+                            {"問題": "系統是否另有理想進場區？", "判定": "有", "依據": f"{_進場區_low13:,.2f} ～ {_進場區_high13:,.2f}"},
+                            {"問題": "現價與理想進場區的關係", "判定": _進場區_relation13, "依據": f"現價 {_p13:,.2f}"},
+                            {"問題": "突破確認價是否等於買進價？", "判定": "不能直接等同", "依據": "原價格引擎同時存在 理想進場區與突破確認價，兩者本來就是不同欄位／職責"},
                         ]
                         st.dataframe(pd.DataFrame(_role_rows13), use_container_width=True, hide_index=True)
 
                         st.info(
-                            "Sprint 13 結論只做『角色辨識』：confirmation 是確認事件，"
-                            "entry 是偏多狀態的評估區。這一版不新增 PROBE / ADD，也不修改 WAIT_CONFIRMATION；"
-                            "等實機確認 Trigger 來源與 Entry Zone 正確後，再決定 Sprint 14 的分層進場規則。"
+                            "Sprint 13 結論只做『角色辨識』：突破確認價 是確認事件，"
+                            "進場區 是偏多狀態的評估區。這一版不新增 試單／加碼，也不修改 等待突破確認；"
+                            "等實機確認 條件 來源與 理想進場區 正確後，再決定 後續分層進場規則。"
                         )
 
                     # Sprint 11：4.0 Decision Audit
                     # 只讀取已存在的 res / shadow payload / snapshot，不改任何策略或分數。
-                    with st.expander("🔎 4.0 決策稽核｜實際用了哪些數據", expanded=True):
+                    with st.expander("🔎 決策依據明細", expanded=True):
                         audit_daily = res.get("daily_df")
                         audit_inst = res.get("institutional_df")
                         audit_margin = shadow_margin_df if "shadow_margin_df" in locals() else pd.DataFrame()
@@ -4224,7 +4224,7 @@ if stock_input:
                         audit_ma20 = float(res.get("ma20_val", 0) or 0)
                         audit_ma60 = float(res.get("ma60_val", 0) or 0)
                         audit_atr = float(res.get("atr", 0) or 0)
-                        audit_confirm = float(decision_snapshot.get("levels", {}).get("confirmation", 0) or 0)
+                        audit_confirm = float(decision_snapshot.get("levels", {}).get("突破確認價", 0) or 0)
                         audit_stop = float(decision_snapshot.get("levels", {}).get("protective_stop", 0) or 0)
 
                         def _audit_slope(series, periods=5):
@@ -4286,9 +4286,9 @@ if stock_input:
                         ]
                         st.dataframe(pd.DataFrame(trend_rows), use_container_width=True, hide_index=True)
 
-                        st.markdown("##### B. BUILD 與 Trigger 一致性檢查")
+                        st.markdown("##### B. 允許建立部位 與 條件 一致性檢查")
                         confirm_gap = ((audit_confirm / audit_price - 1) * 100) if audit_price > 0 and audit_confirm > 0 else None
-                        below_confirmation = bool(audit_confirm > 0 and audit_price < audit_confirm)
+                        below_突破確認價 = bool(audit_confirm > 0 and audit_price < audit_confirm)
                         trigger_rows = [
                             {"項目": "4.0 Strategy", "值": s.strategy.value.upper(), "檢查": "Shadow 實際輸出"},
                             {"項目": "現價", "值": f"{audit_price:,.2f} 元", "檢查": ""},
@@ -4297,19 +4297,19 @@ if stock_input:
                         ]
                         st.dataframe(pd.DataFrame(trigger_rows), use_container_width=True, hide_index=True)
                         _s12_audit = st.session_state.get("_stockpilot4_s12_governance", {}) or {}
-                        if s.strategy.value == "build" and below_confirmation:
-                            if _s12_audit.get("governed_action") == "WAIT_CONFIRMATION":
+                        if s.strategy.value == "build" and below_突破確認價:
+                            if _s12_audit.get("governed_action") == "等待突破確認":
                                 st.warning(
-                                    "原始 4.0 Strategy 為 BUILD，但現價仍低於確認價；"
-                                    "Sprint 12 已將當下動作治理為 WAIT_CONFIRMATION。"
+                                    "原始 4.0 Strategy 為 允許建立部位，但現價仍低於確認價；"
+                                    "Sprint 12 已將當下動作治理為 等待突破確認。"
                                     "Trend State 不因此改變。"
                                 )
                             else:
                                 st.error(
-                                    "⚠️ 原始 BUILD 與確認價仍有未處理衝突。"
+                                    "⚠️ 原始 允許建立部位 與確認價仍有未處理衝突。"
                                 )
                         elif s.strategy.value == "build":
-                            st.success("BUILD 與確認價條件目前未偵測到直接衝突。")
+                            st.success("允許建立部位 與確認價條件目前未偵測到直接衝突。")
 
                         st.markdown("##### C. 成交量、法人、融資")
                         chip_rows = []
@@ -4393,7 +4393,7 @@ if stock_input:
                         st.dataframe(pd.DataFrame(path_rows), use_container_width=True, hide_index=True)
                         st.caption(
                             "注意：Sprint 11 只做可視化稽核。上述表格不會修改 3.3 或 4.0 的任何分數、"
-                            "Trend State、Strategy 或 Trigger。"
+                            "Trend State、Strategy 或 條件。"
                         )
 
         # Phase 3：AI 投資委員會正式版（第一層摘要＋分析依據＋信心計算）
@@ -4410,7 +4410,7 @@ if stock_input:
 
 
 
-        # StockPilot 3.0 首頁：State、Action、Evidence、Trigger。
+        # StockPilot 3.0 首頁：State、Action、Evidence、條件。
         lv = decision_snapshot["levels"]
         strategy_state = decision_snapshot["strategy"]
 
@@ -4455,7 +4455,7 @@ if stock_input:
                 st.write("目前沒有額外重大反證。")
         st.caption(f"風險證據 {strategy_state['warnings']}/{strategy_state['warning_threshold']}。一般證據會累積後才影響動作，重大結構風險才可立即處理。")
 
-        st.markdown("### ④ 什麼情況會改變（Trigger）")
+        st.markdown("### ④ 什麼情況會改變（條件）")
         if strategy_state['trigger_rows']:
             st.dataframe(pd.DataFrame(strategy_state['trigger_rows']).rename(columns={'condition':'條件','effect':'策略改變'}), use_container_width=True, hide_index=True)
         else:
@@ -4487,7 +4487,7 @@ if stock_input:
             if not sa.get("ok", False):
                 st.error("策略快照存在不一致，請不要依此版本執行交易；失敗項目：" + "、".join(sa.get("failed", [])))
             else:
-                st.success("State、Action、Trigger、籌碼、量價與大盤閘門目前一致。")
+                st.success("State、Action、條件、籌碼、量價與大盤閘門目前一致。")
 
         with st.expander("🧪 跨日趨勢穩定性驗證", expanded=False):
             sv = decision_snapshot.get("strategy_stability_validation", {}) or {}
@@ -4544,7 +4544,7 @@ if stock_input:
             c2.metric("市場分數", f"{decision_engine['market_score']}/100")
             c3.metric("資料可信度", f"{decision_snapshot['data_reliability']}%")
             c4.metric("訊號一致度", f"{decision_snapshot['agreement']['score']}%")
-            st.write(f"• 確認價：{lv['confirmation']:.2f} 元｜{lv['sources']['confirmation']}")
+            st.write(f"• 確認價：{lv['突破確認價']:.2f} 元｜{lv['sources']['突破確認價']}")
             st.write(f"• 移動保護價：{lv['protective_stop']:.2f} 元｜{lv['sources']['protective_stop']}")
             st.write(f"• 結構退出價：{lv['structure_stop']:.2f} 元｜{lv['sources']['structure_stop']}")
             ctx=decision_snapshot['regime'].get('context',{}) or {}
@@ -4722,8 +4722,8 @@ if stock_input:
 
                 st.markdown(f"""
                 <div style="background:#F8FAFC;border:1px solid #CBD5E1;border-left:6px solid #2563EB;padding:14px;border-radius:6px;margin-bottom:14px;line-height:1.7;">
-                <b>目前進場方式：</b>{ta['entry_model']}｜<b>條件是否完整：</b>{'已確認' if ta['entry_ready'] else '尚未確認'}<br>
-                <b>白話解讀：</b>{'目前已符合此進場方式的主要條件，但仍建議分批。' if ta['entry_ready'] else '目前只有部分條件成立，先等待止跌、放量或突破確認。'}
+                <b>目前進場方式：</b>{ta['進場區_model']}｜<b>條件是否完整：</b>{'已確認' if ta['進場區_ready'] else '尚未確認'}<br>
+                <b>白話解讀：</b>{'目前已符合此進場方式的主要條件，但仍建議分批。' if ta['進場區_ready'] else '目前只有部分條件成立，先等待止跌、放量或突破確認。'}
                 </div>
                 """, unsafe_allow_html=True)
                 with st.expander("查看四種進場模型與訊號變更紀錄", expanded=False):
