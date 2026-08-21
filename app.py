@@ -4731,6 +4731,45 @@ if stock_input:
         # Beta v2：只顯示最新版操作畫面
         _p18 = st.session_state.get("_stockpilot4_s18_position", {}) or {}
 
+        # Beta v8.1 hotfix：Shadow 任一子模組失敗時，不得讓主決策畫面整段空白。
+        # 以正式 Decision Center 的日線趨勢與關鍵價位建立可用的保底決策；
+        # Shadow 恢復後仍優先採用完整的未持股/持股決策鏈。
+        if not _p18:
+            _fb_levels = decision_snapshot.get("levels", {}) or {}
+            _fb_price = float(res.get("current_price", 0) or 0)
+            _fb_ma20 = float(res.get("ma20", 0) or 0)
+            _fb_ma60 = float(res.get("ma60", 0) or 0)
+            _fb_confirm = float(_fb_levels.get("突破確認價", 0) or 0)
+            _fb_stop = float(_fb_levels.get("protective_stop", 0) or 0)
+            _fb_action = str(strategy_state.get("action", "等待") or "等待")
+            _fb_state = str(strategy_state.get("state_label", "") or "")
+            if user_holding:
+                _fb_decision = _fb_action if _fb_action in {"持有", "加碼", "減碼", "退場"} else "持有"
+                _fb_state_zh = _fb_decision
+                _fb_reason = "完整快速決策模組暫時不可用；目前先依正式日線趨勢與風控狀態維持穩定判斷。"
+            else:
+                if _fb_stop > 0 and _fb_price < _fb_stop:
+                    _fb_decision, _fb_state_zh = "不宜進場", "不宜進場"
+                elif _fb_confirm > 0 and _fb_price >= _fb_confirm:
+                    _fb_decision, _fb_state_zh = "正式進場", "正式進場"
+                elif _fb_ma20 > 0 and _fb_price > _fb_ma20 * 1.10:
+                    _fb_decision, _fb_state_zh = "等待拉回", "等待拉回"
+                else:
+                    _fb_decision, _fb_state_zh = "繼續等待", "繼續等待"
+                _fb_reason = "完整快速決策模組暫時不可用；目前先依正式日線趨勢與關鍵價位判斷，避免盤中雜訊造成反覆切換。"
+            _p18 = {
+                "trade_decision": _fb_decision,
+                "trade_reason": _fb_reason,
+                "early_entry_state_zh": _fb_state_zh,
+                "early_entry_ratio": 0.0,
+                "current_shares": int(res.get("current_shares", 0) or 0) if user_holding else 0,
+                "beta_entry_low": float(_fb_levels.get("ideal_entry_low", 0) or 0),
+                "beta_entry_high": float(_fb_levels.get("ideal_entry_high", 0) or 0),
+                "beta_confirm_price": _fb_confirm,
+                "beta_invalidation_price": _fb_stop,
+                "fallback_mode": True,
+            }
+
         _stock_name_beta = str(res.get("stock_name", "") or "").strip()
         _stock_id_beta = str(res.get("stock_id", stock_input) or stock_input).strip()
         _current_price_beta = float(res.get("current_price", 0) or 0)
@@ -4759,7 +4798,7 @@ if stock_input:
         st.markdown("## 最新操作建議")
 
         if not _p18:
-            st.error("最新操作模組目前沒有產生結果，請重新整理或查看程式錯誤紀錄。")
+            st.error("決策資料暫時無法建立；請查看進階診斷中的錯誤紀錄。")
         else:
             _decision_now = str(_p18.get("trade_decision", "等待"))
             _decision_reason = str(_p18.get("trade_reason", "等待更多確認。"))
