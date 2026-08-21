@@ -4034,15 +4034,15 @@ if stock_input:
                 else:
                     _s181_position_status = "依個股條件管理"
 
-                # Sprint 19：未持股起漲點偵測
-                # 目的：不必等到遠端壓力突破才第一次進場。
+                # Sprint 19.2：未持股起漲點偵測（可稽核版）
+                # 不因單一資料欄缺失就把整體評分歸零。
                 _s19_daily = res.get("daily_df")
                 _s19_ma20 = float(res.get("ma20_val", 0) or 0)
                 _s19_ma60 = float(res.get("ma60_val", 0) or 0)
-                _s19_atr = float(res.get("atr", 0) or 0)
-                _s19_volume_ratio = _s12_governance.get("volume_ratio", None)
-                _s19_foreign5 = _s12_governance.get("foreign_5d", None)
-                _s19_trust5 = _s12_governance.get("trust_5d", None)
+                _s19_current_vol = float(res.get("current_vol", 0) or 0)
+                _s19_vol_ma20 = float(res.get("volume_ma20_shares", 0) or 0)
+                _s19_market_state = str(_s12.market_state.value).lower()
+                _s19_trend_state = str(_s12.trend_state.value).lower()
 
                 _s19_ret3 = None
                 _s19_ret5 = None
@@ -4060,97 +4060,173 @@ if stock_input:
                                 float(_ma20s19.iloc[-1]) / float(_ma20s19.iloc[-6]) - 1
                             ) * 100
 
-                # 起漲評分：只用來判斷「提早進場」，不改 Trend State。
-                _s19_early_score = 0
-                _s19_early_total = 0
-                _s19_early_reasons = []
+                # 成交量 fallback：優先治理層，其次 current_vol / 20日均量
+                _s19_volume_ratio = _s12_governance.get("volume_ratio", None)
+                if _s19_volume_ratio is None and _s19_vol_ma20 > 0 and _s19_current_vol > 0:
+                    _s19_volume_ratio = _s19_current_vol / _s19_vol_ma20
+
+                _s19_foreign5 = _s12_governance.get("foreign_5d", None)
+                _s19_trust5 = _s12_governance.get("trust_5d", None)
+
+                # 法人 fallback：治理層沒有時，直接從 institutional_df 重算
+                _s19_inst = res.get("institutional_df")
+                if isinstance(_s19_inst, pd.DataFrame) and not _s19_inst.empty:
+                    if _s19_foreign5 is None and "外資(張)" in _s19_inst.columns:
+                        _x19 = pd.to_numeric(_s19_inst["外資(張)"], errors="coerce").dropna()
+                        if len(_x19):
+                            _s19_foreign5 = float(_x19.tail(5).sum())
+                    if _s19_trust5 is None and "投信(張)" in _s19_inst.columns:
+                        _x19 = pd.to_numeric(_s19_inst["投信(張)"], errors="coerce").dropna()
+                        if len(_x19):
+                            _s19_trust5 = float(_x19.tail(5).sum())
+
+                _s19_checks = []
+
+                def _s19_add_check(name, available, passed, value_text, reason):
+                    _s19_checks.append({
+                        "條件": name,
+                        "資料狀態": "有資料" if available else "缺資料",
+                        "實際值": value_text,
+                        "是否通過": "✅ 通過" if (available and passed) else ("❌ 未通過" if available else "⚪ 不計分"),
+                        "用途": reason,
+                        "_available": bool(available),
+                        "_passed": bool(available and passed),
+                    })
 
                 # 1. 價格站上 MA20
-                if _s19_ma20 > 0:
-                    _s19_early_total += 1
-                    if _s12_price > _s19_ma20:
-                        _s19_early_score += 1
-                        _s19_early_reasons.append("股價已站上20日均線")
+                _s19_add_check(
+                    "股價站上20日均線",
+                    _s19_ma20 > 0,
+                    _s12_price > _s19_ma20 if _s19_ma20 > 0 else False,
+                    f"現價 {_s12_price:,.2f}／MA20 {_s19_ma20:,.2f}" if _s19_ma20 > 0 else "MA20 缺資料",
+                    "確認價格已脫離弱勢區"
+                )
 
-                # 2. MA20 向上
+                # 2. 中短期均線結構：斜率有資料用斜率，否則以 MA20 > MA60 fallback
                 if _s19_ma20_slope5 is not None:
-                    _s19_early_total += 1
-                    if _s19_ma20_slope5 > 0:
-                        _s19_early_score += 1
-                        _s19_early_reasons.append(
-                            f"20日均線近5日斜率為 {_s19_ma20_slope5:+.2f}%"
-                        )
+                    _s19_add_check(
+                        "20日均線開始向上",
+                        True,
+                        _s19_ma20_slope5 > 0,
+                        f"近5日斜率 {_s19_ma20_slope5:+.2f}%",
+                        "確認短中期趨勢開始改善"
+                    )
+                else:
+                    _s19_add_check(
+                        "均線結構轉強",
+                        _s19_ma20 > 0 and _s19_ma60 > 0,
+                        _s19_ma20 > _s19_ma60 if (_s19_ma20 > 0 and _s19_ma60 > 0) else False,
+                        f"MA20 {_s19_ma20:,.2f}／MA60 {_s19_ma60:,.2f}" if (_s19_ma20 > 0 and _s19_ma60 > 0) else "均線資料不足",
+                        "斜率缺資料時，以短均線是否站上中期均線替代"
+                    )
 
-                # 3. 價格動能已轉正，但避免過度暴衝
-                if _s19_ret3 is not None:
-                    _s19_early_total += 1
-                    if 0.5 <= _s19_ret3 <= 8.0:
-                        _s19_early_score += 1
-                        _s19_early_reasons.append(
-                            f"近3日價格動能 {_s19_ret3:+.2f}%"
-                        )
+                # 3. 價格動能
+                _s19_add_check(
+                    "近3日價格動能",
+                    _s19_ret3 is not None,
+                    0.5 <= _s19_ret3 <= 8.0 if _s19_ret3 is not None else False,
+                    f"{_s19_ret3:+.2f}%" if _s19_ret3 is not None else "缺資料",
+                    "確認開始轉強，同時避免短線暴衝後追高"
+                )
 
-                # 4. 量能至少開始回升；不要求爆量
-                if _s19_volume_ratio is not None:
-                    _s19_early_total += 1
-                    if _s19_volume_ratio >= 0.60:
-                        _s19_early_score += 1
-                        _s19_early_reasons.append(
-                            f"成交量約20日均量 {_s19_volume_ratio:.2f} 倍"
-                        )
+                # 4. 成交量
+                _s19_add_check(
+                    "成交量開始回升",
+                    _s19_volume_ratio is not None,
+                    _s19_volume_ratio >= 0.60 if _s19_volume_ratio is not None else False,
+                    f"20日均量的 {_s19_volume_ratio:.2f} 倍" if _s19_volume_ratio is not None else "缺資料",
+                    "不要求爆量，但不能完全無量起漲"
+                )
 
-                # 5. 法人不能雙方持續偏賣
-                if _s19_foreign5 is not None and _s19_trust5 is not None:
-                    _s19_early_total += 1
-                    if _s19_foreign5 >= 0 or _s19_trust5 >= 0:
-                        _s19_early_score += 1
-                        _s19_early_reasons.append("外資或投信至少一方近5日未持續賣超")
+                # 5. 法人
+                _s19_inst_available = _s19_foreign5 is not None and _s19_trust5 is not None
+                _s19_add_check(
+                    "法人沒有同步撤退",
+                    _s19_inst_available,
+                    (_s19_foreign5 >= 0 or _s19_trust5 >= 0) if _s19_inst_available else False,
+                    (
+                        f"外資5日 {_s19_foreign5:+,.0f} 張／投信5日 {_s19_trust5:+,.0f} 張"
+                        if _s19_inst_available else "缺資料"
+                    ),
+                    "外資、投信至少一方沒有持續賣超"
+                )
 
-                # 6. 大盤至少不能是明顯風險狀態
-                _s19_early_total += 1
-                if _s12_market in {"neutral", "strong_uptrend", "uptrend", "bullish"}:
-                    _s19_early_score += 1
-                    _s19_early_reasons.append("大盤未處於明顯逆風狀態")
+                # 6. 大盤
+                _s19_market_pass = _s19_market_state in {
+                    "neutral", "strong_uptrend", "uptrend", "bullish"
+                }
+                _s19_add_check(
+                    "大盤不是明顯逆風",
+                    bool(_s19_market_state),
+                    _s19_market_pass,
+                    _s12_governance.get("market_state_zh", _s19_market_state),
+                    "大盤不要求強多，但不能處於明顯風險狀態"
+                )
 
+                # 7. 4.0 趨勢本身也納入一致性檢查
+                _s19_trend_pass = _s19_trend_state in {"strong_uptrend", "uptrend"}
+                _s19_add_check(
+                    "個股趨勢已轉多",
+                    bool(_s19_trend_state),
+                    _s19_trend_pass,
+                    _s12_governance.get("trend_state_zh", _s19_trend_state),
+                    "避免短線訊號與中期趨勢完全相反"
+                )
+
+                _s19_scored_checks = [x for x in _s19_checks if x["_available"]]
+                _s19_early_total = len(_s19_scored_checks)
+                _s19_early_score = sum(1 for x in _s19_scored_checks if x["_passed"])
                 _s19_early_ratio = (
                     _s19_early_score / _s19_early_total
                     if _s19_early_total else 0.0
                 )
+                _s19_early_reasons = [
+                    x["條件"] + "：" + x["實際值"]
+                    for x in _s19_scored_checks if x["_passed"]
+                ]
 
-                # 避免追高：離 MA20 太遠時，即使評分高也不列為起漲試單。
+                # 避免追價：離 MA20 > 12% 時，不做起漲前試單/進場。
+                # 8% 對高波動股過嚴，先放寬至 12%，但仍保留硬性追價防線。
                 _s19_ma20_distance_pct = (
                     (_s12_price / _s19_ma20 - 1) * 100
                     if _s19_ma20 > 0 else None
                 )
                 _s19_not_extended = (
                     _s19_ma20_distance_pct is not None
-                    and _s19_ma20_distance_pct <= 8.0
+                    and _s19_ma20_distance_pct <= 12.0
                 )
 
-                # 三層：
-                # EARLY_PROBE：剛轉強，可小部位試單
-                # EARLY_ENTRY：條件較完整，可正式建立第一筆部位
-                # BREAKOUT_ENTRY：已完成突破確認
-                if (
-                    _s19_early_ratio >= 0.80
+                # 必須同時具備核心條件，不能只靠總分湊過門檻。
+                _s19_core_price = _s19_ma20 > 0 and _s12_price > _s19_ma20
+                _s19_core_trend = _s19_trend_pass
+                _s19_core_market = _s19_market_pass
+                _s19_core_ok = _s19_core_price and _s19_core_trend and _s19_core_market
+
+                if _s12_confirm > 0 and _s12_price >= _s12_confirm:
+                    _s19_early_state = "BREAKOUT_ENTRY"
+                    _s19_early_state_zh = "突破確認進場"
+                elif (
+                    _s19_core_ok
+                    and _s19_early_ratio >= 0.78
                     and _s19_not_extended
                     and _s12_price < _s12_confirm
                 ):
                     _s19_early_state = "EARLY_ENTRY"
                     _s19_early_state_zh = "起漲確認進場"
                 elif (
-                    _s19_early_ratio >= 0.65
+                    _s19_core_ok
+                    and _s19_early_ratio >= 0.62
                     and _s19_not_extended
                     and _s12_price < _s12_confirm
                 ):
                     _s19_early_state = "EARLY_PROBE"
                     _s19_early_state_zh = "起漲前試單"
-                elif _s12_confirm > 0 and _s12_price >= _s12_confirm:
-                    _s19_early_state = "BREAKOUT_ENTRY"
-                    _s19_early_state_zh = "突破確認進場"
                 else:
                     _s19_early_state = "NONE"
-                    _s19_early_state_zh = "尚未形成起漲進場條件"
+                    if _s19_ma20_distance_pct is not None and not _s19_not_extended:
+                        _s19_early_state_zh = "已有轉強跡象，但目前不宜追價"
+                    else:
+                        _s19_early_state_zh = "尚未形成足夠的起漲進場條件"
 
                 # Sprint 18.3：最終只回答四件事：進場、退場、加碼、減碼。
                 _s183_governed = str(_s12_governance.get("governed_action") or "").upper()
@@ -4256,6 +4332,9 @@ if stock_input:
                     "ma20_distance_pct": _s19_ma20_distance_pct,
                     "ret3": _s19_ret3,
                     "ret5": _s19_ret5,
+                    "early_entry_checks": _s19_checks,
+                    "early_core_ok": _s19_core_ok,
+                    "early_not_extended": _s19_not_extended,
                 }
                 st.session_state["_stockpilot4_s18_position"] = _s18_position_plan
 
@@ -4438,10 +4517,29 @@ if stock_input:
                                 st.info(
                                     f"判斷原因：{_p18.get('trade_reason', '等待更多確認。')}"
                                 )
-                                if _p18.get("early_entry_reasons"):
-                                    st.write("目前已出現的起漲條件：")
-                                    for _rr in _p18["early_entry_reasons"]:
-                                        st.write("•", _rr)
+                                _checks19 = _p18.get("early_entry_checks", []) or []
+                                if _checks19:
+                                    _df19 = pd.DataFrame([
+                                        {
+                                            "起漲條件": x.get("條件"),
+                                            "實際數值": x.get("實際值"),
+                                            "結果": x.get("是否通過"),
+                                            "說明": x.get("用途"),
+                                        }
+                                        for x in _checks19
+                                    ])
+                                    st.dataframe(
+                                        _df19,
+                                        use_container_width=True,
+                                        hide_index=True
+                                    )
+
+                                if not _p18.get("early_core_ok", False):
+                                    st.warning(
+                                        "目前至少有一項核心條件尚未成立："
+                                        "股價站上20日均線、個股趨勢轉多、大盤非明顯逆風三項必須同時成立，"
+                                        "才會啟動起漲試單。"
+                                    )
 
                                 _md = _p18.get("ma20_distance_pct")
                                 if _md is not None:
