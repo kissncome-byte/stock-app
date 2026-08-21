@@ -1642,7 +1642,7 @@ def build_ai_investment_committee(res: dict, compass: dict) -> dict:
 
 
 def build_decision_engine(res: dict, compass: dict, committee: dict = None, user_holding: bool = False) -> dict:
-    """Market Engine：只分析市場，不使用持股成本或帳面損益。"""
+    """大盤環境判斷：只分析市場，不使用持股成本或帳面損益。"""
     ta=res.get("trend_analysis",{}) or {}
     current=float(res.get("current_price",0) or 0); entry=float(compass.get("entry",current) or current)
     stop=float(compass.get("stop",0) or 0); target1=float(compass.get("target1",0) or 0)
@@ -2743,7 +2743,7 @@ def build_consistency_audit(snapshot: dict) -> dict:
     lv=snapshot["levels"]; market=snapshot["market"]; portfolio=snapshot["portfolio"]
     checks=[
         ("首頁與 Portfolio 最終動作一致", snapshot.get("headline")==portfolio.get("headline")),
-        ("成本沒有進入 Market Engine", "pnl_pct" not in market and "user_cost" not in market),
+        ("成本沒有進入 大盤環境判斷", "pnl_pct" not in market and "user_cost" not in market),
         ("失效價低於現價", lv["invalidation"] < lv["current"] if lv["current"]>0 else False),
         ("第一目標高於現價", lv["target1"] > lv["current"] if lv["current"]>0 else False),
         ("決策流程與全站共用同一價格引擎", True),
@@ -2753,7 +2753,7 @@ def build_consistency_audit(snapshot: dict) -> dict:
 
 def build_decision_snapshot(res: dict, compass: dict, committee: dict, user_holding: bool, user_cost: float) -> dict:
     """V3 單一決策快照：所有畫面只能讀這一份結果。"""
-    # 先由 Market Engine 判斷方向；成本完全不進入市場評分。
+    # 先由 大盤環境判斷 判斷方向；成本完全不進入市場評分。
     base_market = build_decision_engine(res, compass, committee, False)
     regime = build_market_regime(res)
     adjusted = int(max(0, min(100, round(base_market["market_score"] + (regime["score"] - 50) * 0.30))))
@@ -3656,6 +3656,81 @@ if stock_input:
                             "不利於積極建立新部位"
                         )
 
+                    # Sprint 15：回檔品質評估
+                    # 目的：進入理想進場區不代表自動可買；先分辨健康回檔與結構轉弱。
+                    _s15_pullback_score = 0
+                    _s15_pullback_checks = 0
+                    _s15_pullback_reasons = []
+
+                    _s15_ret5 = None
+                    if isinstance(_s12_daily, pd.DataFrame) and not _s12_daily.empty:
+                        _close_col15 = "close" if "close" in _s12_daily.columns else (
+                            "Close" if "Close" in _s12_daily.columns else None
+                        )
+                        if _close_col15:
+                            _cs15 = pd.to_numeric(_s12_daily[_close_col15], errors="coerce").dropna()
+                            if len(_cs15) >= 6 and float(_cs15.iloc[-6]) > 0:
+                                _s15_ret5 = (float(_cs15.iloc[-1]) / float(_cs15.iloc[-6]) - 1) * 100
+
+                    # A. 均線結構：價格仍守在 MA60 上方，且 MA20 > MA60，視為結構尚未破壞。
+                    _s15_ma20 = float(res.get("ma20_val", 0) or 0)
+                    _s15_ma60 = float(res.get("ma60_val", 0) or 0)
+                    if _s15_ma20 > 0 and _s15_ma60 > 0:
+                        _s15_pullback_checks += 1
+                        if _s12_price >= _s15_ma60 and _s15_ma20 >= _s15_ma60:
+                            _s15_pullback_score += 1
+                        else:
+                            _s15_pullback_reasons.append("價格／均線結構已出現轉弱跡象")
+
+                    # B. 回檔量能：回檔時量比 <= 0.80 視為相對健康；爆量不加分。
+                    if _s12_vol_ratio is not None:
+                        _s15_pullback_checks += 1
+                        if _s12_vol_ratio <= 0.80:
+                            _s15_pullback_score += 1
+                        elif _s12_vol_ratio >= 1.30:
+                            _s15_pullback_reasons.append(
+                                f"成交量約為20日均量 {_s12_vol_ratio:.2f} 倍，回檔伴隨明顯放量"
+                            )
+
+                    # C. 近5日跌幅：溫和整理可接受；急跌不視為健康低接。
+                    if _s15_ret5 is not None:
+                        _s15_pullback_checks += 1
+                        if _s15_ret5 >= -6.0:
+                            _s15_pullback_score += 1
+                        elif _s15_ret5 < -10.0:
+                            _s15_pullback_reasons.append(
+                                f"近5日跌幅 {_s15_ret5:.2f}%，屬快速下跌，不宜只因進入價格區間而承接"
+                            )
+
+                    # D. 法人：至少一方近5日未持續賣超才加分；雙賣則不加分。
+                    if _s12_foreign5 is not None and _s12_trust5 is not None:
+                        _s15_pullback_checks += 1
+                        if _s12_foreign5 >= 0 or _s12_trust5 >= 0:
+                            _s15_pullback_score += 1
+                        else:
+                            _s15_pullback_reasons.append("外資與投信近5日仍同步賣超")
+
+                    # E. 大盤：中性以上不視為逆風；明顯弱勢則不加分。
+                    _s15_pullback_checks += 1
+                    if _s12_market in {"neutral", "strong_uptrend", "uptrend", "bullish"}:
+                        _s15_pullback_score += 1
+                    else:
+                        _s15_pullback_reasons.append("大盤環境偏弱，回檔承接風險較高")
+
+                    _s15_pullback_ratio = (
+                        _s15_pullback_score / _s15_pullback_checks
+                        if _s15_pullback_checks else 0
+                    )
+                    if _s15_pullback_ratio >= 0.80:
+                        _s15_pullback_quality = "HEALTHY"
+                        _s15_pullback_quality_zh = "健康回檔"
+                    elif _s15_pullback_ratio >= 0.60:
+                        _s15_pullback_quality = "ACCEPTABLE"
+                        _s15_pullback_quality_zh = "可觀察的正常整理"
+                    else:
+                        _s15_pullback_quality = "WEAKENING"
+                        _s15_pullback_quality_zh = "回檔品質不足／可能轉弱"
+
                     # 第一層：突破確認價後，且至少有部分外部條件支持，才允許加碼。
                     if _s14_confirmed:
                         if _s14_support_score >= 2:
@@ -3675,27 +3750,34 @@ if stock_input:
 
                     # 第二層：位於既有 Entry Zone，外部條件普通可試單，較佳可建基本部位。
                     elif _s14_in_entry_zone:
-                        if _s14_support_score >= 2:
+                        if _s15_pullback_quality == "WEAKENING":
+                            _s12_action = "WAIT_CONFIRMATION"
+                            _s12_reasons.insert(
+                                0,
+                                f"現價雖進入理想進場區 {_s14_entry_low:,.2f}～"
+                                f"{_s14_entry_high:,.2f} 元，但回檔品質不足，不能只因價格變便宜就承接"
+                            )
+                        elif _s15_pullback_quality == "HEALTHY" and _s14_support_score >= 2:
                             _s12_action = "BUILD_BASE"
                             _s12_reasons.insert(
                                 0,
-                                f"現價位於既有理想進場區 {_s14_entry_low:,.2f}～"
-                                f"{_s14_entry_high:,.2f} 元，且外部條件已有一定支持"
+                                f"現價位於理想進場區 {_s14_entry_low:,.2f}～"
+                                f"{_s14_entry_high:,.2f} 元，回檔結構健康且外部條件已有一定支持"
                             )
-                        elif _s14_support_score >= 1:
+                        elif _s15_pullback_quality in {"HEALTHY", "ACCEPTABLE"} and _s14_support_score >= 1:
                             _s12_action = "PROBE"
                             _s12_reasons.insert(
                                 0,
-                                f"現價位於既有理想進場區 {_s14_entry_low:,.2f}～"
-                                f"{_s14_entry_high:,.2f} 元，但確認條件尚未完全到位，"
-                                "僅適合小部位試探"
+                                f"現價位於理想進場區 {_s14_entry_low:,.2f}～"
+                                f"{_s14_entry_high:,.2f} 元，回檔尚未破壞主要結構，"
+                                "但確認條件未完全到位，只適合小部位試探"
                             )
                         else:
                             _s12_action = "WAIT_CONFIRMATION"
                             _s12_reasons.insert(
                                 0,
-                                f"雖位於既有理想進場區 {_s14_entry_low:,.2f}～"
-                                f"{_s14_entry_high:,.2f} 元，但量能、法人與大盤均未提供足夠支持"
+                                f"現價雖位於理想進場區 {_s14_entry_low:,.2f}～"
+                                f"{_s14_entry_high:,.2f} 元，但回檔品質或外部條件仍不足"
                             )
 
                     # 第三層：已高於 Entry Zone、尚未突破 Confirmation。
@@ -3736,6 +3818,12 @@ if stock_input:
                     "market_state_zh": _s14_labels.get(_s12_market, _s12.market_state.value),
                     "support_score": locals().get("_s14_support_score", 0),
                     "support_total": locals().get("_s14_support_total", 0),
+                    "pullback_quality": locals().get("_s15_pullback_quality", "UNKNOWN"),
+                    "pullback_quality_zh": locals().get("_s15_pullback_quality_zh", "資料不足"),
+                    "pullback_score": locals().get("_s15_pullback_score", 0),
+                    "pullback_checks": locals().get("_s15_pullback_checks", 0),
+                    "pullback_ret5": locals().get("_s15_ret5", None),
+                    "pullback_reasons": locals().get("_s15_pullback_reasons", []),
                     "reasons": _s12_reasons,
                 }
                 st.session_state["_stockpilot4_s12_governance"] = _s12_governance
@@ -3853,7 +3941,7 @@ if stock_input:
 
                     _s12g = st.session_state.get("_stockpilot4_s12_governance", {}) or {}
                     if _s12g:
-                        st.markdown("**Sprint 14｜分層進場判斷**")
+                        st.markdown("**Sprint 15｜分層進場＋回檔品質判斷**")
                         st.write(
                             f"趨勢狀態：**{_s12g.get('trend_state_zh', '未知')}** → "
                             f"原始策略：**{_s12g.get('raw_strategy_zh', '未知')}** → "
@@ -3867,6 +3955,17 @@ if stock_input:
                             st.write(f"理想進場區：{_el:,.2f}～{_eh:,.2f} 元")
                         if _cf > 0:
                             st.write(f"突破確認價：{_cf:,.2f} 元")
+
+                        st.write(
+                            f"回檔品質：**{_s12g.get('pullback_quality_zh', '資料不足')}**"
+                        )
+                        _pb_score = int(_s12g.get("pullback_score", 0) or 0)
+                        _pb_checks = int(_s12g.get("pullback_checks", 0) or 0)
+                        if _pb_checks:
+                            st.caption(f"回檔品質檢查：{_pb_score}/{_pb_checks} 項通過")
+                        if _s12g.get("pullback_reasons"):
+                            for _pb_reason in _s12g["pullback_reasons"]:
+                                st.caption(f"注意：{_pb_reason}")
 
                         if _s12g.get("reasons"):
                             st.markdown("**判斷原因：**")
@@ -3916,7 +4015,7 @@ if stock_input:
                     # Sprint 13：Trigger Audit
                     # 目的：追查 confirmation / protective_stop / structure_stop 的實際生成來源。
                     # 純顯示，不修改任何價格、Trend、Strategy 或 Governance。
-                    with st.expander("🎯 Sprint 13｜Trigger Audit：1200 / 965 到底怎麼來的", expanded=True):
+                    with st.expander("🎯 價格關卡稽核｜確認價與風控價怎麼來的", expanded=True):
                         _lv13 = decision_snapshot.get("levels", {}) or {}
                         _p13 = float(res.get("current_price", 0) or 0)
                         _ma20_13 = float(res.get("ma20_val", 0) or 0)
@@ -3951,7 +4050,7 @@ if stock_input:
                                 _tick13
                             )
 
-                        st.markdown("##### A. 確認價來源")
+                        st.markdown("##### A. 突破確認價來源")
                         _confirm_rows13 = [
                             {"項目": "現價", "實際值": f"{_p13:,.2f}", "用途": "分支判斷基準"},
                             {"項目": "MA20", "實際值": f"{_ma20_13:,.2f}", "用途": f"門檻：現價×0.97 = {_p13*0.97:,.2f}"},
@@ -4034,20 +4133,20 @@ if stock_input:
                             _entry_center13 + _entry_buffer13, _tick13
                         )
 
-                        st.markdown("##### C. 結構失效價與既有 Entry Zone")
+                        st.markdown("##### C. 結構失效價與既有理想進場區")
                         _entry_rows13 = [
                             {"項目": "原始 structure_stop", "數值": f"{_struct_raw13:,.2f}", "意義": "個股結構資料"},
                             {"項目": "Compass stop", "數值": f"{_compass_stop13:,.2f}", "意義": "既有 Compass 風控價"},
                             {"項目": "重建 structure_stop", "數值": f"{_struct_rebuilt13:,.2f}", "意義": "跌破後退出剩餘波段部位"},
                             {"項目": "snapshot structure_stop", "數值": f"{_structure13:,.2f}", "意義": str((_lv13.get("sources", {}) or {}).get("structure_stop", "未提供來源文字"))},
-                            {"項目": "Entry center", "數值": f"{_entry_center13:,.2f}", "意義": "目前程式其實以 MA20 作為偏多評估中心"},
-                            {"項目": "Entry low（重建）", "數值": f"{_entry_low_re13:,.2f}", "意義": "MA20 − max(0.35×ATR_eff, 現價1%)"},
-                            {"項目": "Entry high（重建）", "數值": f"{_entry_high_re13:,.2f}", "意義": "MA20 + max(0.35×ATR_eff, 現價1%)"},
-                            {"項目": "snapshot Entry Zone", "數值": f"{_entry_low13:,.2f} ～ {_entry_high13:,.2f}", "意義": str((_lv13.get("sources", {}) or {}).get("entry", "未提供來源文字"))},
+                            {"項目": "理想進場中心", "數值": f"{_entry_center13:,.2f}", "意義": "目前程式其實以 MA20 作為偏多評估中心"},
+                            {"項目": "理想進場區下緣（重建）", "數值": f"{_entry_low_re13:,.2f}", "意義": "MA20 − max(0.35×ATR_eff, 現價1%)"},
+                            {"項目": "理想進場區上緣（重建）", "數值": f"{_entry_high_re13:,.2f}", "意義": "MA20 + max(0.35×ATR_eff, 現價1%)"},
+                            {"項目": "系統理想進場區", "數值": f"{_entry_low13:,.2f} ～ {_entry_high13:,.2f}", "意義": str((_lv13.get("sources", {}) or {}).get("entry", "未提供來源文字"))},
                         ]
                         st.dataframe(pd.DataFrame(_entry_rows13), use_container_width=True, hide_index=True)
 
-                        st.markdown("##### D. Trigger 的角色判定")
+                        st.markdown("##### D. 價格關卡的角色判定")
                         _source13 = str(_lv13.get("confirmation_source", ""))
                         _role13 = (
                             "突破／壓力確認價"
@@ -4067,8 +4166,8 @@ if stock_input:
                         _role_rows13 = [
                             {"問題": "1200 是什麼？", "判定": _role13, "依據": _source13 or _confirm_branch13},
                             {"問題": "離現價多遠？", "判定": f"{_distance13:+.2f}%" if _distance13 is not None else "缺資料", "依據": "confirmation / current - 1"},
-                            {"問題": "程式是否另有 Entry Zone？", "判定": "有", "依據": f"{_entry_low13:,.2f} ～ {_entry_high13:,.2f}"},
-                            {"問題": "現價與 Entry Zone 關係", "判定": _entry_relation13, "依據": f"現價 {_p13:,.2f}"},
+                            {"問題": "程式是否另有理想進場區？", "判定": "有", "依據": f"{_entry_low13:,.2f} ～ {_entry_high13:,.2f}"},
+                            {"問題": "現價與理想進場區關係", "判定": _entry_relation13, "依據": f"現價 {_p13:,.2f}"},
                             {"問題": "確認價能否直接等同首次買進價？", "判定": "不能直接等同", "依據": "原價格引擎同時存在 entry 與 confirmation，兩者本來就是不同欄位／職責"},
                         ]
                         st.dataframe(pd.DataFrame(_role_rows13), use_container_width=True, hide_index=True)
@@ -4234,7 +4333,7 @@ if stock_input:
                             m_ma60 = float(mclose.tail(60).mean()) if len(mclose) >= 60 else None
                             m_slope5 = _audit_slope(mclose, 5)
                             market_rows = [
-                                {"資料": "採用指數", "實際值": audit_market_name, "用途": "4.0 Market Engine 對應市場"},
+                                {"資料": "採用指數", "實際值": audit_market_name, "用途": "4.0 大盤環境判斷 對應市場"},
                                 {"資料": "指數最新收盤", "實際值": _fmt_num(m_last, 2), "用途": "大盤價格"},
                                 {"資料": "指數 MA20", "實際值": _fmt_num(m_ma20, 2), "用途": "短期市場趨勢"},
                                 {"資料": "指數 MA60", "實際值": _fmt_num(m_ma60, 2), "用途": "中期市場趨勢"},
@@ -4250,12 +4349,12 @@ if stock_input:
 
                         st.markdown("##### E. 4.0 最終決策路徑")
                         path_rows = [
-                            {"階段": "Trend Engine", "輸出": s.trend_state.value, "說明": "由價格/均線/結構等形成趨勢狀態"},
-                            {"階段": "Market Engine", "輸出": s.market_state.value, "說明": f"使用 {audit_market_name} 對應市場"},
-                            {"階段": "Strategy（原始）", "輸出": s.strategy.value.upper(), "說明": s.action.detail},
+                            {"階段": "趨勢判斷", "輸出": (st.session_state.get("_stockpilot4_s12_governance", {}) or {}).get("trend_state_zh", s.trend_state.value), "說明": "由價格、均線與結構形成趨勢狀態"},
+                            {"階段": "大盤環境判斷", "輸出": s.market_state.value, "說明": f"使用 {audit_market_name} 對應市場"},
+                            {"階段": "原始策略", "輸出": s.strategy.value.upper(), "說明": s.action.detail},
                             {"階段": "目前操作建議", "輸出": (st.session_state.get("_stockpilot4_s12_governance", {}) or {}).get("governed_action_zh", s.strategy.value.upper()), "說明": "依理想進場區、突破確認價、量能、法人與大盤決定當下適合的進場層級"},
-                            {"階段": "Primary Trigger", "輸出": str(s.primary_trigger or "無"), "說明": "主要確認條件"},
-                            {"階段": "Secondary Trigger", "輸出": str(s.secondary_trigger or "無"), "說明": "次要風險條件"},
+                            {"階段": "主要確認條件", "輸出": str(s.primary_trigger or "無"), "說明": "主要確認條件"},
+                            {"階段": "次要風控條件", "輸出": str(s.secondary_trigger or "無"), "說明": "次要風險條件"},
                         ]
                         st.dataframe(pd.DataFrame(path_rows), use_container_width=True, hide_index=True)
                         st.caption(
