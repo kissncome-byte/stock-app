@@ -4147,14 +4147,43 @@ if stock_input:
                     core=True,
                 )
 
-                # 核心二：正式歷史狀態機至少已到多頭拉回或強勢多頭
-                _s19_trend_pass = _s19_strategy_state in {"BULL_PULLBACK", "STRONG_BULL"}
+                # 核心二：正式趨勢為慢狀態；起漲模組允許「反轉起漲結構」提早通過。
+                _s19_formal_trend_bull = _s19_strategy_state in {"BULL_PULLBACK", "STRONG_BULL"}
+
+                _s19_reversal_structure = (
+                    _s19_ma20 > 0
+                    and _s19_ma60 > 0
+                    and _s19_price > _s19_ma20
+                    and _s19_ma20 >= _s19_ma60
+                    and _s19_slope20 > 0
+                    and _s19_slope60 >= 0
+                )
+
+                _s19_trend_pass = bool(
+                    _s19_formal_trend_bull or _s19_reversal_structure
+                )
+
+                if _s19_formal_trend_bull:
+                    _s19_trend_gate_text = (
+                        f"正式趨勢已翻多：{_s19_strategy_label}／趨勢分數 {_s19_strategy_score}"
+                    )
+                elif _s19_reversal_structure:
+                    _s19_trend_gate_text = (
+                        f"正式趨勢仍為{_s19_strategy_label}（{_s19_strategy_score}分），"
+                        "但價格與均線已形成反轉起漲結構"
+                    )
+                else:
+                    _s19_trend_gate_text = (
+                        f"正式趨勢仍為{_s19_strategy_label}／趨勢分數 {_s19_strategy_score}，"
+                        "且尚未形成完整反轉結構"
+                    )
+
                 _s19_add_check(
-                    "正式趨勢已進入多頭結構",
+                    "趨勢已翻多或形成反轉起漲結構",
                     True,
                     _s19_trend_pass,
-                    f"{_s19_strategy_label}／趨勢分數 {_s19_strategy_score}",
-                    "直接採用主系統最近120個交易日重建的正式趨勢",
+                    _s19_trend_gate_text,
+                    "正式趨勢是慢狀態；若價格、MA20、MA60與斜率已形成反轉結構，可提前進入試單評估",
                     core=True,
                 )
 
@@ -4400,6 +4429,9 @@ if stock_input:
                     "early_extension_limit_pct": _s19_extension_limit_pct,
                     "early_volume_ratio": _s19_volume_ratio,
                     "early_volume_source": _s19_volume_source,
+                    "early_formal_trend_bull": _s19_formal_trend_bull,
+                    "early_reversal_structure": _s19_reversal_structure,
+                    "early_trend_gate_text": _s19_trend_gate_text,
                 }
                 st.session_state["_stockpilot4_s18_position"] = _s18_position_plan
 
@@ -4596,6 +4628,11 @@ if stock_input:
                                 st.info(
                                     f"判斷原因：{_p18.get('trade_reason', '等待更多確認。')}"
                                 )
+                                if _p18.get("early_reversal_structure") and not _p18.get("early_formal_trend_bull"):
+                                    st.success(
+                                        "正式趨勢尚未翻多，但價格與均線已形成『反轉起漲結構』；"
+                                        "系統不會因此被慢速趨勢鎖死，接下來改由動能、量能與防追價條件決定是否試單。"
+                                    )
                                 st.caption(
                                     f"直接採用主決策資料：正式趨勢＝{_p18.get('early_strategy_label', '未知')} "
                                     f"({int(_p18.get('early_strategy_score', 0) or 0)}分)；"
@@ -4627,8 +4664,8 @@ if stock_input:
                                 if not _p18.get("early_core_ok", False):
                                     st.warning(
                                         "目前至少有一項核心條件尚未成立："
-                                        "股價站上20日均線、個股趨勢轉多、大盤非明顯逆風三項必須同時成立，"
-                                        "才會啟動起漲試單。"
+                                        "股價站上20日均線、趨勢已翻多或形成反轉起漲結構、"
+                                        "大盤允許新部位三項必須同時成立，才會啟動起漲試單。"
                                     )
 
                                 _md = _p18.get("ma20_distance_pct")
