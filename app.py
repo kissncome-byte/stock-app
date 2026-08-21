@@ -3920,6 +3920,56 @@ if stock_input:
                         0.0
                     ) * _s18_current_shares
 
+                # Sprint 18.2：三種持倉風險分離
+                # A. 本金虧損風險：以成本價與「含滑價後風險價」比較。
+                # B. 獲利回吐風險：以現價到風險價可能回吐的獲利衡量。
+                # C. 資金集中度：以持倉市值 / 核心資金池衡量。
+                _s182_cost_basis = float(user_cost or 0)
+                _s182_principal_loss_per_share = (
+                    max(_s182_cost_basis - _s18_stop_fill, 0.0)
+                    if user_holding and _s18_current_shares > 0 and _s182_cost_basis > 0
+                    else 0.0
+                )
+                _s182_principal_loss_risk = (
+                    _s182_principal_loss_per_share * _s18_current_shares
+                )
+
+                _s182_profit_locked_per_share = (
+                    max(_s18_stop_fill - _s182_cost_basis, 0.0)
+                    if user_holding and _s18_current_shares > 0 and _s182_cost_basis > 0
+                    else 0.0
+                )
+                _s182_locked_profit_at_stop = (
+                    _s182_profit_locked_per_share * _s18_current_shares
+                )
+
+                _s182_profit_giveback_per_share = (
+                    max(_s12_price - max(_s18_stop_fill, _s182_cost_basis), 0.0)
+                    if user_holding and _s18_current_shares > 0 and _s182_cost_basis > 0
+                    else 0.0
+                )
+                _s182_profit_giveback_risk = (
+                    _s182_profit_giveback_per_share * _s18_current_shares
+                )
+
+                if not user_holding or _s18_current_shares <= 0:
+                    _s182_principal_risk_status = "未持有"
+                elif _s182_principal_loss_risk <= 0:
+                    _s182_principal_risk_status = "目前保護價高於成本，本金風險低"
+                elif _s182_principal_loss_risk <= _s18_max_risk_ntd:
+                    _s182_principal_risk_status = "本金風險在單筆上限內"
+                else:
+                    _s182_principal_risk_status = "本金風險超過單筆上限"
+
+                if not user_holding or _s18_current_shares <= 0:
+                    _s182_giveback_status = "未持有"
+                elif _s182_profit_giveback_risk <= _s18_max_risk_ntd:
+                    _s182_giveback_status = "獲利回吐幅度可控"
+                elif _s182_profit_giveback_risk <= _s18_max_risk_ntd * 3:
+                    _s182_giveback_status = "獲利回吐風險偏高"
+                else:
+                    _s182_giveback_status = "獲利回吐風險高"
+
                 # Sprint 18.1：現有部位必須用「從現在到保護價」衡量曝險，
                 # 不能因為成本很低、保護價高於成本，就把風險誤算成 0。
                 _s181_market_value = _s18_current_shares * _s12_price
@@ -3975,16 +4025,13 @@ if stock_input:
                 if not user_holding or _s18_current_shares <= 0:
                     _s181_position_status = "未持有"
                 elif _s181_exposure_pct is not None and _s181_exposure_pct > 100:
-                    _s181_position_status = "部位超過資金池上限"
-                elif (
-                    _s181_mark_to_stop_risk > _s18_max_risk_ntd
-                    and _s18_max_risk_ntd > 0
-                ):
-                    _s181_position_status = "部位風險超過單筆上限"
+                    _s181_position_status = "資金集中度過高，禁止加碼"
                 elif _s181_exposure_pct is not None and _s181_exposure_pct >= 70:
-                    _s181_position_status = "部位集中度偏高"
+                    _s181_position_status = "資金集中度偏高"
+                elif _s182_principal_loss_risk > _s18_max_risk_ntd and _s18_max_risk_ntd > 0:
+                    _s181_position_status = "本金風險超過單筆上限"
                 else:
-                    _s181_position_status = "部位在目前上限內"
+                    _s181_position_status = "部位在目前可控範圍"
 
                 _s18_action_zh = _s12_governance.get(
                     "governed_action_zh",
@@ -4021,6 +4068,13 @@ if stock_input:
                     "effective_max_shares": _s181_effective_max_shares,
                     "excess_shares": _s181_excess_shares,
                     "position_status": _s181_position_status,
+                    "principal_loss_per_share": _s182_principal_loss_per_share,
+                    "principal_loss_risk": _s182_principal_loss_risk,
+                    "principal_risk_status": _s182_principal_risk_status,
+                    "locked_profit_at_stop": _s182_locked_profit_at_stop,
+                    "profit_giveback_per_share": _s182_profit_giveback_per_share,
+                    "profit_giveback_risk": _s182_profit_giveback_risk,
+                    "profit_giveback_status": _s182_giveback_status,
                 }
                 st.session_state["_stockpilot4_s18_position"] = _s18_position_plan
 
@@ -4208,44 +4262,59 @@ if stock_input:
                                     if _pnl18 is not None else "未提供成本"
                                 )
 
-                                hr1, hr2, hr3, hr4 = st.columns(4)
+                                st.markdown("**三種持倉風險分開看**")
+                                hr1, hr2, hr3 = st.columns(3)
                                 hr1.metric(
-                                    "從現價到保護價每股風險",
-                                    f"{float(_p18.get('mark_to_stop_risk_per_share', 0)):,.2f} 元"
+                                    "本金虧損風險",
+                                    f"{float(_p18.get('principal_loss_risk', 0)):,.0f} 元"
                                 )
                                 hr2.metric(
-                                    "目前部位回吐風險",
-                                    f"{float(_p18.get('mark_to_stop_risk', 0)):,.0f} 元"
+                                    "獲利可能回吐",
+                                    f"{float(_p18.get('profit_giveback_risk', 0)):,.0f} 元"
                                 )
                                 hr3.metric(
-                                    "單筆最大可承受損失",
-                                    f"{float(_p18.get('max_risk_ntd', 0)):,.0f} 元"
+                                    "資金集中度",
+                                    f"{float(_p18.get('exposure_pct', 0) or 0):.1f}%"
                                 )
-                                hr4.metric(
-                                    "個人部位判斷",
-                                    str(_p18.get("position_status", "未知"))
+
+                                st.write(
+                                    f"本金風險判斷：**{_p18.get('principal_risk_status', '未知')}**"
+                                )
+                                st.write(
+                                    f"獲利回吐判斷：**{_p18.get('profit_giveback_status', '未知')}**"
+                                )
+                                st.write(
+                                    f"若依目前風控價執行，理論仍可保留約 "
+                                    f"**{float(_p18.get('locked_profit_at_stop', 0)):,.0f} 元** 的帳面獲利。"
+                                )
+                                st.write(
+                                    f"個人部位判斷：**{_p18.get('position_status', '未知')}**"
                                 )
 
                                 _max_cap18 = int(_p18.get("max_shares_by_capital", 0) or 0)
-                                _max_risk18 = int(_p18.get("max_shares_by_risk", 0) or 0)
-                                _max_eff18 = int(_p18.get("effective_max_shares", 0) or 0)
-                                _excess18 = int(_p18.get("excess_shares", 0) or 0)
 
-                                st.write(
-                                    f"依資金池上限：約 **{_max_cap18:,} 股**；"
-                                    f"依目前保護價與單筆風險上限：約 **{_max_risk18:,} 股**；"
-                                    f"兩者取較嚴格後，目前建議上限約 **{_max_eff18:,} 股**。"
-                                )
-
-                                if _excess18 > 0:
+                                # Sprint 18.2：已獲利持倉不再用「獲利回吐」去強迫砍到風險股數上限。
+                                # 資金池上限只作「集中度與禁止加碼」管理；是否減碼仍由正式策略與風控價決定。
+                                if float(_p18.get("exposure_pct", 0) or 0) > 100:
                                     st.error(
-                                        f"股票方向可以仍是「{_s12g.get('governed_action_zh', '持有')}」，"
-                                        f"但你的個人部位已超過目前風險／資金上限約 **{_excess18:,} 股**。"
-                                        "在部位回到上限內以前，不應再加碼。"
+                                        f"目前單一股票市值已超過核心資金池。"
+                                        f"依資金池 100% 上限約為 **{_max_cap18:,} 股**；"
+                                        "因此現在禁止再加碼。"
+                                        "但不會只因獲利回吐金額較大，就機械式要求降到風險股數上限。"
+                                    )
+                                elif float(_p18.get("exposure_pct", 0) or 0) >= 70:
+                                    st.warning(
+                                        "目前單一股票集中度偏高，新增部位應更保守。"
                                     )
                                 else:
                                     st.success(
-                                        "目前持股數量未超過這一版的資金池與風險雙重上限。"
+                                        "目前單一股票資金集中度仍在這一版的管理範圍內。"
+                                    )
+
+                                if float(_p18.get("principal_loss_risk", 0) or 0) > float(_p18.get("max_risk_ntd", 0) or 0):
+                                    st.error(
+                                        "依目前成本與風控價計算，本金虧損風險已超過單筆最大風險承受，"
+                                        "應優先降低實際本金風險。"
                                     )
 
                             elif _act18 in {"WAIT", "WAIT_CONFIRMATION", "WAIT_BETTER_ENTRY"}:
@@ -4288,8 +4357,8 @@ if stock_input:
                                     st.caption(_fraction_text)
                                 else:
                                     _current18 = int(_p18.get("current_shares", 0) or 0)
-                                    _max_eff18 = int(_p18.get("effective_max_shares", 0) or 0)
-                                    _room18 = max(0, _max_eff18 - _current18)
+                                    _max_cap18 = int(_p18.get("max_shares_by_capital", 0) or 0)
+                                    _room18 = max(0, _max_cap18 - _current18)
                                     if _room18 > 0:
                                         st.write(
                                             f"在不超過目前資金／風險上限前提下，"
