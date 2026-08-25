@@ -4540,8 +4540,7 @@ if stock_input:
                 )
 
                 _s87_low_watch = bool(
-                    _s21_no_hard_veto
-                    and _s87_below_old_entry
+                    _s87_below_old_entry
                     and (
                         _s87_in_low_zone
                         or (
@@ -4551,8 +4550,11 @@ if stock_input:
                     )
                 )
 
+                # 低位「觀察」可在風險尚高時成立；
+                # 但真正「試單」仍必須通過硬風險否決。
                 _s87_low_probe = bool(
                     _s87_low_watch
+                    and _s21_no_hard_veto
                     and _s87_bottom_score >= 3
                     and (
                         _s20_today_pct > 0
@@ -4621,7 +4623,11 @@ if stock_input:
                     _s19_early_state_zh = "低位試單"
                 elif _s87_low_watch:
                     _s19_early_state = "LOW_WATCH"
-                    _s19_early_state_zh = "低位觀察"
+                    _s19_early_state_zh = (
+                        "低位觀察・暫不試單"
+                        if not _s21_no_hard_veto
+                        else "低位觀察"
+                    )
                 elif _s20_price_weak and (not _s19_reversal_structure) and (not _s21_low_probe):
                     _s19_early_state = "NO_ENTRY"
                     _s19_early_state_zh = "不宜進場"
@@ -4656,10 +4662,18 @@ if stock_input:
                             "可用很小部位試單，但正式趨勢尚未翻多，不視為主升段確認。"
                         )
                     elif _s19_early_state == "LOW_WATCH":
-                        _s183_trade_decision = "低位觀察"
+                        _s183_trade_decision = (
+                            "低位觀察・暫不試單"
+                            if not _s21_no_hard_veto
+                            else "低位觀察"
+                        )
                         _s183_trade_reason = (
-                            "股價已落到原進場區下方，開始進入低位轉折監看；"
-                            "目前先不買，等待止跌、站回短均線或收復短期高點後再升級為試單。"
+                            "股價已進入低位承接區，值得開始監看；"
+                            + (
+                                "但目前仍存在大盤／籌碼／量能硬風險，因此先不試單。"
+                                if not _s21_no_hard_veto
+                                else "目前等待止跌、站回短均線或收復短期高點後再升級為試單。"
+                            )
                         )
                     elif _s19_early_state == "WAIT_PULLBACK":
                         _s183_trade_decision = "等待拉回"
@@ -4981,6 +4995,7 @@ if stock_input:
                     "reclaim_2d": _s20_reclaim_2d,
                     "low_probe": _s21_low_probe,
                     "low_watch": _s87_low_watch,
+                    "low_hard_veto": (not _s21_no_hard_veto),
                     "low_turn_score": _s87_bottom_score,
                     "low_turn_signals": _s87_bottom_signals,
                     "low_zone_low": _s87_low_zone_low,
@@ -5267,6 +5282,10 @@ if stock_input:
                         + (
                             " 已出現：" + "、".join(_passed_v87)
                             if _passed_v87 else " 尚未出現明確止跌訊號"
+                        )
+                        + (
+                            "｜目前仍有硬風險否決：低位已到，但暫不試單。"
+                            if _p18.get("low_hard_veto") else ""
                         )
                     )
 
