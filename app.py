@@ -6106,7 +6106,34 @@ if stock_input:
                 else:
                     st.success("目前沒有減碼或退場訊號，持股條件仍可維持。")
 
-                # 下一步操作劇本：直接回答「哪裡賣」
+                # v9.3：出場比例不再固定 30%，改由持股健康度與訊號一致度動態決定。
+                # 健康且一致度高：讓獲利奔跑；轉弱或一致度下降：提早收回較多部位。
+                try:
+                    _hold_agree_num = int(_hold_agree)
+                except Exception:
+                    _hold_agree_num = 0
+
+                if _hold_health == "健康" and _hold_agree_num >= 4:
+                    _exit_pct1, _exit_pct2 = 20, 30
+                    _exit_style = "趨勢偏強"
+                elif _hold_health == "健康" and _hold_agree_num >= 3:
+                    _exit_pct1, _exit_pct2 = 30, 30
+                    _exit_style = "趨勢正常"
+                elif _hold_health in ("普通", "留意") or _hold_agree_num == 2:
+                    _exit_pct1, _exit_pct2 = 40, 30
+                    _exit_style = "訊號轉弱"
+                else:
+                    _exit_pct1, _exit_pct2 = 50, 30
+                    _exit_style = "風險升高"
+
+                _exit_pct_final = max(0, 100 - _exit_pct1 - _exit_pct2)
+
+                st.caption(
+                    f"出場配置：{_exit_style}｜第一段 {_exit_pct1}%｜"
+                    f"第二段 {_exit_pct2}%｜剩餘 {_exit_pct_final}% 採動態移動停利"
+                )
+
+                # 下一步操作劇本：直接回答「哪裡賣、賣多少」
                 st.markdown("### 下一步操作劇本")
                 _script_parts = []
 
@@ -6121,15 +6148,15 @@ if stock_input:
 
                 if _hold_exit1 > 0:
                     _script_parts.append(
-                        f"第一出場：到 {_hold_exit1:,.2f} 元附近，建議先減碼約 30%。"
+                        f"第一出場：到 {_hold_exit1:,.2f} 元附近，建議先減碼約 {_exit_pct1}%。"
                     )
                 if _hold_exit2 > 0:
                     _script_parts.append(
-                        f"第二出場：若續強到 {_hold_exit2:,.2f} 元附近，再減碼約 30%。"
+                        f"第二出場：若續強到 {_hold_exit2:,.2f} 元附近，再減碼約 {_exit_pct2}%。"
                     )
                 if _hold_protect > 0:
                     _script_parts.append(
-                        f"剩餘部位：採動態移動停利；目前保護基準為 {_hold_protect:,.2f} 元，"
+                        f"剩餘部位：保留約 {_exit_pct_final}% 採動態移動停利；目前保護基準為 {_hold_protect:,.2f} 元，"
                         "後續若股價創高，保護價應隨趨勢向上調整，不固定停在目前價位。"
                     )
                 if _hold_structural > 0:
