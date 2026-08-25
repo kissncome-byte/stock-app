@@ -3485,6 +3485,61 @@ init_decision_history_db()
 capital = 100.0
 risk_pct = 1.0
 
+# Beta v8.5：自選股票
+# 以網址參數保存代碼，重新整理或沿用同一網址開啟時不必重新輸入。
+def _normalize_stock_code(value):
+    value = str(value or "").strip().upper()
+    value = value.replace(".TW", "").replace(".TWO", "")
+    return value
+
+def _read_watchlist_from_query():
+    try:
+        raw = st.query_params.get("wl", "")
+    except Exception:
+        raw = ""
+    if isinstance(raw, list):
+        raw = raw[-1] if raw else ""
+    items = []
+    for item in str(raw or "").split(","):
+        code = _normalize_stock_code(item)
+        if code and code not in items:
+            items.append(code)
+    return items[:30]
+
+def _save_watchlist_to_query(items):
+    clean = []
+    for item in items:
+        code = _normalize_stock_code(item)
+        if code and code not in clean:
+            clean.append(code)
+    try:
+        if clean:
+            st.query_params["wl"] = ",".join(clean)
+        elif "wl" in st.query_params:
+            del st.query_params["wl"]
+    except Exception:
+        pass
+    return clean
+
+if "_watchlist_codes" not in st.session_state:
+    st.session_state["_watchlist_codes"] = _read_watchlist_from_query()
+
+if "_watchlist_names" not in st.session_state:
+    st.session_state["_watchlist_names"] = {}
+
+if "_stock_input_widget" not in st.session_state:
+    try:
+        _initial_stock = _normalize_stock_code(st.query_params.get("stock", ""))
+    except Exception:
+        _initial_stock = ""
+    if not _initial_stock:
+        _initial_stock = (
+            st.session_state["_watchlist_codes"][0]
+            if st.session_state["_watchlist_codes"]
+            else "3037"
+        )
+    st.session_state["_stock_input_widget"] = _initial_stock
+
 with st.sidebar:
     st.header("⚙️ 操作設定")
     slip_input = st.slider("預估滑價 (Ticks)", 0, 5, 1)
@@ -3493,9 +3548,73 @@ with st.sidebar:
     show_evidence_default = False
     debug_mode = False
 
+    st.divider()
+    st.subheader("⭐ 自選股票")
+
+    _current_sidebar_code = _normalize_stock_code(
+        st.session_state.get("_stock_input_widget", "")
+    )
+    _already_saved = _current_sidebar_code in st.session_state["_watchlist_codes"]
+
+    if st.button(
+        "✅ 已在自選" if _already_saved else "➕ 將目前個股加入自選",
+        disabled=(not _current_sidebar_code) or _already_saved,
+        use_container_width=True,
+        key="_watch_add_current",
+    ):
+        if _current_sidebar_code:
+            _new_list = list(st.session_state["_watchlist_codes"])
+            if _current_sidebar_code not in _new_list:
+                _new_list.append(_current_sidebar_code)
+            st.session_state["_watchlist_codes"] = _save_watchlist_to_query(_new_list)
+            st.rerun()
+
+    if not st.session_state["_watchlist_codes"]:
+        st.caption("尚未加入自選股票。")
+    else:
+        for _wl_code in list(st.session_state["_watchlist_codes"]):
+            _wl_name = st.session_state["_watchlist_names"].get(_wl_code, "")
+            _wl_label = f"{_wl_code} {_wl_name}".strip()
+
+            _wl_c1, _wl_c2 = st.columns([4, 1], gap="small")
+            with _wl_c1:
+                if st.button(
+                    _wl_label,
+                    key=f"_watch_select_{_wl_code}",
+                    use_container_width=True,
+                ):
+                    st.session_state["_stock_input_widget"] = _wl_code
+                    try:
+                        st.query_params["stock"] = _wl_code
+                    except Exception:
+                        pass
+                    st.rerun()
+
+            with _wl_c2:
+                if st.button("×", key=f"_watch_remove_{_wl_code}"):
+                    _new_list = [
+                        x for x in st.session_state["_watchlist_codes"]
+                        if x != _wl_code
+                    ]
+                    st.session_state["_watchlist_codes"] = _save_watchlist_to_query(_new_list)
+                    st.session_state["_watchlist_names"].pop(_wl_code, None)
+                    st.rerun()
+
+    st.caption("自選清單會寫入目前網址；建議把這個網址加入瀏覽器書籤。")
+
 st.markdown("## 🧭 StockPilot Beta｜個股操作決策")
 st.caption("直接回答：現在要不要進場、持有、加碼、減碼或退出。")
-stock_input = st.text_input("請輸入核心目標個股代碼：", value="3037").strip()
+stock_input = st.text_input(
+    "請輸入核心目標個股代碼：",
+    key="_stock_input_widget",
+).strip()
+stock_input = _normalize_stock_code(stock_input)
+
+try:
+    if stock_input:
+        st.query_params["stock"] = stock_input
+except Exception:
+    pass
 
 u_col1, u_col2 = st.columns(2)
 with u_col1:
@@ -3523,6 +3642,10 @@ if stock_input:
         st.error("無法取得這檔股票的日線資料。程式已依序嘗試 Yahoo 上市、Yahoo 上櫃與 FinMind；請確認代碼，或稍後再重新整理。")
         st.caption(f"本次查詢代碼：{stock_input}。3274 為上櫃股，程式會優先查詢 3274.TWO。")
     else:
+        _resolved_name = str(res.get("stock_name", "") or "").strip()
+        if _resolved_name:
+            st.session_state["_watchlist_names"][stock_input] = _resolved_name
+
         bp_data = res["tactical_blueprint"]
         bp = bp_data["blueprint"]
         missing_text = "、".join(res["missing_data"]) if res["missing_data"] else "無"
