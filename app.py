@@ -60,11 +60,12 @@ def log_error(area: str, exc: Exception):
 
 def normalize_shadow_price_order(payload):
     """
-    v8.9c：送入 Shadow Decision Engine 前，統一檢查價格層級順序。
-    Price Engine 規則：structural_exit 必須嚴格低於 moving_protection。
-    只在順序非法時下修 structural_exit，不改動 moving_protection。
+    v8.9d：在 Shadow Decision Engine 前統一校正價格層級。
+    支援 dict / list / Pydantic model / dataclass / 一般 Python 物件。
+    規則：structural_exit 必須嚴格低於 moving_protection。
     """
     fixes = []
+    visited = set()
 
     def _num(v):
         try:
@@ -74,38 +75,97 @@ def normalize_shadow_price_order(payload):
         except Exception:
             return None
 
+    def _correct_pair(container, getter, setter, path):
+        try:
+            structural = _num(getter("structural_exit"))
+            moving = _num(getter("moving_protection"))
+        except Exception:
+            return
+
+        if (
+            structural is None or moving is None
+            or structural <= 0 or moving <= 0
+            or structural < moving
+        ):
+            return
+
+        tick = tick_size(moving)
+        corrected = floor_to_tick(max(tick, moving - tick), tick)
+        if corrected >= moving:
+            corrected = max(tick, moving - tick)
+
+        try:
+            setter("structural_exit", corrected)
+            fixes.append({
+                "path": path,
+                "old_structural_exit": structural,
+                "moving_protection": moving,
+                "new_structural_exit": corrected,
+            })
+        except Exception:
+            pass
+
     def _walk(obj, path="root"):
+        if obj is None:
+            return
+
+        oid = id(obj)
+        if oid in visited:
+            return
+        visited.add(oid)
+
+        # dict
         if isinstance(obj, dict):
             if "structural_exit" in obj and "moving_protection" in obj:
-                structural = _num(obj.get("structural_exit"))
-                moving = _num(obj.get("moving_protection"))
-                if (
-                    structural is not None and moving is not None
-                    and structural > 0 and moving > 0
-                    and structural >= moving
-                ):
-                    tick = tick_size(moving)
-                    corrected = floor_to_tick(max(tick, moving - tick), tick)
-                    # 再做一次嚴格保證，避免浮點/跳動單位造成相等。
-                    if corrected >= moving:
-                        corrected = max(tick, moving - tick)
-                    obj["structural_exit"] = corrected
-                    fixes.append({
-                        "path": path,
-                        "old_structural_exit": structural,
-                        "moving_protection": moving,
-                        "new_structural_exit": corrected,
-                    })
-
+                _correct_pair(
+                    obj,
+                    lambda k: obj.get(k),
+                    lambda k, v: obj.__setitem__(k, v),
+                    path,
+                )
             for k, v in list(obj.items()):
                 _walk(v, f"{path}.{k}")
+            return
 
-        elif isinstance(obj, list):
+        # list / tuple
+        if isinstance(obj, (list, tuple)):
             for idx, v in enumerate(obj):
                 _walk(v, f"{path}[{idx}]")
+            return
+
+        # Pydantic v2 model
+        if hasattr(obj, "model_dump") and callable(getattr(obj, "model_dump")):
+            fields = getattr(obj, "model_fields", {}) or {}
+            if "structural_exit" in fields and "moving_protection" in fields:
+                _correct_pair(
+                    obj,
+                    lambda k: getattr(obj, k, None),
+                    lambda k, v: object.__setattr__(obj, k, v),
+                    path,
+                )
+            for k in fields:
+                try:
+                    _walk(getattr(obj, k), f"{path}.{k}")
+                except Exception:
+                    pass
+            return
+
+        # dataclass / 一般物件
+        if hasattr(obj, "__dict__"):
+            d = vars(obj)
+            if "structural_exit" in d and "moving_protection" in d:
+                _correct_pair(
+                    obj,
+                    lambda k: getattr(obj, k, None),
+                    lambda k, v: setattr(obj, k, v),
+                    path,
+                )
+            for k, v in list(d.items()):
+                _walk(v, f"{path}.{k}")
 
     _walk(payload)
     return payload, fixes
+
 
 def custom_hud_box(title, value, font_color="#1E293B"):
     return f"""
@@ -3723,14 +3783,45 @@ if stock_input:
                 )
                 shadow_margin_df = get_shadow_margin_df(res["stock_id"])
 
+                _legacy_levels_shadow = dict(
+                    decision_snapshot.get("levels", {}) or {}
+                )
+                _legacy_moving = float(
+                    _legacy_levels_shadow.get("protective_stop", 0) or 0
+                )
+                _legacy_structural = float(
+                    _legacy_levels_shadow.get("structure_stop", 0) or 0
+                )
+
+                # App 自己的 build_price_level_engine 已保證 structure_stop < protective_stop。
+                # 再把同一組合法價位以 Shadow/PriceEngine 使用的命名一起傳入。
+                if _legacy_moving > 0:
+                    _legacy_levels_shadow["moving_protection"] = _legacy_moving
+                if _legacy_structural > 0:
+                    _legacy_levels_shadow["structural_exit"] = _legacy_structural
+
+                # 最後一道防線：若來源異常，直接按台股 tick 校正。
+                if (
+                    _legacy_moving > 0
+                    and _legacy_structural > 0
+                    and _legacy_structural >= _legacy_moving
+                ):
+                    _lg_tick = tick_size(_legacy_moving)
+                    _legacy_structural = floor_to_tick(
+                        max(_lg_tick, _legacy_moving - _lg_tick),
+                        _lg_tick
+                    )
+                    _legacy_levels_shadow["structure_stop"] = _legacy_structural
+                    _legacy_levels_shadow["structural_exit"] = _legacy_structural
+
                 shadow_payload = build_legacy_payload_from_app(
                     res,
                     market_index_df=shadow_market_df,
                     margin_df=shadow_margin_df,
-                    legacy_levels=decision_snapshot.get("levels", {}),
+                    legacy_levels=_legacy_levels_shadow,
                 )
 
-                # v8.9c：不同股價級距/持股情境可能讓 adapter 產生非法價格順序。
+                # v8.9d：adapter 產生 payload 後再遞迴掃描一次真正送進 Price Engine 的物件。
                 # 在 Price Engine 驗證前先正規化，確保 structural_exit < moving_protection。
                 shadow_payload, _shadow_price_order_fixes = normalize_shadow_price_order(
                     shadow_payload
@@ -3738,6 +3829,12 @@ if stock_input:
                 st.session_state["_stockpilot_shadow_price_order_fixes"] = (
                     _shadow_price_order_fixes
                 )
+                st.session_state["_stockpilot_shadow_price_order_input"] = {
+                    "moving_protection": _legacy_levels_shadow.get("moving_protection"),
+                    "structural_exit": _legacy_levels_shadow.get("structural_exit"),
+                    "protective_stop": _legacy_levels_shadow.get("protective_stop"),
+                    "structure_stop": _legacy_levels_shadow.get("structure_stop"),
+                }
 
                 # Sprint 19.1：未持股時，成本欄即使殘留舊值也不得送進 Shadow。
                 # Decision Engine 對 non-holder 的 cost 必須是 0。
@@ -5378,7 +5475,19 @@ if stock_input:
                     _price_fix_note = (
                         f" | price-order fixes applied: {len(_price_fix_rows)}"
                     )
-                shadow_v4_error = f"{type(exc).__name__}: {exc}{_price_fix_note}"
+                _price_input_dbg = st.session_state.get(
+                    "_stockpilot_shadow_price_order_input", {}
+                ) or {}
+                _price_input_note = (
+                    " | input "
+                    f"structural_exit={_price_input_dbg.get('structural_exit')}, "
+                    f"moving_protection={_price_input_dbg.get('moving_protection')}"
+                    if _price_input_dbg else ""
+                )
+                shadow_v4_error = (
+                    f"{type(exc).__name__}: {exc}"
+                    f"{_price_fix_note}{_price_input_note}"
+                )
                 log_error("StockPilot 4.0 shadow hook", exc)
                 shadow_v4 = None
                 st.session_state["_stockpilot4_shadow"] = None
