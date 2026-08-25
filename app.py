@@ -3712,7 +3712,7 @@ with st.sidebar:
 
     st.caption("自選清單會寫入目前網址；建議把這個網址加入瀏覽器書籤。")
 
-st.markdown("## 🧭 StockPilot Beta v9.12｜個股操作決策")
+st.markdown("## 🧭 StockPilot Beta v9.13｜個股操作決策")
 st.caption("直接回答：現在要不要進場、持有、加碼、減碼或退出。")
 stock_input = st.text_input(
     "請輸入核心目標個股代碼：",
@@ -3840,7 +3840,7 @@ if stock_input:
                 # Decision Engine 對 non-holder 的 cost 必須是 0。
                 _shadow_user_cost = float(user_cost or 0) if user_holding else 0.0
 
-                # v9.12：Price Engine 某版本的 structural_exit / moving_protection
+                # v9.13：Price Engine 某版本的 structural_exit / moving_protection
                 # 驗證器會在「35.65 < 37.45」這種本來就正確的價格順序下仍誤拋錯誤。
                 # 先照正確語意送入；若只遇到這個已知矛盾驗證錯誤，
                 # 不讓整個最新操作模組失敗，改以 Shadow unavailable 降級處理。
@@ -3866,11 +3866,11 @@ if stock_input:
                     else:
                         raise
 
-                # v9.12：若 Shadow 因已知 validator bug 被停用，
+                # v9.13：若 Shadow 因已知 validator bug 被停用，
                 # 後續不得覆蓋正式決策；建立空結果代理僅供相容既有顯示流程。
                 if shadow_v4 is None:
-                    # v9.12：fallback 必須完整符合後續 Governance 讀取介面。
-                    # v9.12 只補了 action 等欄位，但後續會直接讀 snapshot，
+                    # v9.13：fallback 必須完整符合後續 Governance 讀取介面。
+                    # v9.13 只補了 action 等欄位，但後續會直接讀 snapshot，
                     # 因此造成 AttributeError。這裡補齊 snapshot 與其 enum-like .value。
                     class _ShadowValueV912:
                         def __init__(self, value):
@@ -5709,11 +5709,11 @@ if stock_input:
                 _probe_trigger = float(_p18.get("beta_probe_trigger", 0) or 0)
                 _strong_breakout = float(_p18.get("beta_strong_breakout", _b_confirm) or 0)
 
-                # v9.12：未持股顯示分級。
+                # v9.13：未持股顯示分級。
                 # 不改正式決策引擎，只把「不宜進場」拆成硬否決與接近觸發兩種情況，
                 # 避免條件已接近成熟時仍顯示過度負面的文字。
                 _entry_display_state_v98 = _state_now or _decision_now
-                # v9.12：硬風險否決改為「原因清單」，不能只顯示 True/False。
+                # v9.13：硬風險否決改為「原因清單」，不能只顯示 True/False。
                 _entry_veto_reasons_v99 = []
 
                 if _p18.get("beta_intraday_invalid"):
@@ -5919,7 +5919,7 @@ if stock_input:
                     if _b_invalid > 0 else "進場條件失效價：待建立"
                 )
 
-                # v9.12：直接告訴使用者距離下一個可執行門檻還有多少。
+                # v9.13：直接告訴使用者距離下一個可執行門檻還有多少。
                 if _probe_trigger > 0 and _price_now_v86 > 0 and _price_now_v86 < _probe_trigger:
                     _probe_gap_pct_v98 = (_probe_trigger / _price_now_v86 - 1) * 100
                     st.info(
@@ -5940,58 +5940,126 @@ if stock_input:
                         + "；".join(_entry_veto_reasons_v99)
                     )
 
-                    _unlock_conditions_v99 = []
-                    # v9.12：解除條件必須包含「實際否決原因本身」，
-                    # 不能只列價格與低位訊號，避免上面說空頭否決、下面卻不用解除空頭。
-                    _trend_veto_present_v910 = any(
+                    # v9.13：升級條件改成「已完成 / 待完成」雙清單，
+                    # 不再把現價已經達成的價格條件重複列成待完成。
+                    _entry_done_v913 = []
+                    _entry_pending_v913 = []
+
+                    _trend_veto_present_v913 = any(
                         "日線主趨勢仍為" in str(_r)
                         for _r in _entry_veto_reasons_v99
                     )
-                    _chip_veto_present_v910 = any(
+                    _chip_veto_present_v913 = any(
                         "籌碼條件仍有否決訊號" in str(_r)
                         for _r in _entry_veto_reasons_v99
                     )
-                    _volume_veto_present_v910 = any(
+                    _volume_veto_present_v913 = any(
                         "量價條件仍有否決訊號" in str(_r)
                         for _r in _entry_veto_reasons_v99
                     )
-                    _market_veto_present_v910 = any(
+                    _market_veto_present_v913 = any(
                         "大盤風險門目前為" in str(_r)
                         for _r in _entry_veto_reasons_v99
                     )
 
-                    if _trend_veto_present_v910:
-                        _unlock_conditions_v99.append("日線弱勢空頭否決解除")
-                    if _chip_veto_present_v910:
-                        _unlock_conditions_v99.append("籌碼否決訊號解除")
-                    if _volume_veto_present_v910:
-                        _unlock_conditions_v99.append("量價否決訊號解除")
-                    if _market_veto_present_v910:
-                        _unlock_conditions_v99.append("大盤風險門恢復至可承作狀態")
-
-                    if _probe_trigger > 0:
-                        _unlock_conditions_v99.append(
-                            f"站穩試單確認價 {_probe_trigger:,.2f} 元"
-                        )
-                    if int(_p18.get("low_turn_score", 0) or 0) < 3:
-                        _unlock_conditions_v99.append("低位轉折訊號提升至至少 3/5")
+                    # 日線趨勢否決
+                    if _trend_veto_present_v913:
+                        _entry_pending_v913.append("日線弱勢空頭否決解除")
                     else:
-                        _unlock_conditions_v99.append("低位轉折訊號維持至少 3/5")
-                    if int(_p18.get("stabilization_score", 0) or 0) < 3:
-                        _unlock_conditions_v99.append("止跌雷達提升至至少 3/5")
+                        _entry_done_v913.append("日線趨勢無硬否決")
+
+                    # 籌碼 / 量價 / 大盤否決
+                    if _chip_veto_present_v913:
+                        _entry_pending_v913.append("籌碼否決訊號解除")
+                    else:
+                        _entry_done_v913.append("籌碼無硬否決")
+
+                    if _volume_veto_present_v913:
+                        _entry_pending_v913.append("量價否決訊號解除")
+                    else:
+                        _entry_done_v913.append("量價無硬否決")
+
+                    if _market_veto_present_v913:
+                        _entry_pending_v913.append("大盤風險門恢復至可承作狀態")
+                    else:
+                        _entry_done_v913.append("大盤風險門未關閉")
+
+                    # 試單確認價：只有真的低於觸發價才列待完成
+                    if _probe_trigger > 0 and _price_now_v86 > 0:
+                        if _price_now_v86 >= _probe_trigger:
+                            _entry_done_v913.append(
+                                f"價格已站上試單確認價 {_probe_trigger:,.2f} 元"
+                            )
+                        else:
+                            _entry_pending_v913.append(
+                                f"站穩試單確認價 {_probe_trigger:,.2f} 元"
+                            )
+
+                    # 低位轉折
+                    _low_turn_now_v913 = int(_p18.get("low_turn_score", 0) or 0)
+                    if _low_turn_now_v913 >= 3:
+                        _entry_done_v913.append(
+                            f"低位轉折訊號 {_low_turn_now_v913}/5，已達至少 3/5"
+                        )
+                    else:
+                        _entry_pending_v913.append(
+                            f"低位轉折訊號由 {_low_turn_now_v913}/5 提升至至少 3/5"
+                        )
+
+                    # 止跌雷達
+                    _stabilization_now_v913 = int(
+                        _p18.get("stabilization_score", 0) or 0
+                    )
+                    if _stabilization_now_v913 >= 3:
+                        _entry_done_v913.append(
+                            f"止跌雷達 {_stabilization_now_v913}/5，已達至少 3/5"
+                        )
+                    else:
+                        _entry_pending_v913.append(
+                            f"止跌雷達由 {_stabilization_now_v913}/5 提升至至少 3/5"
+                        )
+
+                    # 盤中失效 / 進場失效價
                     if _p18.get("beta_intraday_invalid"):
-                        _unlock_conditions_v99.append("盤中失效條件解除並重新形成有效觸發")
-                    if _b_invalid > 0 and _price_now_v86 > 0 and _price_now_v86 < _b_invalid:
-                        _unlock_conditions_v99.append(
+                        _entry_pending_v913.append(
+                            "盤中失效條件解除並重新形成有效觸發"
+                        )
+
+                    if (
+                        _b_invalid > 0
+                        and _price_now_v86 > 0
+                        and _price_now_v86 < _b_invalid
+                    ):
+                        _entry_pending_v913.append(
                             f"重新站回進場失效價 {_b_invalid:,.2f} 元以上"
                         )
 
-                    st.info(
-                        "解除後升級條件："
-                        + "；".join(dict.fromkeys(_unlock_conditions_v99))
-                        + " → 才進入低位試單評估。"
-                    )
+                    # 去重
+                    _entry_done_v913 = list(dict.fromkeys(_entry_done_v913))
+                    _entry_pending_v913 = list(dict.fromkeys(_entry_pending_v913))
 
+                    if _entry_done_v913:
+                        st.success(
+                            "✅ 已完成："
+                            + "；".join(_entry_done_v913)
+                        )
+
+                    if _entry_pending_v913:
+                        st.warning(
+                            "❌ 待完成："
+                            + "；".join(_entry_pending_v913)
+                        )
+                        st.info(
+                            "目前真正還差："
+                            + "；".join(_entry_pending_v913)
+                            + " → 全部完成後，才進入低位試單評估。"
+                        )
+                    else:
+                        st.success(
+                            "目前升級條件已全部完成，可進一步進入低位試單評估。"
+                        )
+
+                
                 # v8.9e：所有未持股股票都顯示同一套完整新版雷達介面。
                 # 是否進入低位區只影響判斷，不再影響 UI 是否出現。
                 _low_score_v87 = int(_p18.get("low_turn_score", 0) or 0)
@@ -6142,21 +6210,43 @@ if stock_input:
                         st.write("**下一步：**暫不下單，等待轉強條件完成後再進入試單評估。")
                 elif _state_now == "不宜進場":
                     _next_parts_v99 = []
-                    if _probe_trigger > 0:
+
+                    if (
+                        _probe_trigger > 0
+                        and _price_now_v86 > 0
+                        and _price_now_v86 < _probe_trigger
+                    ):
                         _next_parts_v99.append(
-                            f"先等站穩 **{_probe_trigger:,.2f} 元**"
+                            f"站穩 **{_probe_trigger:,.2f} 元**"
                         )
-                    _next_parts_v99.append("低位轉折維持至少 **3/5**")
+
+                    if int(_p18.get("low_turn_score", 0) or 0) < 3:
+                        _next_parts_v99.append("低位轉折提升至至少 **3/5**")
+
+                    if int(_p18.get("stabilization_score", 0) or 0) < 3:
+                        _next_parts_v99.append("止跌雷達提升至至少 **3/5**")
+
                     if _entry_veto_reasons_v99:
-                        if any("日線主趨勢仍為" in str(_r) for _r in _entry_veto_reasons_v99):
+                        if any(
+                            "日線主趨勢仍為" in str(_r)
+                            for _r in _entry_veto_reasons_v99
+                        ):
                             _next_parts_v99.append("日線弱勢空頭否決解除")
                         else:
                             _next_parts_v99.append("目前否決原因解除")
-                    st.write(
-                        "**下一步：**暫不下單；"
-                        + "、".join(dict.fromkeys(_next_parts_v99))
-                        + "，再升級為低位試單評估。"
-                    )
+
+                    _next_parts_v99 = list(dict.fromkeys(_next_parts_v99))
+
+                    if _next_parts_v99:
+                        st.write(
+                            "**下一步：**暫不下單；"
+                            + "、".join(_next_parts_v99)
+                            + "，再升級為低位試單評估。"
+                        )
+                    else:
+                        st.write(
+                            "**下一步：**主要升級條件已完成，等待系統確認有效觸發後進入低位試單評估。"
+                        )
                 else:
                     st.write("**下一步：**維持觀察，等待新的短線動能或價格觸發。")
 
@@ -6369,7 +6459,7 @@ if stock_input:
 
                 # v9.3：出場比例不再固定 30%，改由持股健康度與訊號一致度動態決定。
                 # 健康且一致度高：讓獲利奔跑；轉弱或一致度下降：提早收回較多部位。
-                # v9.12：出場比例直接使用畫面「訊號一致度」實際顯示的同一個計數。
+                # v9.13：出場比例直接使用畫面「訊號一致度」實際顯示的同一個計數。
                 # 畫面顯示 _hold_signal_score/_hold_signal_total，
                 # 因此出場引擎也只能讀 _hold_signal_score，不再使用舊的 _hold_agree。
                 _exit_signal_count = int(_hold_signal_score or 0)
@@ -6388,7 +6478,7 @@ if stock_input:
 
                 _exit_pct_final = max(0, 100 - _exit_pct1 - _exit_pct2)
 
-                # v9.12：所有出場比例文字一律從同一組變數產生，禁止任何 UI 區塊另寫固定百分比。
+                # v9.13：所有出場比例文字一律從同一組變數產生，禁止任何 UI 區塊另寫固定百分比。
                 _exit_plan_text = (
                     f"出場配置：{_exit_style}｜第一段 {_exit_pct1}%｜"
                     f"第二段 {_exit_pct2}%｜剩餘 {_exit_pct_final}% 採動態移動停利"
