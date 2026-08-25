@@ -4597,8 +4597,14 @@ if stock_input:
                     1 for _v in _s89_stabilization_signals.values() if _v
                 )
 
+                # v8.9a：止跌雷達不能引用稍後才建立的 _s87_low_watch。
+                # 直接以目前價格是否位於低位承接區判斷。
+                _s89_low_zone_active = bool(
+                    (_s87_low_zone_low > 0 and _s87_low_zone_high > 0)
+                    and (_s87_low_zone_low <= _s19_price <= _s87_low_zone_high)
+                )
                 _s89_stabilizing = bool(
-                    _s87_low_watch
+                    _s89_low_zone_active
                     and _s89_stabilization_score >= 2
                 )
 
