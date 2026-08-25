@@ -5302,7 +5302,10 @@ if stock_input:
                     "beta_stable_invalidation": _beta84_invalidation,
                     "beta_strong_breakout": _beta5_confirm,
                 }
+                # v8.9b：每檔股票各自保存最新版 position plan，避免切換自選股時沿用上一檔舊介面/舊資料。
+                _s18_position_stock_key = str(res.get("stock_id", stock_input) or stock_input).strip()
                 st.session_state["_stockpilot4_s18_position"] = _s18_position_plan
+                st.session_state[f"_stockpilot4_s18_position_{_s18_position_stock_key}"] = _s18_position_plan
 
                 st.session_state["_stockpilot4_shadow"] = shadow_v4
                 st.session_state["_stockpilot4_shadow_error"] = None
@@ -5314,6 +5317,8 @@ if stock_input:
                 st.session_state["_stockpilot4_shadow"] = None
                 st.session_state["_stockpilot4_shadow_error"] = shadow_v4_error
                 st.session_state["_stockpilot4_s18_position"] = {}
+                _s18_error_stock_key = str(res.get("stock_id", stock_input) or stock_input).strip()
+                st.session_state[f"_stockpilot4_s18_position_{_s18_error_stock_key}"] = {}
 
         # 3.3 正式 Decision Center：永遠執行，不依賴 Shadow 成敗。
         compass = decision_snapshot["compass"]
@@ -5328,11 +5333,14 @@ if stock_input:
 
         decision_color = strategy_state["color"]
 
-        # Beta v2：只顯示最新版操作畫面
-        _p18 = st.session_state.get("_stockpilot4_s18_position", {}) or {}
-
+        # v8.9b：只讀取「目前這一檔股票」自己的最新版操作資料。
+        # 不再使用上一檔股票殘留的全域 position plan，確保所有自選股切換後都進入同一套新版 UI。
         _stock_name_beta = str(res.get("stock_name", "") or "").strip()
         _stock_id_beta = str(res.get("stock_id", stock_input) or stock_input).strip()
+        _p18 = st.session_state.get(
+            f"_stockpilot4_s18_position_{_stock_id_beta}",
+            {}
+        ) or {}
         _current_price_beta = float(res.get("current_price", 0) or 0)
 
         st.markdown(
