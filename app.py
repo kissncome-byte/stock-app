@@ -4552,7 +4552,8 @@ if stock_input:
 
                 # 低位「觀察」可在風險尚高時成立；
                 # 但真正「試單」仍必須通過硬風險否決。
-                _s87_low_probe = bool(
+                # Beta v8.8：低位試單先形成候選，不因單一分鐘直接升級。
+                _s88_low_probe_candidate = bool(
                     _s87_low_watch
                     and _s21_no_hard_veto
                     and _s87_bottom_score >= 3
@@ -4562,6 +4563,66 @@ if stock_input:
                         or (_s20_ma5 > 0 and _s19_price >= _s20_ma5)
                     )
                 )
+
+                # 低位轉折穩定器：同一檔、同一交易日維持候選計數與鎖定狀態。
+                _s88_stock_key = str(res.get("stock_id", stock_input) or stock_input)
+                _s88_trade_date = str(pd.Timestamp.now(tz="Asia/Taipei").date())
+                _s88_session_key = f"stockpilot_v88_low_{_s88_stock_key}_{_s88_trade_date}"
+                _s88_prev = st.session_state.get(_s88_session_key, {}) or {}
+
+                _s88_candidate_count = int(_s88_prev.get("candidate_count", 0) or 0)
+                _s88_low_probe_latched = bool(_s88_prev.get("low_probe_latched", False))
+
+                if _s88_low_probe_candidate:
+                    _s88_candidate_count += 1
+                else:
+                    _s88_candidate_count = 0
+
+                # 4/5 以上且有明確價格轉強可立即升級；
+                # 3/5 則至少連續兩次更新都成立，避免一分鐘雜訊翻單。
+                _s88_immediate_probe = bool(
+                    _s87_bottom_score >= 4
+                    and (
+                        _s20_reclaim_2d
+                        or (_s20_ma5 > 0 and _s19_price >= _s20_ma5)
+                    )
+                )
+
+                if _s88_low_probe_candidate and (
+                    _s88_candidate_count >= 2 or _s88_immediate_probe
+                ):
+                    _s88_low_probe_latched = True
+
+                # 失效：硬風險重新出現，或跌破低位承接區下緣/正式防守價。
+                _s88_low_invalidation = 0.0
+                _s88_candidates = [
+                    float(x) for x in [_s87_low_zone_low, _s12_stop]
+                    if float(x or 0) > 0
+                ]
+                if _s88_candidates:
+                    _s88_low_invalidation = min(_s88_candidates)
+
+                _s88_low_invalid_now = bool(
+                    (not _s21_no_hard_veto)
+                    or (
+                        _s88_low_invalidation > 0
+                        and _s19_price < _s88_low_invalidation
+                    )
+                )
+
+                if _s88_low_invalid_now:
+                    _s88_low_probe_latched = False
+                    _s88_candidate_count = 0
+
+                st.session_state[_s88_session_key] = {
+                    "candidate_count": _s88_candidate_count,
+                    "low_probe_latched": _s88_low_probe_latched,
+                    "last_score": int(_s87_bottom_score),
+                    "last_price": float(_s19_price or 0),
+                    "invalidation": float(_s88_low_invalidation or 0),
+                }
+
+                _s87_low_probe = bool(_s88_low_probe_latched)
 
                 _s21_low_probe = bool(
                     (
@@ -4606,7 +4667,13 @@ if stock_input:
                     )
                 )
 
-                if _s20_market_blocked:
+                # Beta v8.8：未持股狀態梯度
+                # 價格已進低位時，不再被「弱勢空頭」完全蓋掉；
+                # 但真正買進仍需穩定器確認。
+                if _s20_market_blocked and _s87_low_watch:
+                    _s19_early_state = "LOW_WATCH"
+                    _s19_early_state_zh = "低位觀察・暫不試單"
+                elif _s20_market_blocked:
                     _s19_early_state = "NO_ENTRY"
                     _s19_early_state_zh = "不宜進場"
                 elif _s21_formal_entry:
@@ -4618,9 +4685,12 @@ if stock_input:
                 elif _s21_turn_probe:
                     _s19_early_state = "TURN_PROBE"
                     _s19_early_state_zh = "轉強試單"
-                elif _s21_low_probe:
+                elif _s87_low_probe:
                     _s19_early_state = "LOW_PROBE"
                     _s19_early_state_zh = "低位試單"
+                elif _s87_low_watch and _s87_bottom_score >= 2:
+                    _s19_early_state = "LOW_CONFIRM"
+                    _s19_early_state_zh = "低位轉折確認中"
                 elif _s87_low_watch:
                     _s19_early_state = "LOW_WATCH"
                     _s19_early_state_zh = (
@@ -4658,8 +4728,14 @@ if stock_input:
                     elif _s19_early_state == "LOW_PROBE":
                         _s183_trade_decision = "低位試單"
                         _s183_trade_reason = (
-                            f"股價位於低位區，且止跌轉折條件已出現 {_s87_bottom_score}/5 項；"
-                            "可用很小部位試單，但正式趨勢尚未翻多，不視為主升段確認。"
+                            f"股價位於低位區，止跌轉折條件 {_s87_bottom_score}/5 項成立，"
+                            "且訊號已通過穩定確認；可用很小部位試單，但正式趨勢尚未翻多。"
+                        )
+                    elif _s19_early_state == "LOW_CONFIRM":
+                        _s183_trade_decision = "低位轉折確認中"
+                        _s183_trade_reason = (
+                            f"股價已在低位承接區，轉折條件 {_s87_bottom_score}/5 項成立；"
+                            "訊號正在累積確認，暫不因單一分鐘轉強就立即買進。"
                         )
                     elif _s19_early_state == "LOW_WATCH":
                         _s183_trade_decision = (
@@ -4997,6 +5073,11 @@ if stock_input:
                     "low_watch": _s87_low_watch,
                     "low_hard_veto": (not _s21_no_hard_veto),
                     "low_turn_score": _s87_bottom_score,
+                    "low_probe_candidate": _s88_low_probe_candidate,
+                    "low_probe_candidate_count": _s88_candidate_count,
+                    "low_probe_latched": _s88_low_probe_latched,
+                    "low_probe_invalidation": _s88_low_invalidation,
+                    "low_probe_invalid_now": _s88_low_invalid_now,
                     "low_turn_signals": _s87_bottom_signals,
                     "low_zone_low": _s87_low_zone_low,
                     "low_zone_high": _s87_low_zone_high,
@@ -5132,8 +5213,12 @@ if stock_input:
 
                 if _state_now == "等待拉回":
                     st.warning("目前已有起漲結構，但位置偏高，不適合追價。")
-                elif _state_now == "低檔試單":
-                    st.success("價格仍在相對低風險區，已出現早期止跌轉強訊號，可用很小部位先試單。")
+                elif _state_now in {"低位觀察", "低位觀察・暫不試單"}:
+                    st.warning("股價已進入低位承接區，但目前仍以觀察為主，尚未形成可執行的試單訊號。")
+                elif _state_now == "低位轉折確認中":
+                    st.info("低位轉折訊號正在累積確認；目前先不下單，避免因單一分鐘反彈就追進。")
+                elif _state_now == "低位試單":
+                    st.success("低位轉折訊號已通過穩定確認，可用很小部位試單；正式趨勢尚未翻多。")
                 elif _state_now == "轉強試單":
                     st.success("反轉結構與短線動能已轉強，可小部位試單，正式確認後再加碼。")
                 elif _state_now == "正式進場":
@@ -5276,6 +5361,9 @@ if stock_input:
                     _low_score_v87 = int(_p18.get("low_turn_score", 0) or 0)
                     _low_sig_v87 = _p18.get("low_turn_signals", {}) or {}
                     _passed_v87 = [k for k, v in _low_sig_v87.items() if v]
+                    _low_count_v88 = int(_p18.get("low_probe_candidate_count", 0) or 0)
+                    _low_latched_v88 = bool(_p18.get("low_probe_latched"))
+                    _low_invalid_v88 = bool(_p18.get("low_probe_invalid_now"))
                     st.info(
                         "低位轉折雷達："
                         f"{_low_score_v87}/5 項成立。"
@@ -5286,6 +5374,18 @@ if stock_input:
                         + (
                             "｜目前仍有硬風險否決：低位已到，但暫不試單。"
                             if _p18.get("low_hard_veto") else ""
+                        )
+                        + (
+                            "｜低位試單訊號已鎖定。"
+                            if _low_latched_v88
+                            else (
+                                f"｜候選連續確認 {_low_count_v88}/2。"
+                                if _p18.get("low_probe_candidate") else ""
+                            )
+                        )
+                        + (
+                            "｜目前已觸發低位試單失效條件。"
+                            if _low_invalid_v88 else ""
                         )
                     )
 
