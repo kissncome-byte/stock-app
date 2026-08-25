@@ -4523,6 +4523,85 @@ if stock_input:
                     and _s87_low_zone_low <= _s19_price <= _s87_low_zone_high
                 )
 
+                # Beta v8.9：更早一層的「止跌雷達」
+                # 目的：不要等到站回 MA5 或收復兩日高點後才注意到轉折。
+                _s89_today_low = 0.0
+                _s89_prev_low = 0.0
+                _s89_prev2_low = 0.0
+                _s89_prev_close = _s19_safe_float(
+                    res.get("previous_close", res.get("prev_close", 0)),
+                    0.0
+                )
+
+                if isinstance(_s19_daily, pd.DataFrame) and not _s19_daily.empty:
+                    if "low" in _s19_daily.columns:
+                        _s89_lows = pd.to_numeric(
+                            _s19_daily["low"], errors="coerce"
+                        ).dropna()
+                        if len(_s89_lows) >= 1:
+                            _s89_prev_low = float(_s89_lows.iloc[-1])
+                        if len(_s89_lows) >= 2:
+                            _s89_prev2_low = float(_s89_lows.iloc[-2])
+
+                # 若即時資料有當日最低價則優先使用；沒有時用現價作保守替代。
+                _s89_today_low = _s19_safe_float(
+                    res.get("day_low", res.get("low", _s19_price)),
+                    _s19_price
+                )
+
+                _s89_intraday_rebound_pct = 0.0
+                if _s89_today_low > 0 and _s19_price > 0:
+                    _s89_intraday_rebound_pct = (
+                        (_s19_price / _s89_today_low) - 1
+                    ) * 100
+
+                _s89_decline_narrowing = False
+                if _s89_prev_close > 0:
+                    _s89_decline_narrowing = bool(
+                        _s20_today_pct > -3.0
+                        or (
+                            _s19_ret3 is not None
+                            and _s19_ret3 > -5.0
+                            and _s20_today_pct > _s19_ret3
+                        )
+                    )
+
+                _s89_no_new_low = bool(
+                    _s89_prev_low > 0
+                    and _s89_today_low >= _s89_prev_low
+                )
+
+                _s89_low_rising = bool(
+                    _s89_prev_low > 0
+                    and _s89_prev2_low > 0
+                    and _s89_prev_low >= _s89_prev2_low
+                )
+
+                _s89_rebound_from_low = bool(
+                    _s89_intraday_rebound_pct >= 1.5
+                )
+
+                _s89_volume_stabilizing = bool(
+                    _s19_volume_ratio is not None
+                    and _s19_volume_ratio >= 0.40
+                )
+
+                _s89_stabilization_signals = {
+                    "今日未再創近期新低": _s89_no_new_low,
+                    "短線低點開始墊高": _s89_low_rising,
+                    "盤中自低點拉回至少1.5%": _s89_rebound_from_low,
+                    "跌幅開始明顯收斂": _s89_decline_narrowing,
+                    "量能未低於20日均量40%": _s89_volume_stabilizing,
+                }
+                _s89_stabilization_score = sum(
+                    1 for _v in _s89_stabilization_signals.values() if _v
+                )
+
+                _s89_stabilizing = bool(
+                    _s87_low_watch
+                    and _s89_stabilization_score >= 2
+                )
+
                 _s87_bottom_signals = {
                     "今日收紅或盤中轉強": _s20_today_pct > 0,
                     "站回5日均線": (_s20_ma5 > 0 and _s19_price >= _s20_ma5),
@@ -4691,6 +4770,9 @@ if stock_input:
                 elif _s87_low_watch and _s87_bottom_score >= 2:
                     _s19_early_state = "LOW_CONFIRM"
                     _s19_early_state_zh = "低位轉折確認中"
+                elif _s89_stabilizing:
+                    _s19_early_state = "STABILIZING"
+                    _s19_early_state_zh = "止跌形成"
                 elif _s87_low_watch:
                     _s19_early_state = "LOW_WATCH"
                     _s19_early_state_zh = (
@@ -4736,6 +4818,13 @@ if stock_input:
                         _s183_trade_reason = (
                             f"股價已在低位承接區，轉折條件 {_s87_bottom_score}/5 項成立；"
                             "訊號正在累積確認，暫不因單一分鐘轉強就立即買進。"
+                        )
+                    elif _s19_early_state == "STABILIZING":
+                        _s183_trade_decision = "止跌形成"
+                        _s183_trade_reason = (
+                            f"股價仍在低位承接區，但更早期的止跌訊號已出現 "
+                            f"{_s89_stabilization_score}/5 項；"
+                            "目前先列入高度觀察，不立即買進，等低位轉折訊號接手確認。"
                         )
                     elif _s19_early_state == "LOW_WATCH":
                         _s183_trade_decision = (
@@ -5078,6 +5167,51 @@ if stock_input:
                     "low_probe_latched": _s88_low_probe_latched,
                     "low_probe_invalidation": _s88_low_invalidation,
                     "low_probe_invalid_now": _s88_low_invalid_now,
+                    "stabilization_score": _s89_stabilization_score,
+                    "stabilization_signals": _s89_stabilization_signals,
+                    "stabilizing": _s89_stabilizing,
+                    "stabilization_details": [
+                        {
+                            "項目": "今日是否未再創近期新低",
+                            "實際值": (
+                                f"今日低 {_s89_today_low:,.2f}／前一低 {_s89_prev_low:,.2f}"
+                                if _s89_prev_low > 0 else "近期低點資料不足"
+                            ),
+                            "成立門檻": "今日低點 ≥ 前一交易日低點",
+                            "通過": bool(_s89_no_new_low),
+                        },
+                        {
+                            "項目": "短線低點是否開始墊高",
+                            "實際值": (
+                                f"前一低 {_s89_prev_low:,.2f}／前二低 {_s89_prev2_low:,.2f}"
+                                if _s89_prev_low > 0 and _s89_prev2_low > 0
+                                else "近期低點資料不足"
+                            ),
+                            "成立門檻": "前一日低點 ≥ 前二日低點",
+                            "通過": bool(_s89_low_rising),
+                        },
+                        {
+                            "項目": "盤中是否自低點明顯拉回",
+                            "實際值": f"{_s89_intraday_rebound_pct:+.2f}%",
+                            "成立門檻": "現價較今日低點反彈 ≥ 1.50%",
+                            "通過": bool(_s89_rebound_from_low),
+                        },
+                        {
+                            "項目": "跌幅是否開始收斂",
+                            "實際值": f"今日 {_s20_today_pct:+.2f}%",
+                            "成立門檻": "今日跌幅 > -3% 或跌勢較近3日明顯改善",
+                            "通過": bool(_s89_decline_narrowing),
+                        },
+                        {
+                            "項目": "量能是否維持最低活性",
+                            "實際值": (
+                                f"{_s19_volume_ratio:.2f} 倍"
+                                if _s19_volume_ratio is not None else "量能比缺資料"
+                            ),
+                            "成立門檻": "成交量 ≥ 20日均量的 0.40 倍",
+                            "通過": bool(_s89_volume_stabilizing),
+                        },
+                    ],
                     "low_turn_signals": _s87_bottom_signals,
                     "low_turn_details": [
                         {
@@ -5256,23 +5390,30 @@ if stock_input:
                 _er = float(_p18.get("early_entry_ratio", 0) or 0)
 
                 st.markdown("### 未持股進場判斷")
-                u1, u2, u3 = st.columns(3)
+                u1, u2, u3, u4 = st.columns(4)
                 u1.metric("進場狀態", _state_now or _decision_now)
                 u2.metric("趨勢進場完成度", f"{_er*100:.0f}%")
                 u3.metric(
+                    "止跌雷達",
+                    f"{int(_p18.get('stabilization_score', 0) or 0)}/5"
+                )
+                u4.metric(
                     "低位轉折訊號",
                     f"{int(_p18.get('low_turn_score', 0) or 0)}/5"
                 )
 
                 st.caption(
-                    "「趨勢進場完成度」看正式進場條件成熟度；"
-                    "「低位轉折訊號」只看跌深後是否開始止跌轉強，兩者用途不同。"
+                    "「止跌雷達」是最早期警報；"
+                    "「低位轉折訊號」確認止跌後是否開始轉強；"
+                    "「趨勢進場完成度」則看正式進場條件成熟度。三者用途不同。"
                 )
 
                 if _state_now == "等待拉回":
                     st.warning("目前已有起漲結構，但位置偏高，不適合追價。")
                 elif _state_now in {"低位觀察", "低位觀察・暫不試單"}:
                     st.warning("股價已進入低位承接區，但目前仍以觀察為主，尚未形成可執行的試單訊號。")
+                elif _state_now == "止跌形成":
+                    st.info("股價仍在低位區，但已開始出現較早期的止跌訊號；先提高注意，不急著下單。")
                 elif _state_now == "低位轉折確認中":
                     st.info("低位轉折訊號正在累積確認；目前先不下單，避免因單一分鐘反彈就追進。")
                 elif _state_now == "低位試單":
@@ -5450,6 +5591,27 @@ if stock_input:
                             if _low_invalid_v88 else ""
                         )
                     )
+                    _stabilization_details_v89 = _p18.get("stabilization_details", []) or []
+                    if _stabilization_details_v89:
+                        with st.expander("查看止跌雷達 5 項明細"):
+                            _st_rows_v89 = []
+                            for _item in _stabilization_details_v89:
+                                _st_rows_v89.append({
+                                    "條件": str(_item.get("項目", "")),
+                                    "目前實際值": str(_item.get("實際值", "")),
+                                    "成立門檻": str(_item.get("成立門檻", "")),
+                                    "結果": "✅ 通過" if bool(_item.get("通過")) else "❌ 未通過",
+                                })
+                            st.dataframe(
+                                pd.DataFrame(_st_rows_v89),
+                                use_container_width=True,
+                                hide_index=True,
+                            )
+                            st.caption(
+                                "止跌雷達比低位轉折更早，只負責發現跌勢可能正在停止；"
+                                "即使分數提高，也不代表可以直接買進。"
+                            )
+
                     _low_details_v88a = _p18.get("low_turn_details", []) or []
                     if _low_details_v88a:
                         with st.expander("查看低位轉折 5 項明細"):
