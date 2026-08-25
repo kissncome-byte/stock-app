@@ -3712,7 +3712,7 @@ with st.sidebar:
 
     st.caption("自選清單會寫入目前網址；建議把這個網址加入瀏覽器書籤。")
 
-st.markdown("## 🧭 StockPilot Beta v9.9｜個股操作決策")
+st.markdown("## 🧭 StockPilot Beta v9.10｜個股操作決策")
 st.caption("直接回答：現在要不要進場、持有、加碼、減碼或退出。")
 stock_input = st.text_input(
     "請輸入核心目標個股代碼：",
@@ -5628,11 +5628,11 @@ if stock_input:
                 _probe_trigger = float(_p18.get("beta_probe_trigger", 0) or 0)
                 _strong_breakout = float(_p18.get("beta_strong_breakout", _b_confirm) or 0)
 
-                # v9.9：未持股顯示分級。
+                # v9.10：未持股顯示分級。
                 # 不改正式決策引擎，只把「不宜進場」拆成硬否決與接近觸發兩種情況，
                 # 避免條件已接近成熟時仍顯示過度負面的文字。
                 _entry_display_state_v98 = _state_now or _decision_now
-                # v9.9：硬風險否決改為「原因清單」，不能只顯示 True/False。
+                # v9.10：硬風險否決改為「原因清單」，不能只顯示 True/False。
                 _entry_veto_reasons_v99 = []
 
                 if _p18.get("beta_intraday_invalid"):
@@ -5838,7 +5838,7 @@ if stock_input:
                     if _b_invalid > 0 else "進場條件失效價：待建立"
                 )
 
-                # v9.9：直接告訴使用者距離下一個可執行門檻還有多少。
+                # v9.10：直接告訴使用者距離下一個可執行門檻還有多少。
                 if _probe_trigger > 0 and _price_now_v86 > 0 and _price_now_v86 < _probe_trigger:
                     _probe_gap_pct_v98 = (_probe_trigger / _price_now_v86 - 1) * 100
                     st.info(
@@ -5860,6 +5860,34 @@ if stock_input:
                     )
 
                     _unlock_conditions_v99 = []
+                    # v9.10：解除條件必須包含「實際否決原因本身」，
+                    # 不能只列價格與低位訊號，避免上面說空頭否決、下面卻不用解除空頭。
+                    _trend_veto_present_v910 = any(
+                        "日線主趨勢仍為" in str(_r)
+                        for _r in _entry_veto_reasons_v99
+                    )
+                    _chip_veto_present_v910 = any(
+                        "籌碼條件仍有否決訊號" in str(_r)
+                        for _r in _entry_veto_reasons_v99
+                    )
+                    _volume_veto_present_v910 = any(
+                        "量價條件仍有否決訊號" in str(_r)
+                        for _r in _entry_veto_reasons_v99
+                    )
+                    _market_veto_present_v910 = any(
+                        "大盤風險門目前為" in str(_r)
+                        for _r in _entry_veto_reasons_v99
+                    )
+
+                    if _trend_veto_present_v910:
+                        _unlock_conditions_v99.append("日線弱勢空頭否決解除")
+                    if _chip_veto_present_v910:
+                        _unlock_conditions_v99.append("籌碼否決訊號解除")
+                    if _volume_veto_present_v910:
+                        _unlock_conditions_v99.append("量價否決訊號解除")
+                    if _market_veto_present_v910:
+                        _unlock_conditions_v99.append("大盤風險門恢復至可承作狀態")
+
                     if _probe_trigger > 0:
                         _unlock_conditions_v99.append(
                             f"站穩試單確認價 {_probe_trigger:,.2f} 元"
@@ -6039,10 +6067,13 @@ if stock_input:
                         )
                     _next_parts_v99.append("低位轉折維持至少 **3/5**")
                     if _entry_veto_reasons_v99:
-                        _next_parts_v99.append("並確認目前否決原因解除")
+                        if any("日線主趨勢仍為" in str(_r) for _r in _entry_veto_reasons_v99):
+                            _next_parts_v99.append("日線弱勢空頭否決解除")
+                        else:
+                            _next_parts_v99.append("目前否決原因解除")
                     st.write(
                         "**下一步：**暫不下單；"
-                        + "、".join(_next_parts_v99)
+                        + "、".join(dict.fromkeys(_next_parts_v99))
                         + "，再升級為低位試單評估。"
                     )
                 else:
@@ -6257,7 +6288,7 @@ if stock_input:
 
                 # v9.3：出場比例不再固定 30%，改由持股健康度與訊號一致度動態決定。
                 # 健康且一致度高：讓獲利奔跑；轉弱或一致度下降：提早收回較多部位。
-                # v9.9：出場比例直接使用畫面「訊號一致度」實際顯示的同一個計數。
+                # v9.10：出場比例直接使用畫面「訊號一致度」實際顯示的同一個計數。
                 # 畫面顯示 _hold_signal_score/_hold_signal_total，
                 # 因此出場引擎也只能讀 _hold_signal_score，不再使用舊的 _hold_agree。
                 _exit_signal_count = int(_hold_signal_score or 0)
@@ -6276,7 +6307,7 @@ if stock_input:
 
                 _exit_pct_final = max(0, 100 - _exit_pct1 - _exit_pct2)
 
-                # v9.9：所有出場比例文字一律從同一組變數產生，禁止任何 UI 區塊另寫固定百分比。
+                # v9.10：所有出場比例文字一律從同一組變數產生，禁止任何 UI 區塊另寫固定百分比。
                 _exit_plan_text = (
                     f"出場配置：{_exit_style}｜第一段 {_exit_pct1}%｜"
                     f"第二段 {_exit_pct2}%｜剩餘 {_exit_pct_final}% 採動態移動停利"
