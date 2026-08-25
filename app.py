@@ -5207,9 +5207,18 @@ if stock_input:
                 _er = float(_p18.get("early_entry_ratio", 0) or 0)
 
                 st.markdown("### 未持股進場判斷")
-                u1, u2 = st.columns(2)
+                u1, u2, u3 = st.columns(3)
                 u1.metric("進場狀態", _state_now or _decision_now)
-                u2.metric("條件完成度（參考）", f"{_er*100:.0f}%")
+                u2.metric("趨勢進場完成度", f"{_er*100:.0f}%")
+                u3.metric(
+                    "低位轉折訊號",
+                    f"{int(_p18.get('low_turn_score', 0) or 0)}/5"
+                )
+
+                st.caption(
+                    "「趨勢進場完成度」看正式進場條件成熟度；"
+                    "「低位轉折訊號」只看跌深後是否開始止跌轉強，兩者用途不同。"
+                )
 
                 if _state_now == "等待拉回":
                     st.warning("目前已有起漲結構，但位置偏高，不適合追價。")
@@ -5254,6 +5263,10 @@ if stock_input:
                     "趨勢決定方向，盤中價格只決定是否到達執行點。"
                     "一旦拉回轉強試單成立，當日不因觸發價附近的小幅震盪反覆改變；"
                     "只有跌破進場失效價才解除。"
+                )
+                st.caption(
+                    "正式趨勢完成度與低位轉折訊號分開計算："
+                    "前者偏向正式進場，後者用來避免錯過低點附近的早期止跌。"
                 )
                 if _p18.get("beta_probe_latched"):
                     st.caption("本日鎖定來源：今天已確認由觸發價下方重新站上。")
@@ -5365,7 +5378,7 @@ if stock_input:
                     _low_latched_v88 = bool(_p18.get("low_probe_latched"))
                     _low_invalid_v88 = bool(_p18.get("low_probe_invalid_now"))
                     st.info(
-                        "低位轉折雷達："
+                        "低位轉折雷達（跌深後止跌訊號）："
                         f"{_low_score_v87}/5 項成立。"
                         + (
                             " 已出現：" + "、".join(_passed_v87)
