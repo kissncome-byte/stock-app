@@ -6002,28 +6002,41 @@ if stock_input:
                     _health_parts.append(f"{'✅' if _ok else '⚠️'} {_name}")
                 st.caption("持股健康度依據：" + "｜".join(_health_parts))
 
-                # 關鍵操作價
-                st.markdown("### 關鍵操作價")
-                k1, k2, k3, k4 = st.columns(4)
-                k1.metric(
-                    "移動保護價",
-                    f"{_hold_protect:,.2f} 元" if _hold_protect > 0 else "待建立"
-                )
-                k2.metric(
-                    "結構失效價",
-                    f"{_hold_structural:,.2f} 元" if _hold_structural > 0 else "待建立"
-                )
-                k3.metric(
-                    "加碼確認價",
-                    f"{_hold_add:,.2f} 元" if _hold_add > 0 else "目前不適用"
-                )
-                k4.metric(
-                    "第一目標價",
-                    f"{_hold_target1:,.2f} 元" if _hold_target1 > 0 else "待建立"
+                # v9.1：已持股改為「出場價格」導向
+                # 第一/第二出場價屬獲利了結路徑；防守/強制出場價屬風控路徑。
+                _hold_exit1 = _hold_target1 if _hold_target1 > 0 else 0.0
+                _hold_exit2 = _hold_target2 if _hold_target2 > _hold_exit1 else 0.0
+
+                # 最終出場價採動態移動停利概念：趨勢延續時由保護價向上跟隨，
+                # 不用預先硬算一個永遠不變的遠端價格。
+                _hold_final_exit_label = (
+                    f"移動停利 ≥ {_hold_protect:,.2f} 元"
+                    if _hold_protect > 0 else "待建立"
                 )
 
-                if _hold_target2 > _hold_target1 > 0:
-                    st.caption(f"延伸目標價：{_hold_target2:,.2f} 元")
+                st.markdown("### 出場價格")
+                k1, k2, k3, k4, k5 = st.columns(5)
+                k1.metric(
+                    "第一出場價",
+                    f"{_hold_exit1:,.2f} 元" if _hold_exit1 > 0 else "待建立"
+                )
+                k2.metric(
+                    "第二出場價",
+                    f"{_hold_exit2:,.2f} 元" if _hold_exit2 > 0 else "待建立"
+                )
+                k3.metric("最終出場", _hold_final_exit_label)
+                k4.metric(
+                    "防守出場價",
+                    f"{_hold_protect:,.2f} 元" if _hold_protect > 0 else "待建立"
+                )
+                k5.metric(
+                    "強制出場價",
+                    f"{_hold_structural:,.2f} 元" if _hold_structural > 0 else "待建立"
+                )
+
+                # 額外保留加碼價，但不再跟出場價混在同一組。
+                if _hold_add > 0:
+                    st.caption(f"加碼確認價：{_hold_add:,.2f} 元")
 
                 # 現價相對關鍵價位的位置
                 _position_notes = []
@@ -6041,12 +6054,25 @@ if stock_input:
                     )
                 if _hold_target1 > _hold_price > 0:
                     _position_notes.append(
-                        f"距第一目標 {((_hold_target1 / _hold_price) - 1) * 100:+.2f}%"
+                        f"距第一出場價 {((_hold_target1 / _hold_price) - 1) * 100:+.2f}%"
                     )
                 if _position_notes:
                     st.info("目前位置：" + "｜".join(_position_notes))
 
                 # 操作狀態提示
+                if _hold_exit1 > 0:
+                    st.info(
+                        f"出場重點：目前 {_decision_now}｜第一出場價 {_hold_exit1:,.2f} 元"
+                        + (
+                            f"｜第二出場價 {_hold_exit2:,.2f} 元"
+                            if _hold_exit2 > 0 else ""
+                        )
+                        + (
+                            f"｜防守出場價 {_hold_protect:,.2f} 元"
+                            if _hold_protect > 0 else ""
+                        )
+                    )
+
                 if _decision_now == "加碼":
                     st.success(
                         "目前持股條件允許增加部位；仍須確認股價位置沒有過度乖離，"
@@ -6059,38 +6085,38 @@ if stock_input:
                 else:
                     st.success("目前沒有減碼或退場訊號，持股條件仍可維持。")
 
-                # 下一步操作劇本
+                # 下一步操作劇本：直接回答「哪裡賣」
                 st.markdown("### 下一步操作劇本")
                 _script_parts = []
 
                 if _decision_now == "退場":
-                    _script_parts.append("目前：執行退出，不再以成本價等待反彈。")
+                    _script_parts.append("目前：已進入退出條件，優先處理剩餘持股。")
                 elif _decision_now == "減碼":
                     _script_parts.append("目前：先分批減碼，降低曝險。")
                 elif _decision_now == "加碼":
-                    _script_parts.append("目前：可評估加碼，但不因單一盤中價格跳動追價。")
+                    _script_parts.append("目前：可評估加碼，但仍以出場價與風控價管理。")
                 else:
-                    _script_parts.append("目前：維持持有。")
+                    _script_parts.append("目前：維持持有，等待第一出場價或風控條件觸發。")
 
-                if _hold_add > 0:
+                if _hold_exit1 > 0:
                     _script_parts.append(
-                        f"加碼：站穩 {_hold_add:,.2f} 元，且趨勢／籌碼／量價沒有新的否決訊號時再評估。"
+                        f"第一出場：到 {_hold_exit1:,.2f} 元附近，建議先減碼約 30%。"
                     )
-                if _hold_target1 > 0:
+                if _hold_exit2 > 0:
                     _script_parts.append(
-                        f"第一目標：接近 {_hold_target1:,.2f} 元時重新評估是否部分停利或續抱。"
-                    )
-                if _hold_target2 > _hold_target1 > 0:
-                    _script_parts.append(
-                        f"延伸目標：若正式趨勢持續，才看 {_hold_target2:,.2f} 元。"
+                        f"第二出場：若續強到 {_hold_exit2:,.2f} 元附近，再減碼約 30%。"
                     )
                 if _hold_protect > 0:
                     _script_parts.append(
-                        f"防守：有效跌破 {_hold_protect:,.2f} 元，優先轉入減碼／防守。"
+                        f"剩餘部位：以移動停利管理；有效跌破 {_hold_protect:,.2f} 元，先處理剩餘部位或至少大幅減碼。"
                     )
                 if _hold_structural > 0:
                     _script_parts.append(
-                        f"退出：有效跌破 {_hold_structural:,.2f} 元，視為原持股結構失效。"
+                        f"強制出場：有效跌破 {_hold_structural:,.2f} 元，視為持股結構失效，退出剩餘部位。"
+                    )
+                if _hold_add > 0:
+                    _script_parts.append(
+                        f"加碼：只有站穩 {_hold_add:,.2f} 元且趨勢／籌碼／量價未出現新的否決訊號時才評估。"
                     )
 
                 for _line in _script_parts:
