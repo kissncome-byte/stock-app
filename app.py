@@ -5059,27 +5059,93 @@ if stock_input:
                     st.caption("本日尚未建立新的試單鎖定。")
 
                 st.markdown("### 關鍵價位")
+
+                # v8.6：價格門檻與「是否可進場」分開顯示。
+                # 現價碰到某個價位，只代表價格路徑到位；正式策略仍由日線趨勢、
+                # 動能、風控與既有決策穩定器共同決定，避免盤中來回翻單。
+                _price_now_v86 = float(_current_price_beta or 0)
+
+                if _pb_low > 0 and _pb_high > 0:
+                    if _price_now_v86 < _pb_low:
+                        _pullback_status_v86 = "尚未進入・位於區間下方"
+                    elif _price_now_v86 <= _pb_high:
+                        _pullback_status_v86 = "已進入觀察區"
+                    else:
+                        _pullback_status_v86 = "已高於觀察區"
+                else:
+                    _pullback_status_v86 = "待建立"
+
+                if _strong_breakout > 0 and _price_now_v86 > 0:
+                    _break_price_hit_v86 = _price_now_v86 >= _strong_breakout
+                    _break_price_status_v86 = "已突破價格門檻" if _break_price_hit_v86 else "尚未突破價格門檻"
+                else:
+                    _break_price_hit_v86 = False
+                    _break_price_status_v86 = "待建立"
+
+                # 價格突破不等於有效突破；只有正式進場/轉強試單或本日已鎖定，
+                # 才把突破有效性標成已確認。
+                _break_effective_v86 = bool(
+                    _break_price_hit_v86
+                    and (
+                        _state_now in {"正式進場", "轉強試單"}
+                        or _p18.get("beta_probe_latched")
+                    )
+                )
+                if not _break_price_hit_v86:
+                    _break_effective_status_v86 = "尚未到價"
+                elif _break_effective_v86:
+                    _break_effective_status_v86 = "有效性已確認"
+                else:
+                    _break_effective_status_v86 = "價格已過・有效性未確認"
+
                 p1, p2, p3 = st.columns(3)
                 p1.metric(
                     "拉回觀察區",
                     f"{_pb_low:,.2f}～{_pb_high:,.2f} 元"
                     if _pb_low > 0 and _pb_high > 0 else "待建立"
                 )
+                p1.caption(f"目前狀態：{_pullback_status_v86}")
+
                 p2.metric(
                     "試單觸發價",
                     f"{_probe_trigger:,.2f} 元"
                     if _p18.get("beta_probe_available", True) and _probe_trigger > 0
                     else "不適用"
                 )
+                if _p18.get("beta_probe_available", True) and _probe_trigger > 0:
+                    if _p18.get("beta_probe_latched"):
+                        p2.caption("目前狀態：已完成拉回後重新站上・本日鎖定")
+                    elif _p18.get("beta_pullback_seen"):
+                        p2.caption("目前狀態：曾拉回，等待真正重新站上")
+                    else:
+                        p2.caption("目前狀態：尚未完成先拉回、後站回的順序")
+                else:
+                    p2.caption("目前狀態：本檔暫無中間試單層")
+
                 p3.metric(
-                    "強勢突破價",
+                    "突破價格門檻",
                     f"{_strong_breakout:,.2f} 元" if _strong_breakout > 0 else "待建立"
+                )
+                p3.caption(
+                    f"目前狀態：{_break_price_status_v86}；{_break_effective_status_v86}"
                 )
 
                 st.caption(
                     f"進場條件失效價：{_b_invalid:,.2f} 元"
                     if _b_invalid > 0 else "進場條件失效價：待建立"
                 )
+
+                if _break_price_hit_v86 and not _break_effective_v86:
+                    st.info(
+                        "價格雖已站上突破門檻，但這不等於買進訊號。"
+                        f"目前主趨勢為「{_stable_trend_label}」、策略為「{_stable_strategy_label}」，"
+                        "仍須由日線趨勢、動能與風控條件確認；不因盤中價格單獨越過門檻就追價。"
+                    )
+                elif _pullback_status_v86 == "已進入觀察區" and _state_now not in {"低檔試單", "轉強試單", "正式進場"}:
+                    st.info(
+                        "現價已進入拉回觀察區，但「進入觀察區」只代表開始監看，"
+                        "尚未等於進場；仍等待止跌、重新轉強或正式確認條件。"
+                    )
 
                 if _p18.get("beta_probe_available", True) and _probe_trigger > 0:
                     if _p18.get("beta_pullback_seen"):
