@@ -5750,78 +5750,97 @@ if stock_input:
                     if _b_invalid > 0 else "進場條件失效價：待建立"
                 )
 
-                if _p18.get("low_watch") or _p18.get("low_probe"):
-                    _low_score_v87 = int(_p18.get("low_turn_score", 0) or 0)
-                    _low_sig_v87 = _p18.get("low_turn_signals", {}) or {}
-                    _passed_v87 = [k for k, v in _low_sig_v87.items() if v]
-                    _low_count_v88 = int(_p18.get("low_probe_candidate_count", 0) or 0)
-                    _low_latched_v88 = bool(_p18.get("low_probe_latched"))
-                    _low_invalid_v88 = bool(_p18.get("low_probe_invalid_now"))
-                    st.info(
-                        "低位轉折雷達（跌深後止跌訊號）："
-                        f"{_low_score_v87}/5 項成立。"
-                        + (
-                            " 已出現：" + "、".join(_passed_v87)
-                            if _passed_v87 else " 尚未出現明確止跌訊號"
-                        )
-                        + (
-                            "｜目前仍有硬風險否決：低位已到，但暫不試單。"
-                            if _p18.get("low_hard_veto") else ""
-                        )
-                        + (
-                            "｜低位試單訊號已鎖定。"
-                            if _low_latched_v88
-                            else (
-                                f"｜候選連續確認 {_low_count_v88}/2。"
-                                if _p18.get("low_probe_candidate") else ""
-                            )
-                        )
-                        + (
-                            "｜目前已觸發低位試單失效條件。"
-                            if _low_invalid_v88 else ""
+                # v8.9e：所有未持股股票都顯示同一套完整新版雷達介面。
+                # 是否進入低位區只影響判斷，不再影響 UI 是否出現。
+                _low_score_v87 = int(_p18.get("low_turn_score", 0) or 0)
+                _low_sig_v87 = _p18.get("low_turn_signals", {}) or {}
+                _passed_v87 = [k for k, v in _low_sig_v87.items() if v]
+                _low_count_v88 = int(_p18.get("low_probe_candidate_count", 0) or 0)
+                _low_latched_v88 = bool(_p18.get("low_probe_latched"))
+                _low_invalid_v88 = bool(_p18.get("low_probe_invalid_now"))
+                _in_low_context_v89e = bool(
+                    _p18.get("low_watch")
+                    or _p18.get("low_probe")
+                    or _p18.get("in_low_zone")
+                )
+
+                _low_context_note_v89e = (
+                    "｜目前已進入低位監控區。"
+                    if _in_low_context_v89e
+                    else "｜目前尚未進入低位承接區，雷達持續監控。"
+                )
+
+                st.info(
+                    "低位轉折雷達："
+                    f"{_low_score_v87}/5 項成立。"
+                    + (
+                        " 已出現：" + "、".join(_passed_v87)
+                        if _passed_v87 else " 尚未出現明確轉折訊號"
+                    )
+                    + _low_context_note_v89e
+                    + (
+                        "｜目前仍有硬風險否決：暫不試單。"
+                        if _p18.get("low_hard_veto") else ""
+                    )
+                    + (
+                        "｜低位試單訊號已鎖定。"
+                        if _low_latched_v88
+                        else (
+                            f"｜候選連續確認 {_low_count_v88}/2。"
+                            if _p18.get("low_probe_candidate") else ""
                         )
                     )
-                    _stabilization_details_v89 = _p18.get("stabilization_details", []) or []
-                    if _stabilization_details_v89:
-                        with st.expander("查看止跌雷達 5 項明細"):
-                            _st_rows_v89 = []
-                            for _item in _stabilization_details_v89:
-                                _st_rows_v89.append({
-                                    "條件": str(_item.get("項目", "")),
-                                    "目前實際值": str(_item.get("實際值", "")),
-                                    "成立門檻": str(_item.get("成立門檻", "")),
-                                    "結果": "✅ 通過" if bool(_item.get("通過")) else "❌ 未通過",
-                                })
-                            st.dataframe(
-                                pd.DataFrame(_st_rows_v89),
-                                use_container_width=True,
-                                hide_index=True,
-                            )
-                            st.caption(
-                                "止跌雷達比低位轉折更早，只負責發現跌勢可能正在停止；"
-                                "即使分數提高，也不代表可以直接買進。"
-                            )
+                    + (
+                        "｜目前已觸發低位試單失效條件。"
+                        if _low_invalid_v88 else ""
+                    )
+                )
 
-                    _low_details_v88a = _p18.get("low_turn_details", []) or []
+                _stabilization_details_v89 = _p18.get("stabilization_details", []) or []
+                with st.expander("查看止跌雷達 5 項明細"):
+                    if _stabilization_details_v89:
+                        _st_rows_v89 = []
+                        for _item in _stabilization_details_v89:
+                            _st_rows_v89.append({
+                                "條件": str(_item.get("項目", "")),
+                                "目前實際值": str(_item.get("實際值", "")),
+                                "成立門檻": str(_item.get("成立門檻", "")),
+                                "結果": "✅ 通過" if bool(_item.get("通過")) else "❌ 未通過",
+                            })
+                        st.dataframe(
+                            pd.DataFrame(_st_rows_v89),
+                            use_container_width=True,
+                            hide_index=True,
+                        )
+                    else:
+                        st.caption("目前沒有可用的止跌雷達明細資料。")
+                    st.caption(
+                        "止跌雷達是最早期警報，只負責發現跌勢可能正在停止；"
+                        "分數提高不代表可以直接買進。"
+                    )
+
+                _low_details_v88a = _p18.get("low_turn_details", []) or []
+                with st.expander("查看低位轉折 5 項明細"):
                     if _low_details_v88a:
-                        with st.expander("查看低位轉折 5 項明細"):
-                            _low_rows_v88a = []
-                            for _item in _low_details_v88a:
-                                _low_rows_v88a.append({
-                                    "條件": str(_item.get("項目", "")),
-                                    "目前實際值": str(_item.get("實際值", "")),
-                                    "成立門檻": str(_item.get("成立門檻", "")),
-                                    "結果": "✅ 通過" if bool(_item.get("通過")) else "❌ 未通過",
-                                })
-                            st.dataframe(
-                                pd.DataFrame(_low_rows_v88a),
-                                use_container_width=True,
-                                hide_index=True,
-                            )
-                            st.caption(
-                                "這 5 項只用來判斷「跌深後是否開始止跌轉強」；"
-                                "不是正式趨勢分數，也不代表單一條件通過就能買進。"
-                            )
+                        _low_rows_v88a = []
+                        for _item in _low_details_v88a:
+                            _low_rows_v88a.append({
+                                "條件": str(_item.get("項目", "")),
+                                "目前實際值": str(_item.get("實際值", "")),
+                                "成立門檻": str(_item.get("成立門檻", "")),
+                                "結果": "✅ 通過" if bool(_item.get("通過")) else "❌ 未通過",
+                            })
+                        st.dataframe(
+                            pd.DataFrame(_low_rows_v88a),
+                            use_container_width=True,
+                            hide_index=True,
+                        )
+                    else:
+                        st.caption("目前沒有可用的低位轉折明細資料。")
+                    st.caption(
+                        "低位轉折訊號用來確認止跌後是否開始轉強；"
+                        "不是正式趨勢分數，也不代表單一條件通過就能買進。"
+                    )
 
                 if _break_price_hit_v86 and not _break_effective_v86:
                     st.info(
