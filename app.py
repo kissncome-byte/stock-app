@@ -5079,6 +5079,55 @@ if stock_input:
                     "low_probe_invalidation": _s88_low_invalidation,
                     "low_probe_invalid_now": _s88_low_invalid_now,
                     "low_turn_signals": _s87_bottom_signals,
+                    "low_turn_details": [
+                        {
+                            "項目": "今日是否轉強",
+                            "實際值": f"{_s20_today_pct:+.2f}%",
+                            "成立門檻": "今日漲跌幅 > 0%",
+                            "通過": bool(_s20_today_pct > 0),
+                        },
+                        {
+                            "項目": "是否站回5日均線",
+                            "實際值": (
+                                f"現價 {_s19_price:,.2f}／MA5 {_s20_ma5:,.2f}"
+                                if _s20_ma5 > 0 else "MA5 缺資料"
+                            ),
+                            "成立門檻": "現價 ≥ MA5",
+                            "通過": bool(_s20_ma5 > 0 and _s19_price >= _s20_ma5),
+                        },
+                        {
+                            "項目": "是否收復近2日高點",
+                            "實際值": (
+                                f"現價 {_s19_price:,.2f}／近2日高點 {_s20_recent_2d_high:,.2f}"
+                                if '_s20_recent_2d_high' in locals() else f"現價 {_s19_price:,.2f}"
+                            ),
+                            "成立門檻": "現價 > 最近2個交易日高點",
+                            "通過": bool(_s20_reclaim_2d),
+                        },
+                        {
+                            "項目": "近3日跌勢是否收斂",
+                            "實際值": (
+                                f"{_s19_ret3:+.2f}%"
+                                if _s19_ret3 is not None else "近3日資料不足"
+                            ),
+                            "成立門檻": "近3日報酬 ≥ -1.50%",
+                            "通過": bool(
+                                _s19_ret3 is not None and _s19_ret3 >= -1.5
+                            ),
+                        },
+                        {
+                            "項目": "量能是否不極度萎縮",
+                            "實際值": (
+                                f"{_s19_volume_ratio:.2f} 倍"
+                                if _s19_volume_ratio is not None else "量能比缺資料"
+                            ),
+                            "成立門檻": "成交量 ≥ 20日均量的 0.55 倍",
+                            "通過": bool(
+                                _s19_volume_ratio is not None
+                                and _s19_volume_ratio >= 0.55
+                            ),
+                        },
+                    ],
                     "low_zone_low": _s87_low_zone_low,
                     "low_zone_high": _s87_low_zone_high,
                     "in_low_zone": _s87_in_low_zone,
@@ -5401,6 +5450,26 @@ if stock_input:
                             if _low_invalid_v88 else ""
                         )
                     )
+                    _low_details_v88a = _p18.get("low_turn_details", []) or []
+                    if _low_details_v88a:
+                        with st.expander("查看低位轉折 5 項明細"):
+                            _low_rows_v88a = []
+                            for _item in _low_details_v88a:
+                                _low_rows_v88a.append({
+                                    "條件": str(_item.get("項目", "")),
+                                    "目前實際值": str(_item.get("實際值", "")),
+                                    "成立門檻": str(_item.get("成立門檻", "")),
+                                    "結果": "✅ 通過" if bool(_item.get("通過")) else "❌ 未通過",
+                                })
+                            st.dataframe(
+                                pd.DataFrame(_low_rows_v88a),
+                                use_container_width=True,
+                                hide_index=True,
+                            )
+                            st.caption(
+                                "這 5 項只用來判斷「跌深後是否開始止跌轉強」；"
+                                "不是正式趨勢分數，也不代表單一條件通過就能買進。"
+                            )
 
                 if _break_price_hit_v86 and not _break_effective_v86:
                     st.info(
