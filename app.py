@@ -5260,6 +5260,10 @@ if stock_input:
                     "target_risk_ntd": _s18_target_risk_ntd,
                     "entry_price": _s18_entry_price,
                     "protective_stop": _s12_stop,
+                    "structural_exit": float(_s12_levels.get("structure_stop", 0) or 0),
+                    "add_confirm_price": float(_s12_confirm or 0),
+                    "target1": float(_s12_levels.get("target1", 0) or 0),
+                    "target2": float(_s12_levels.get("target2", 0) or 0),
                     "estimated_stop_fill": _s18_stop_fill,
                     "risk_per_share": _s18_risk_per_share,
                     "target_shares": _s18_target_shares,
@@ -5567,7 +5571,7 @@ if stock_input:
             with c2:
                 st.metric("個股", f"{_stock_name_beta}（{_stock_id_beta}）")
             with c3:
-                st.metric("資料可信度", f"{int(decision_snapshot.get('data_reliability', 0) or 0)}%")
+                st.metric("資料完整度", f"{int(decision_snapshot.get('data_reliability', 0) or 0)}%")
 
             st.info(f"一句話判斷：{_decision_reason}")
 
@@ -5902,29 +5906,200 @@ if stock_input:
                         f"本檔防追價上限約 {float(_p18.get('early_extension_limit_pct', 12) or 12):.1f}%。"
                     )
 
-            # 已持股：只顯示持有/加碼/減碼/退出
+            # v9.0：已持股完整操作中心
             else:
                 st.markdown("### 已持股操作判斷")
-                h1, h2, h3 = st.columns(3)
-                h1.metric("目前持股", f"{int(_p18.get('current_shares', 0) or 0):,} 股")
-                h2.metric("目前操作", _decision_now)
-                _pnl = _p18.get("unrealized_pnl")
-                h3.metric(
-                    "未實現損益",
-                    f"{float(_pnl):+,.0f} 元" if _pnl is not None else "未提供成本"
+
+                _hold_shares = int(_p18.get("current_shares", 0) or 0)
+                _hold_cost = float(user_cost or 0)
+                _hold_price = float(_current_price_beta or 0)
+                _hold_pnl = _p18.get("unrealized_pnl")
+                _hold_pnl_pct = (
+                    ((_hold_price / _hold_cost) - 1) * 100
+                    if _hold_cost > 0 and _hold_price > 0 else None
                 )
 
-                st.write(
-                    f"目前保護價：**{float(_p18.get('protective_stop', 0) or 0):,.2f} 元**"
-                )
-                if _decision_now == "加碼":
-                    st.success("目前條件允許加碼；仍以價格位置與風控價為準。")
-                elif _decision_now == "減碼":
-                    st.warning("目前條件建議減碼，先降低持股曝險。")
-                elif _decision_now == "退場":
-                    st.error("目前已進入退場條件。")
+                _hold_protect = float(_p18.get("protective_stop", 0) or 0)
+                _hold_structural = float(_p18.get("structural_exit", 0) or 0)
+                _hold_add = float(_p18.get("add_confirm_price", 0) or 0)
+                _hold_target1 = float(_p18.get("target1", 0) or 0)
+                _hold_target2 = float(_p18.get("target2", 0) or 0)
+
+                # 持股健康度與訊號一致度：全部沿用同一份正式決策快照。
+                _hold_regime = decision_snapshot.get("regime", {}) or {}
+                _hold_chip = decision_snapshot.get("chip_engine", {}) or {}
+                _hold_volume = decision_snapshot.get("volume_engine", {}) or {}
+
+                _hold_signal_checks = [
+                    (
+                        "日線趨勢",
+                        str(strategy_state.get("state", "")) in {"STRONG_BULL", "BULL_PULLBACK"}
+                        or int(strategy_state.get("trend_score", 0) or 0) >= 60
+                    ),
+                    (
+                        "價格仍在保護價上方",
+                        _hold_protect <= 0 or _hold_price > _hold_protect
+                    ),
+                    (
+                        "大盤環境未關閉風險",
+                        str(_hold_regime.get("gate", "CAUTION")) not in {"PANIC", "RISK_OFF"}
+                    ),
+                    (
+                        "籌碼未出現否決",
+                        not bool(_hold_chip.get("veto"))
+                    ),
+                    (
+                        "量價未出現否決",
+                        not bool(_hold_volume.get("veto"))
+                    ),
+                ]
+                _hold_signal_score = sum(1 for _, ok in _hold_signal_checks if ok)
+                _hold_signal_total = len(_hold_signal_checks)
+
+                if _decision_now == "退場" or (
+                    _hold_structural > 0 and _hold_price <= _hold_structural
+                ):
+                    _hold_health = "危險"
+                elif _decision_now == "減碼" or (
+                    _hold_protect > 0 and _hold_price <= _hold_protect
+                ):
+                    _hold_health = "防守"
+                elif _hold_signal_score >= 4:
+                    _hold_health = "健康"
+                elif _hold_signal_score >= 3:
+                    _hold_health = "注意"
                 else:
-                    st.success("目前沒有減碼或退場訊號，維持持有觀察。")
+                    _hold_health = "防守"
+
+                # 第一列：真正需要先看到的持股資訊
+                h1, h2, h3, h4 = st.columns(4)
+                h1.metric("目前操作", _decision_now)
+                h2.metric("持股健康度", _hold_health)
+                h3.metric("訊號一致度", f"{_hold_signal_score}/{_hold_signal_total}")
+                h4.metric(
+                    "未實現報酬",
+                    f"{_hold_pnl_pct:+.2f}%"
+                    if _hold_pnl_pct is not None else "未提供成本"
+                )
+
+                # 第二列：持股基本資料
+                b1, b2, b3, b4 = st.columns(4)
+                b1.metric("目前持股", f"{_hold_shares:,} 股")
+                b2.metric(
+                    "持股成本",
+                    f"{_hold_cost:,.2f} 元" if _hold_cost > 0 else "未提供"
+                )
+                b3.metric("目前股價", f"{_hold_price:,.2f} 元")
+                b4.metric(
+                    "未實現損益",
+                    f"{float(_hold_pnl):+,.0f} 元"
+                    if _hold_pnl is not None else "未提供成本"
+                )
+
+                # 持股健康度拆解
+                _health_parts = []
+                for _name, _ok in _hold_signal_checks:
+                    _health_parts.append(f"{'✅' if _ok else '⚠️'} {_name}")
+                st.caption("持股健康度依據：" + "｜".join(_health_parts))
+
+                # 關鍵操作價
+                st.markdown("### 關鍵操作價")
+                k1, k2, k3, k4 = st.columns(4)
+                k1.metric(
+                    "移動保護價",
+                    f"{_hold_protect:,.2f} 元" if _hold_protect > 0 else "待建立"
+                )
+                k2.metric(
+                    "結構失效價",
+                    f"{_hold_structural:,.2f} 元" if _hold_structural > 0 else "待建立"
+                )
+                k3.metric(
+                    "加碼確認價",
+                    f"{_hold_add:,.2f} 元" if _hold_add > 0 else "目前不適用"
+                )
+                k4.metric(
+                    "第一目標價",
+                    f"{_hold_target1:,.2f} 元" if _hold_target1 > 0 else "待建立"
+                )
+
+                if _hold_target2 > _hold_target1 > 0:
+                    st.caption(f"延伸目標價：{_hold_target2:,.2f} 元")
+
+                # 現價相對關鍵價位的位置
+                _position_notes = []
+                if _hold_cost > 0:
+                    _position_notes.append(
+                        f"現價較成本 {_hold_pnl_pct:+.2f}%"
+                    )
+                if _hold_protect > 0 and _hold_price > 0:
+                    _position_notes.append(
+                        f"距移動保護價 {((_hold_price / _hold_protect) - 1) * 100:+.2f}%"
+                    )
+                if _hold_structural > 0 and _hold_price > 0:
+                    _position_notes.append(
+                        f"距結構失效價 {((_hold_price / _hold_structural) - 1) * 100:+.2f}%"
+                    )
+                if _hold_target1 > _hold_price > 0:
+                    _position_notes.append(
+                        f"距第一目標 {((_hold_target1 / _hold_price) - 1) * 100:+.2f}%"
+                    )
+                if _position_notes:
+                    st.info("目前位置：" + "｜".join(_position_notes))
+
+                # 操作狀態提示
+                if _decision_now == "加碼":
+                    st.success(
+                        "目前持股條件允許增加部位；仍須確認股價位置沒有過度乖離，"
+                        "且加碼後風險仍在可接受範圍內。"
+                    )
+                elif _decision_now == "減碼":
+                    st.warning("目前條件已轉弱，先降低持股曝險，不等到結構完全破壞才處理。")
+                elif _decision_now == "退場":
+                    st.error("目前已進入退場條件，持股理由已失效或已觸發核心風控。")
+                else:
+                    st.success("目前沒有減碼或退場訊號，持股條件仍可維持。")
+
+                # 下一步操作劇本
+                st.markdown("### 下一步操作劇本")
+                _script_parts = []
+
+                if _decision_now == "退場":
+                    _script_parts.append("目前：執行退出，不再以成本價等待反彈。")
+                elif _decision_now == "減碼":
+                    _script_parts.append("目前：先分批減碼，降低曝險。")
+                elif _decision_now == "加碼":
+                    _script_parts.append("目前：可評估加碼，但不因單一盤中價格跳動追價。")
+                else:
+                    _script_parts.append("目前：維持持有。")
+
+                if _hold_add > 0:
+                    _script_parts.append(
+                        f"加碼：站穩 {_hold_add:,.2f} 元，且趨勢／籌碼／量價沒有新的否決訊號時再評估。"
+                    )
+                if _hold_target1 > 0:
+                    _script_parts.append(
+                        f"第一目標：接近 {_hold_target1:,.2f} 元時重新評估是否部分停利或續抱。"
+                    )
+                if _hold_target2 > _hold_target1 > 0:
+                    _script_parts.append(
+                        f"延伸目標：若正式趨勢持續，才看 {_hold_target2:,.2f} 元。"
+                    )
+                if _hold_protect > 0:
+                    _script_parts.append(
+                        f"防守：有效跌破 {_hold_protect:,.2f} 元，優先轉入減碼／防守。"
+                    )
+                if _hold_structural > 0:
+                    _script_parts.append(
+                        f"退出：有效跌破 {_hold_structural:,.2f} 元，視為原持股結構失效。"
+                    )
+
+                for _line in _script_parts:
+                    st.write("• " + _line)
+
+                st.caption(
+                    "成本價只用來計算損益與調整持股節奏；"
+                    "不會因為目前有獲利或虧損而改寫股票本身的趨勢判斷。"
+                )
 
             with st.expander("查看判斷依據", expanded=False):
                 if not user_holding or int(_p18.get("current_shares", 0) or 0) <= 0:
