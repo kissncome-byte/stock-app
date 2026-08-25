@@ -6007,10 +6007,26 @@ if stock_input:
                 _hold_exit1 = _hold_target1 if _hold_target1 > 0 else 0.0
                 _hold_exit2 = _hold_target2 if _hold_target2 > _hold_exit1 else 0.0
 
+                # v9.2：加碼價與第一出場價互斥。
+                # 加碼後若到第一出場價的剩餘空間不足 5%，不提供加碼訊號，
+                # 避免「剛加碼就準備出場」的矛盾。
+                _hold_add_raw = _hold_add
+                _hold_add_room_pct = (
+                    ((_hold_exit1 / _hold_add_raw) - 1.0) * 100.0
+                    if _hold_add_raw > 0 and _hold_exit1 > _hold_add_raw else 0.0
+                )
+                _hold_add_blocked = bool(
+                    _hold_add_raw > 0
+                    and _hold_exit1 > 0
+                    and _hold_add_room_pct < 5.0
+                )
+                if _hold_add_blocked:
+                    _hold_add = 0.0
+
                 # 最終出場價採動態移動停利概念：趨勢延續時由保護價向上跟隨，
                 # 不用預先硬算一個永遠不變的遠端價格。
                 _hold_final_exit_label = (
-                    f"移動停利 ≥ {_hold_protect:,.2f} 元"
+                    "動態移動停利"
                     if _hold_protect > 0 else "待建立"
                 )
 
@@ -6034,8 +6050,13 @@ if stock_input:
                     f"{_hold_structural:,.2f} 元" if _hold_structural > 0 else "待建立"
                 )
 
-                # 額外保留加碼價，但不再跟出場價混在同一組。
-                if _hold_add > 0:
+                # 額外保留加碼資訊，但與出場價格做互斥檢查。
+                if _hold_add_blocked:
+                    st.caption(
+                        f"加碼：目前不適用｜原確認價 {_hold_add_raw:,.2f} 元距第一出場價"
+                        f"僅剩 {_hold_add_room_pct:.2f}% 空間，風險報酬不足。"
+                    )
+                elif _hold_add > 0:
                     st.caption(f"加碼確認價：{_hold_add:,.2f} 元")
 
                 # 現價相對關鍵價位的位置
@@ -6108,13 +6129,19 @@ if stock_input:
                     )
                 if _hold_protect > 0:
                     _script_parts.append(
-                        f"剩餘部位：以移動停利管理；有效跌破 {_hold_protect:,.2f} 元，先處理剩餘部位或至少大幅減碼。"
+                        f"剩餘部位：採動態移動停利；目前保護基準為 {_hold_protect:,.2f} 元，"
+                        "後續若股價創高，保護價應隨趨勢向上調整，不固定停在目前價位。"
                     )
                 if _hold_structural > 0:
                     _script_parts.append(
                         f"強制出場：有效跌破 {_hold_structural:,.2f} 元，視為持股結構失效，退出剩餘部位。"
                     )
-                if _hold_add > 0:
+                if _hold_add_blocked:
+                    _script_parts.append(
+                        f"加碼：目前不適用。原加碼確認價 {_hold_add_raw:,.2f} 元距第一出場價"
+                        f" {_hold_exit1:,.2f} 元僅 {_hold_add_room_pct:.2f}% 空間，不為了追價而硬加碼。"
+                    )
+                elif _hold_add > 0:
                     _script_parts.append(
                         f"加碼：只有站穩 {_hold_add:,.2f} 元且趨勢／籌碼／量價未出現新的否決訊號時才評估。"
                     )
