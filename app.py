@@ -3712,7 +3712,7 @@ with st.sidebar:
 
     st.caption("自選清單會寫入目前網址；建議把這個網址加入瀏覽器書籤。")
 
-st.markdown("## 🧭 StockPilot Beta v9.7｜個股操作決策")
+st.markdown("## 🧭 StockPilot Beta v9.8｜個股操作決策")
 st.caption("直接回答：現在要不要進場、持有、加碼、減碼或退出。")
 stock_input = st.text_input(
     "請輸入核心目標個股代碼：",
@@ -5586,7 +5586,7 @@ if stock_input:
                 st.markdown("### 未持股進場判斷")
                 u1, u2, u3, u4 = st.columns(4)
                 u1.metric("進場狀態", _state_now or _decision_now)
-                u2.metric("趨勢進場完成度", f"{_er*100:.0f}%")
+                u2.metric("進場條件完成度", f"{_er*100:.0f}%")
                 u3.metric(
                     "止跌雷達",
                     f"{int(_p18.get('stabilization_score', 0) or 0)}/5"
@@ -5599,7 +5599,7 @@ if stock_input:
                 st.caption(
                     "「止跌雷達」是最早期警報；"
                     "「低位轉折訊號」確認止跌後是否開始轉強；"
-                    "「趨勢進場完成度」則看正式進場條件成熟度。三者用途不同。"
+                    "「進場條件完成度」則表示目前距正式進場條件還差多少。三者用途不同。"
                 )
 
                 if _state_now == "等待拉回":
@@ -5626,11 +5626,38 @@ if stock_input:
                 _probe_trigger = float(_p18.get("beta_probe_trigger", 0) or 0)
                 _strong_breakout = float(_p18.get("beta_strong_breakout", _b_confirm) or 0)
 
+                # v9.8：未持股顯示分級。
+                # 不改正式決策引擎，只把「不宜進場」拆成硬否決與接近觸發兩種情況，
+                # 避免條件已接近成熟時仍顯示過度負面的文字。
+                _entry_display_state_v98 = _state_now or _decision_now
+                _entry_hard_veto_v98 = bool(
+                    _p18.get("low_hard_veto")
+                    or _p18.get("beta_intraday_invalid")
+                    or (_b_invalid > 0 and _current_price_beta > 0 and _current_price_beta < _b_invalid)
+                )
+                _entry_near_probe_v98 = bool(
+                    _probe_trigger > 0
+                    and _current_price_beta > 0
+                    and _current_price_beta < _probe_trigger
+                    and ((_probe_trigger / _current_price_beta) - 1) <= 0.03
+                )
+                _entry_early_ok_v98 = bool(
+                    int(_p18.get("stabilization_score", 0) or 0) >= 3
+                    and int(_p18.get("low_turn_score", 0) or 0) >= 3
+                )
+                if (
+                    _entry_display_state_v98 == "不宜進場"
+                    and not _entry_hard_veto_v98
+                    and _entry_near_probe_v98
+                    and _entry_early_ok_v98
+                ):
+                    _entry_display_state_v98 = "等待轉強確認・暫不進場"
+
                 st.markdown("### 決策穩定器")
                 _stable_trend_label = str(
                     strategy_state.get("state_label", "資料不足") or "資料不足"
                 )
-                _stable_strategy_label = _state_now or _decision_now
+                _stable_strategy_label = _entry_display_state_v98
                 if _p18.get("beta_probe_latched"):
                     _stable_trigger_label = "已觸發・本日鎖定"
                 elif _p18.get("beta_intraday_invalid"):
@@ -5643,13 +5670,19 @@ if stock_input:
                 _st2.metric("目前策略", _stable_strategy_label)
                 _st3.metric("盤中觸發", _stable_trigger_label)
 
+                if _entry_display_state_v98 != (_state_now or _decision_now):
+                    st.info(
+                        f"目前策略細分：{_entry_display_state_v98}。"
+                        "早期止跌與低位轉折條件已接近成熟，但尚未完成試單確認。"
+                    )
+
                 st.caption(
                     "趨勢決定方向，盤中價格只決定是否到達執行點。"
                     "一旦拉回轉強試單成立，當日不因觸發價附近的小幅震盪反覆改變；"
                     "只有跌破進場失效價才解除。"
                 )
                 st.caption(
-                    "正式趨勢完成度與低位轉折訊號分開計算："
+                    "進場條件完成度與低位轉折訊號分開計算："
                     "前者偏向正式進場，後者用來避免錯過低點附近的早期止跌。"
                 )
                 if _p18.get("beta_probe_latched"):
@@ -5753,6 +5786,31 @@ if stock_input:
                     f"進場條件失效價：{_b_invalid:,.2f} 元"
                     if _b_invalid > 0 else "進場條件失效價：待建立"
                 )
+
+                # v9.8：直接告訴使用者距離下一個可執行門檻還有多少。
+                if _probe_trigger > 0 and _price_now_v86 > 0 and _price_now_v86 < _probe_trigger:
+                    _probe_gap_pct_v98 = (_probe_trigger / _price_now_v86 - 1) * 100
+                    st.info(
+                        f"距下一步：距試單確認價 {_probe_trigger:,.2f} 元尚差 "
+                        f"{_probe_gap_pct_v98:.2f}%｜"
+                        f"若站穩 {_probe_trigger:,.2f} 元，且低位轉折維持 ≥3/5，"
+                        "再升級為試單評估。"
+                    )
+                elif _probe_trigger > 0 and _price_now_v86 >= _probe_trigger and not _p18.get("beta_probe_latched"):
+                    st.info(
+                        f"距下一步：現價已到達 {_probe_trigger:,.2f} 元以上，"
+                        "但仍須完成拉回後重新站上與穩定確認，才升級為試單評估。"
+                    )
+
+                if _entry_hard_veto_v98:
+                    _veto_reasons_v98 = []
+                    if _p18.get("low_hard_veto"):
+                        _veto_reasons_v98.append("低位試單存在硬風險否決")
+                    if _p18.get("beta_intraday_invalid"):
+                        _veto_reasons_v98.append("盤中進場條件已失效")
+                    if _b_invalid > 0 and _price_now_v86 > 0 and _price_now_v86 < _b_invalid:
+                        _veto_reasons_v98.append(f"現價跌破進場失效價 {_b_invalid:,.2f} 元")
+                    st.error("目前否決原因：" + "；".join(_veto_reasons_v98))
 
                 # v8.9e：所有未持股股票都顯示同一套完整新版雷達介面。
                 # 是否進入低位區只影響判斷，不再影響 UI 是否出現。
@@ -5894,8 +5952,16 @@ if stock_input:
                     st.write("**下一步：**可建立小部位；若後續正式突破或條件完整度提升，再加碼。")
                 elif _state_now == "正式進場":
                     st.write("**下一步：**可建立第一筆主要部位，後續依失效價與加碼條件管理。")
+                elif _entry_display_state_v98 == "等待轉強確認・暫不進場":
+                    if _probe_trigger > 0:
+                        st.write(
+                            f"**下一步：**暫不下單；先等站穩 **{_probe_trigger:,.2f} 元**，"
+                            "並確認低位轉折維持 ≥3/5，再進入試單評估。"
+                        )
+                    else:
+                        st.write("**下一步：**暫不下單，等待轉強條件完成後再進入試單評估。")
                 elif _state_now == "不宜進場":
-                    st.write("**下一步：**暫不進場，等待價格結構重新轉強。")
+                    st.write("**下一步：**暫不進場；目前仍有硬風險或正式條件不足，等待結構重新改善。")
                 else:
                     st.write("**下一步：**維持觀察，等待新的短線動能或價格觸發。")
 
@@ -6108,7 +6174,7 @@ if stock_input:
 
                 # v9.3：出場比例不再固定 30%，改由持股健康度與訊號一致度動態決定。
                 # 健康且一致度高：讓獲利奔跑；轉弱或一致度下降：提早收回較多部位。
-                # v9.7：出場比例直接使用畫面「訊號一致度」實際顯示的同一個計數。
+                # v9.8：出場比例直接使用畫面「訊號一致度」實際顯示的同一個計數。
                 # 畫面顯示 _hold_signal_score/_hold_signal_total，
                 # 因此出場引擎也只能讀 _hold_signal_score，不再使用舊的 _hold_agree。
                 _exit_signal_count = int(_hold_signal_score or 0)
@@ -6127,7 +6193,7 @@ if stock_input:
 
                 _exit_pct_final = max(0, 100 - _exit_pct1 - _exit_pct2)
 
-                # v9.7：所有出場比例文字一律從同一組變數產生，禁止任何 UI 區塊另寫固定百分比。
+                # v9.8：所有出場比例文字一律從同一組變數產生，禁止任何 UI 區塊另寫固定百分比。
                 _exit_plan_text = (
                     f"出場配置：{_exit_style}｜第一段 {_exit_pct1}%｜"
                     f"第二段 {_exit_pct2}%｜剩餘 {_exit_pct_final}% 採動態移動停利"
