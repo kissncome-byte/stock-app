@@ -57,6 +57,56 @@ def log_error(area: str, exc: Exception):
     # 正式部署可改接 logging / S進場區；前台不暴露金鑰與完整堆疊。
     print(f"[{area}] {type(exc).__name__}: {exc}")
 
+
+def normalize_shadow_price_order(payload):
+    """
+    v8.9c：送入 Shadow Decision Engine 前，統一檢查價格層級順序。
+    Price Engine 規則：structural_exit 必須嚴格低於 moving_protection。
+    只在順序非法時下修 structural_exit，不改動 moving_protection。
+    """
+    fixes = []
+
+    def _num(v):
+        try:
+            if v is None:
+                return None
+            return float(v)
+        except Exception:
+            return None
+
+    def _walk(obj, path="root"):
+        if isinstance(obj, dict):
+            if "structural_exit" in obj and "moving_protection" in obj:
+                structural = _num(obj.get("structural_exit"))
+                moving = _num(obj.get("moving_protection"))
+                if (
+                    structural is not None and moving is not None
+                    and structural > 0 and moving > 0
+                    and structural >= moving
+                ):
+                    tick = tick_size(moving)
+                    corrected = floor_to_tick(max(tick, moving - tick), tick)
+                    # 再做一次嚴格保證，避免浮點/跳動單位造成相等。
+                    if corrected >= moving:
+                        corrected = max(tick, moving - tick)
+                    obj["structural_exit"] = corrected
+                    fixes.append({
+                        "path": path,
+                        "old_structural_exit": structural,
+                        "moving_protection": moving,
+                        "new_structural_exit": corrected,
+                    })
+
+            for k, v in list(obj.items()):
+                _walk(v, f"{path}.{k}")
+
+        elif isinstance(obj, list):
+            for idx, v in enumerate(obj):
+                _walk(v, f"{path}[{idx}]")
+
+    _walk(payload)
+    return payload, fixes
+
 def custom_hud_box(title, value, font_color="#1E293B"):
     return f"""
     <div style="background-color: #F8FAFC; border: 1px solid #E2E8F0; padding: 12px; border-radius: 6px; min-height: 105px; box-shadow: 0 1px 2px rgba(0,0,0,0.02); margin-bottom: 10px;">
@@ -3680,6 +3730,15 @@ if stock_input:
                     legacy_levels=decision_snapshot.get("levels", {}),
                 )
 
+                # v8.9c：不同股價級距/持股情境可能讓 adapter 產生非法價格順序。
+                # 在 Price Engine 驗證前先正規化，確保 structural_exit < moving_protection。
+                shadow_payload, _shadow_price_order_fixes = normalize_shadow_price_order(
+                    shadow_payload
+                )
+                st.session_state["_stockpilot_shadow_price_order_fixes"] = (
+                    _shadow_price_order_fixes
+                )
+
                 # Sprint 19.1：未持股時，成本欄即使殘留舊值也不得送進 Shadow。
                 # Decision Engine 對 non-holder 的 cost 必須是 0。
                 _shadow_user_cost = float(user_cost or 0) if user_holding else 0.0
@@ -5311,7 +5370,15 @@ if stock_input:
                 st.session_state["_stockpilot4_shadow_error"] = None
 
             except Exception as exc:
-                shadow_v4_error = f"{type(exc).__name__}: {exc}"
+                _price_fix_note = ""
+                _price_fix_rows = st.session_state.get(
+                    "_stockpilot_shadow_price_order_fixes", []
+                ) or []
+                if _price_fix_rows:
+                    _price_fix_note = (
+                        f" | price-order fixes applied: {len(_price_fix_rows)}"
+                    )
+                shadow_v4_error = f"{type(exc).__name__}: {exc}{_price_fix_note}"
                 log_error("StockPilot 4.0 shadow hook", exc)
                 shadow_v4 = None
                 st.session_state["_stockpilot4_shadow"] = None
