@@ -4477,11 +4477,98 @@ if stock_input:
                     or _s19_slope20 > 0
                     or (_s20_today_pct > 0 and _s20_reclaim_2d)
                 )
-                _s21_low_probe = bool(
+
+                # Beta v8.7：低位轉折偵測
+                # 正式趨勢仍可維持空頭，但若股價已跌到成本區下方，
+                # 先辨識「低位觀察」，再等止跌訊號升級為小部位試單。
+                _s87_recent_low = 0.0
+                if (
+                    isinstance(_s19_daily, pd.DataFrame)
+                    and not _s19_daily.empty
+                ):
+                    _s87_low_col = None
+                    if "low" in _s19_daily.columns:
+                        _s87_low_col = pd.to_numeric(
+                            _s19_daily["low"], errors="coerce"
+                        ).dropna()
+                    elif "close" in _s19_daily.columns:
+                        _s87_low_col = pd.to_numeric(
+                            _s19_daily["close"], errors="coerce"
+                        ).dropna()
+                    if _s87_low_col is not None and len(_s87_low_col):
+                        _s87_recent_low = float(_s87_low_col.tail(10).min())
+
+                _s87_low_zone_low = _s87_recent_low
+                _s87_low_zone_high = 0.0
+                if _s87_recent_low > 0:
+                    _s87_low_buffer = max(
+                        _s19_atr * 0.45 if _s19_atr > 0 else 0,
+                        _s87_recent_low * 0.035,
+                        tick_size(_s87_recent_low),
+                    )
+                    _s87_low_zone_high = _s87_recent_low + _s87_low_buffer
+                    if _s14_進場區_low > 0:
+                        _s87_low_zone_high = min(
+                            _s87_low_zone_high,
+                            _s14_進場區_low
+                        )
+
+                _s87_below_old_entry = bool(
+                    _s14_進場區_low > 0
+                    and _s19_price < _s14_進場區_low
+                )
+                _s87_in_low_zone = bool(
+                    _s87_low_zone_low > 0
+                    and _s87_low_zone_high > 0
+                    and _s87_low_zone_low <= _s19_price <= _s87_low_zone_high
+                )
+
+                _s87_bottom_signals = {
+                    "今日收紅或盤中轉強": _s20_today_pct > 0,
+                    "站回5日均線": (_s20_ma5 > 0 and _s19_price >= _s20_ma5),
+                    "收復近2日高點": _s20_reclaim_2d,
+                    "近3日跌勢已明顯收斂": (
+                        _s19_ret3 is not None and _s19_ret3 >= -1.5
+                    ),
+                    "量能不極度萎縮": (
+                        _s19_volume_ratio is not None
+                        and _s19_volume_ratio >= 0.55
+                    ),
+                }
+                _s87_bottom_score = sum(
+                    1 for _v in _s87_bottom_signals.values() if _v
+                )
+
+                _s87_low_watch = bool(
                     _s21_no_hard_veto
-                    and _s21_above_ma60_buffer
-                    and (_s21_in_entry_zone or _s21_near_ma20)
-                    and _s21_early_turn
+                    and _s87_below_old_entry
+                    and (
+                        _s87_in_low_zone
+                        or (
+                            _s19_ma20_distance_pct is not None
+                            and -18.0 <= _s19_ma20_distance_pct < -3.5
+                        )
+                    )
+                )
+
+                _s87_low_probe = bool(
+                    _s87_low_watch
+                    and _s87_bottom_score >= 3
+                    and (
+                        _s20_today_pct > 0
+                        or _s20_reclaim_2d
+                        or (_s20_ma5 > 0 and _s19_price >= _s20_ma5)
+                    )
+                )
+
+                _s21_low_probe = bool(
+                    (
+                        _s21_no_hard_veto
+                        and _s21_above_ma60_buffer
+                        and (_s21_in_entry_zone or _s21_near_ma20)
+                        and _s21_early_turn
+                    )
+                    or _s87_low_probe
                 )
 
                 # Beta v8.4c：拉回轉強旗標必須在任何使用前先建立。
@@ -4531,7 +4618,10 @@ if stock_input:
                     _s19_early_state_zh = "轉強試單"
                 elif _s21_low_probe:
                     _s19_early_state = "LOW_PROBE"
-                    _s19_early_state_zh = "低檔試單"
+                    _s19_early_state_zh = "低位試單"
+                elif _s87_low_watch:
+                    _s19_early_state = "LOW_WATCH"
+                    _s19_early_state_zh = "低位觀察"
                 elif _s20_price_weak and (not _s19_reversal_structure) and (not _s21_low_probe):
                     _s19_early_state = "NO_ENTRY"
                     _s19_early_state_zh = "不宜進場"
@@ -4560,10 +4650,16 @@ if stock_input:
                             "可先用小部位卡位，後續若正式確認再加碼。"
                         )
                     elif _s19_early_state == "LOW_PROBE":
-                        _s183_trade_decision = "低檔試單"
+                        _s183_trade_decision = "低位試單"
                         _s183_trade_reason = (
-                            "價格仍在低風險區或靠近20日均線，且已有早期止跌轉強訊號；"
-                            "可用更小部位提早試單，避免等正式趨勢翻多後才追價。"
+                            f"股價位於低位區，且止跌轉折條件已出現 {_s87_bottom_score}/5 項；"
+                            "可用很小部位試單，但正式趨勢尚未翻多，不視為主升段確認。"
+                        )
+                    elif _s19_early_state == "LOW_WATCH":
+                        _s183_trade_decision = "低位觀察"
+                        _s183_trade_reason = (
+                            "股價已落到原進場區下方，開始進入低位轉折監看；"
+                            "目前先不買，等待止跌、站回短均線或收復短期高點後再升級為試單。"
                         )
                     elif _s19_early_state == "WAIT_PULLBACK":
                         _s183_trade_decision = "等待拉回"
@@ -4884,6 +4980,12 @@ if stock_input:
                     "ret2_live": _s20_ret2_live,
                     "reclaim_2d": _s20_reclaim_2d,
                     "low_probe": _s21_low_probe,
+                    "low_watch": _s87_low_watch,
+                    "low_turn_score": _s87_bottom_score,
+                    "low_turn_signals": _s87_bottom_signals,
+                    "low_zone_low": _s87_low_zone_low,
+                    "low_zone_high": _s87_low_zone_high,
+                    "in_low_zone": _s87_in_low_zone,
                     "turn_probe": _s21_turn_probe,
                     "formal_entry": _s21_formal_entry,
                     "in_entry_zone": _s21_in_entry_zone,
@@ -5099,12 +5201,32 @@ if stock_input:
                     _break_effective_status_v86 = "價格已過・有效性未確認"
 
                 p1, p2, p3 = st.columns(3)
-                p1.metric(
-                    "拉回觀察區",
-                    f"{_pb_low:,.2f}～{_pb_high:,.2f} 元"
-                    if _pb_low > 0 and _pb_high > 0 else "待建立"
-                )
-                p1.caption(f"目前狀態：{_pullback_status_v86}")
+                _low_zone_low_v87 = float(_p18.get("low_zone_low", 0) or 0)
+                _low_zone_high_v87 = float(_p18.get("low_zone_high", 0) or 0)
+
+                if (
+                    _low_zone_low_v87 > 0
+                    and _low_zone_high_v87 > 0
+                    and _price_now_v86 < _pb_low
+                ):
+                    p1.metric(
+                        "低位承接區",
+                        f"{_low_zone_low_v87:,.2f}～{_low_zone_high_v87:,.2f} 元"
+                    )
+                    p1.caption(
+                        "目前狀態："
+                        + ("已進入低位區" if _p18.get("in_low_zone") else "接近低位區")
+                    )
+                    st.caption(
+                        f"原轉強觀察區：{_pb_low:,.2f}～{_pb_high:,.2f} 元"
+                    )
+                else:
+                    p1.metric(
+                        "拉回觀察區",
+                        f"{_pb_low:,.2f}～{_pb_high:,.2f} 元"
+                        if _pb_low > 0 and _pb_high > 0 else "待建立"
+                    )
+                    p1.caption(f"目前狀態：{_pullback_status_v86}")
 
                 p2.metric(
                     "試單觸發價",
@@ -5134,6 +5256,19 @@ if stock_input:
                     f"進場條件失效價：{_b_invalid:,.2f} 元"
                     if _b_invalid > 0 else "進場條件失效價：待建立"
                 )
+
+                if _p18.get("low_watch") or _p18.get("low_probe"):
+                    _low_score_v87 = int(_p18.get("low_turn_score", 0) or 0)
+                    _low_sig_v87 = _p18.get("low_turn_signals", {}) or {}
+                    _passed_v87 = [k for k, v in _low_sig_v87.items() if v]
+                    st.info(
+                        "低位轉折雷達："
+                        f"{_low_score_v87}/5 項成立。"
+                        + (
+                            " 已出現：" + "、".join(_passed_v87)
+                            if _passed_v87 else " 尚未出現明確止跌訊號"
+                        )
+                    )
 
                 if _break_price_hit_v86 and not _break_effective_v86:
                     st.info(
