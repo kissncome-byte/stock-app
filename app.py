@@ -3712,7 +3712,7 @@ with st.sidebar:
 
     st.caption("自選清單會寫入目前網址；建議把這個網址加入瀏覽器書籤。")
 
-st.markdown("## 🧭 StockPilot Beta v9.4｜個股操作決策")
+st.markdown("## 🧭 StockPilot Beta v9.5｜個股操作決策")
 st.caption("直接回答：現在要不要進場、持有、加碼、減碼或退出。")
 stock_input = st.text_input(
     "請輸入核心目標個股代碼：",
@@ -6113,13 +6113,16 @@ if stock_input:
                 except Exception:
                     _hold_agree_num = 0
 
-                if _hold_health == "健康" and _hold_agree_num >= 4:
+                # v9.5：出場比例必須以畫面「訊號一致度」同一個計數為準
+                # 避免畫面顯示 4/5，出場引擎卻讀到另一個舊變數而誤判成風險升高。
+                _exit_signal_count = int(_hold_agree_num or 0)
+                if _hold_health == "健康" and _exit_signal_count >= 4:
                     _exit_pct1, _exit_pct2 = 20, 30
                     _exit_style = "趨勢偏強"
-                elif _hold_health == "健康" and _hold_agree_num >= 3:
+                elif _hold_health == "健康" and _exit_signal_count >= 3:
                     _exit_pct1, _exit_pct2 = 30, 30
                     _exit_style = "趨勢正常"
-                elif _hold_health in ("普通", "留意") or _hold_agree_num == 2:
+                elif _hold_health in ("普通", "留意") or _exit_signal_count == 2:
                     _exit_pct1, _exit_pct2 = 40, 30
                     _exit_style = "訊號轉弱"
                 else:
@@ -6128,7 +6131,7 @@ if stock_input:
 
                 _exit_pct_final = max(0, 100 - _exit_pct1 - _exit_pct2)
 
-                # v9.4：所有出場比例文字一律從同一組變數產生，禁止任何 UI 區塊另寫固定百分比。
+                # v9.5：所有出場比例文字一律從同一組變數產生，禁止任何 UI 區塊另寫固定百分比。
                 _exit_plan_text = (
                     f"出場配置：{_exit_style}｜第一段 {_exit_pct1}%｜"
                     f"第二段 {_exit_pct2}%｜剩餘 {_exit_pct_final}% 採動態移動停利"
