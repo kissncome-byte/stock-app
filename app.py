@@ -3712,7 +3712,7 @@ with st.sidebar:
 
     st.caption("自選清單會寫入目前網址；建議把這個網址加入瀏覽器書籤。")
 
-st.markdown("## 🧭 StockPilot Beta v9.14.1｜個股操作決策")
+st.markdown("## 🧭 StockPilot Beta v9.15｜個股操作決策")
 st.caption("直接回答：現在要不要進場、持有、加碼、減碼或退出。")
 stock_input = st.text_input(
     "請輸入核心目標個股代碼：",
@@ -3840,7 +3840,7 @@ if stock_input:
                 # Decision Engine 對 non-holder 的 cost 必須是 0。
                 _shadow_user_cost = float(user_cost or 0) if user_holding else 0.0
 
-                # v9.14.1：Price Engine 某版本的 structural_exit / moving_protection
+                # v9.15：Price Engine 某版本的 structural_exit / moving_protection
                 # 驗證器會在「35.65 < 37.45」這種本來就正確的價格順序下仍誤拋錯誤。
                 # 先照正確語意送入；若只遇到這個已知矛盾驗證錯誤，
                 # 不讓整個最新操作模組失敗，改以 Shadow unavailable 降級處理。
@@ -3866,11 +3866,11 @@ if stock_input:
                     else:
                         raise
 
-                # v9.14.1：若 Shadow 因已知 validator bug 被停用，
+                # v9.15：若 Shadow 因已知 validator bug 被停用，
                 # 後續不得覆蓋正式決策；建立空結果代理僅供相容既有顯示流程。
                 if shadow_v4 is None:
-                    # v9.14.1：fallback 必須完整符合後續 Governance 讀取介面。
-                    # v9.14.1 只補了 action 等欄位，但後續會直接讀 snapshot，
+                    # v9.15：fallback 必須完整符合後續 Governance 讀取介面。
+                    # v9.15 只補了 action 等欄位，但後續會直接讀 snapshot，
                     # 因此造成 AttributeError。這裡補齊 snapshot 與其 enum-like .value。
                     class _ShadowValueV912:
                         def __init__(self, value):
@@ -5709,11 +5709,11 @@ if stock_input:
                 _probe_trigger = float(_p18.get("beta_probe_trigger", 0) or 0)
                 _strong_breakout = float(_p18.get("beta_strong_breakout", _b_confirm) or 0)
 
-                # v9.14.1：未持股顯示分級。
+                # v9.15：未持股顯示分級。
                 # 不改正式決策引擎，只把「不宜進場」拆成硬否決與接近觸發兩種情況，
                 # 避免條件已接近成熟時仍顯示過度負面的文字。
                 _entry_display_state_v98 = _state_now or _decision_now
-                # v9.14.1：硬風險否決改為「原因清單」，不能只顯示 True/False。
+                # v9.15：硬風險否決改為「原因清單」，不能只顯示 True/False。
                 _entry_veto_reasons_v99 = []
 
                 if _p18.get("beta_intraday_invalid"):
@@ -5786,9 +5786,17 @@ if stock_input:
                     _entry_display_state_v98 = "等待轉強確認・暫不進場"
 
                 if (_state_now or _decision_now) == "正式進場":
+                    _formal_trend_upper_v915 = str(strategy_state.get("state", "") or "").upper()
+                    _formal_trend_label_v915 = str(strategy_state.get("state_label", "") or "")
+                    _entry_path_v915 = (
+                        "逆勢轉強進場"
+                        if _formal_trend_upper_v915 in {"BEAR", "STRONG_BEAR", "WEAK_BEAR"}
+                        or "空頭" in _formal_trend_label_v915
+                        else "順勢確認進場"
+                    )
                     st.success(
-                        "進場路徑：趨勢／價格確認進場。"
-                        "主決策已符合正式進場條件；低位承接雷達僅作為額外低接／加碼參考。"
+                        f"進場型態：{_entry_path_v915}。"
+                        "主決策已符合正式進場條件；低位承接雷達僅作為後續拉回低接／加碼參考。"
                     )
 
                 st.markdown("### 決策穩定器")
@@ -5828,7 +5836,66 @@ if stock_input:
                 else:
                     st.caption("本日尚未建立新的試單鎖定。")
 
-                st.markdown("### 關鍵價位")
+                _formal_entry_v915 = (_state_now or _decision_now) == "正式進場"
+                if _formal_entry_v915:
+                    st.markdown("### 正式進場交易計畫")
+
+                    _entry_low_v915 = float(_b_low or _pb_low or _current_price_beta or 0)
+                    _entry_high_v915 = float(_b_high or _pb_high or _current_price_beta or 0)
+                    _chase_cap_v915 = float(
+                        _probe_trigger if _probe_trigger > _entry_high_v915
+                        else (_strong_breakout if _strong_breakout > _entry_high_v915 else _entry_high_v915)
+                    )
+                    _exit1_v915 = float(_p18.get("target1", 0) or 0)
+                    _exit2_v915 = float(_p18.get("target2", 0) or 0)
+                    _defense_v915 = float(
+                        _p18.get("moving_protection", 0)
+                        or _p18.get("structural_exit", 0)
+                        or _b_invalid or 0
+                    )
+                    _force_exit_v915 = float(_p18.get("structural_exit", 0) or _b_invalid or 0)
+
+                    _entry_mid_v915 = (
+                        (_entry_low_v915 + _entry_high_v915) / 2
+                        if _entry_low_v915 > 0 and _entry_high_v915 > 0
+                        else float(_current_price_beta or 0)
+                    )
+                    _risk_v915 = _entry_mid_v915 - _defense_v915 if _entry_mid_v915 > _defense_v915 > 0 else 0
+                    _reward_v915 = _exit1_v915 - _entry_mid_v915 if _exit1_v915 > _entry_mid_v915 > 0 else 0
+                    _rr_v915 = _reward_v915 / _risk_v915 if _risk_v915 > 0 and _reward_v915 > 0 else 0
+
+                    q1,q2,q3 = st.columns(3)
+                    q1.metric("建議進場區間", f"{_entry_low_v915:,.2f}～{_entry_high_v915:,.2f} 元" if _entry_low_v915 > 0 and _entry_high_v915 > 0 else "待建立")
+                    q2.metric("追價上限", f"{_chase_cap_v915:,.2f} 元" if _chase_cap_v915 > 0 else "待建立")
+                    q3.metric("目前價格", f"{_current_price_beta:,.2f} 元" if _current_price_beta > 0 else "待取得")
+
+                    x1,x2,x3 = st.columns(3)
+                    x1.metric("第一出場價", f"{_exit1_v915:,.2f} 元" if _exit1_v915 > 0 else "待建立")
+                    x2.metric("第二出場價", f"{_exit2_v915:,.2f} 元" if _exit2_v915 > _exit1_v915 > 0 else "待建立")
+                    x3.metric("防守／失效價", f"{_defense_v915:,.2f} 元" if _defense_v915 > 0 else "待建立")
+
+                    if _entry_low_v915 > 0 and _entry_high_v915 > 0 and _current_price_beta > 0:
+                        if _entry_low_v915 <= _current_price_beta <= _entry_high_v915:
+                            _entry_position_v915 = "目前位於建議進場區，可建立第一筆部位。"
+                        elif _current_price_beta < _entry_low_v915:
+                            _entry_position_v915 = "目前低於建議進場區，先確認沒有持續破底，再評估進場。"
+                        elif _chase_cap_v915 > 0 and _current_price_beta <= _chase_cap_v915:
+                            _entry_position_v915 = "目前高於理想進場區、但尚未超過追價上限；不宜一次追滿部位。"
+                        else:
+                            _entry_position_v915 = "目前已超過追價上限；正式進場訊號仍成立，但先不要追價。"
+                        st.info("目前位置：" + _entry_position_v915)
+
+                    if _rr_v915 > 0:
+                        st.caption(f"第一目標風險報酬比約 1：{_rr_v915:.2f}")
+                    if _force_exit_v915 > 0 and _force_exit_v915 != _defense_v915:
+                        st.caption(f"結構強制失效價：{_force_exit_v915:,.2f} 元")
+
+                    st.caption(
+                        "正式進場後，試單觸發價退居參考，不再作為買進前置門檻；"
+                        "主畫面改以進場區間、追價上限、獲利出場與防守價格管理交易。"
+                    )
+                else:
+                    st.markdown("### 關鍵價位")
 
                 # v8.6：價格門檻與「是否可進場」分開顯示。
                 # 現價碰到某個價位，只代表價格路徑到位；正式策略仍由日線趨勢、
@@ -5868,77 +5935,78 @@ if stock_input:
                 else:
                     _break_effective_status_v86 = "價格已過・有效性未確認"
 
-                p1, p2, p3 = st.columns(3)
-                _low_zone_low_v87 = float(_p18.get("low_zone_low", 0) or 0)
-                _low_zone_high_v87 = float(_p18.get("low_zone_high", 0) or 0)
+                if not _formal_entry_v915:
+                    p1, p2, p3 = st.columns(3)
+                    _low_zone_low_v87 = float(_p18.get("low_zone_low", 0) or 0)
+                    _low_zone_high_v87 = float(_p18.get("low_zone_high", 0) or 0)
 
-                if (
-                    _low_zone_low_v87 > 0
-                    and _low_zone_high_v87 > 0
-                    and _price_now_v86 < _pb_low
-                ):
-                    p1.metric(
-                        "低位承接區",
-                        f"{_low_zone_low_v87:,.2f}～{_low_zone_high_v87:,.2f} 元"
-                    )
-                    p1.caption(
-                        "目前狀態："
-                        + ("已進入低位區" if _p18.get("in_low_zone") else "接近低位區")
-                    )
-                    st.caption(
-                        f"原轉強觀察區：{_pb_low:,.2f}～{_pb_high:,.2f} 元"
-                    )
-                else:
-                    p1.metric(
-                        "拉回觀察區",
-                        f"{_pb_low:,.2f}～{_pb_high:,.2f} 元"
-                        if _pb_low > 0 and _pb_high > 0 else "待建立"
-                    )
-                    p1.caption(f"目前狀態：{_pullback_status_v86}")
-
-                p2.metric(
-                    "試單觸發價",
-                    f"{_probe_trigger:,.2f} 元"
-                    if _p18.get("beta_probe_available", True) and _probe_trigger > 0
-                    else "不適用"
-                )
-                if _p18.get("beta_probe_available", True) and _probe_trigger > 0:
-                    if _p18.get("beta_probe_latched"):
-                        p2.caption("目前狀態：已完成拉回後重新站上・本日鎖定")
-                    elif _p18.get("beta_pullback_seen"):
-                        p2.caption("目前狀態：曾拉回，等待真正重新站上")
+                    if (
+                        _low_zone_low_v87 > 0
+                        and _low_zone_high_v87 > 0
+                        and _price_now_v86 < _pb_low
+                    ):
+                        p1.metric(
+                            "低位承接區",
+                            f"{_low_zone_low_v87:,.2f}～{_low_zone_high_v87:,.2f} 元"
+                        )
+                        p1.caption(
+                            "目前狀態："
+                            + ("已進入低位區" if _p18.get("in_low_zone") else "接近低位區")
+                        )
+                        st.caption(
+                            f"原轉強觀察區：{_pb_low:,.2f}～{_pb_high:,.2f} 元"
+                        )
                     else:
-                        p2.caption("目前狀態：尚未完成先拉回、後站回的順序")
-                else:
-                    p2.caption("目前狀態：本檔暫無中間試單層")
+                        p1.metric(
+                            "拉回觀察區",
+                            f"{_pb_low:,.2f}～{_pb_high:,.2f} 元"
+                            if _pb_low > 0 and _pb_high > 0 else "待建立"
+                        )
+                        p1.caption(f"目前狀態：{_pullback_status_v86}")
 
-                p3.metric(
-                    "突破價格門檻",
-                    f"{_strong_breakout:,.2f} 元" if _strong_breakout > 0 else "待建立"
-                )
-                p3.caption(
-                    f"目前狀態：{_break_price_status_v86}；{_break_effective_status_v86}"
-                )
-
-                st.caption(
-                    f"進場條件失效價：{_b_invalid:,.2f} 元"
-                    if _b_invalid > 0 else "進場條件失效價：待建立"
-                )
-
-                # v9.14.1：直接告訴使用者距離下一個可執行門檻還有多少。
-                if _probe_trigger > 0 and _price_now_v86 > 0 and _price_now_v86 < _probe_trigger:
-                    _probe_gap_pct_v98 = (_probe_trigger / _price_now_v86 - 1) * 100
-                    st.info(
-                        f"距下一步：距試單確認價 {_probe_trigger:,.2f} 元尚差 "
-                        f"{_probe_gap_pct_v98:.2f}%｜"
-                        f"若站穩 {_probe_trigger:,.2f} 元，且低位轉折維持 ≥3/5，"
-                        "再升級為試單評估。"
+                    p2.metric(
+                        "試單觸發價",
+                        f"{_probe_trigger:,.2f} 元"
+                        if _p18.get("beta_probe_available", True) and _probe_trigger > 0
+                        else "不適用"
                     )
-                elif _probe_trigger > 0 and _price_now_v86 >= _probe_trigger and not _p18.get("beta_probe_latched"):
-                    st.info(
-                        f"距下一步：現價已到達 {_probe_trigger:,.2f} 元以上，"
-                        "但仍須完成拉回後重新站上與穩定確認，才升級為試單評估。"
+                    if _p18.get("beta_probe_available", True) and _probe_trigger > 0:
+                        if _p18.get("beta_probe_latched"):
+                            p2.caption("目前狀態：已完成拉回後重新站上・本日鎖定")
+                        elif _p18.get("beta_pullback_seen"):
+                            p2.caption("目前狀態：曾拉回，等待真正重新站上")
+                        else:
+                            p2.caption("目前狀態：尚未完成先拉回、後站回的順序")
+                    else:
+                        p2.caption("目前狀態：本檔暫無中間試單層")
+
+                    p3.metric(
+                        "突破價格門檻",
+                        f"{_strong_breakout:,.2f} 元" if _strong_breakout > 0 else "待建立"
                     )
+                    p3.caption(
+                        f"目前狀態：{_break_price_status_v86}；{_break_effective_status_v86}"
+                    )
+
+                    st.caption(
+                        f"進場條件失效價：{_b_invalid:,.2f} 元"
+                        if _b_invalid > 0 else "進場條件失效價：待建立"
+                    )
+
+                    # v9.15：直接告訴使用者距離下一個可執行門檻還有多少。
+                    if _probe_trigger > 0 and _price_now_v86 > 0 and _price_now_v86 < _probe_trigger:
+                        _probe_gap_pct_v98 = (_probe_trigger / _price_now_v86 - 1) * 100
+                        st.info(
+                            f"距下一步：距試單確認價 {_probe_trigger:,.2f} 元尚差 "
+                            f"{_probe_gap_pct_v98:.2f}%｜"
+                            f"若站穩 {_probe_trigger:,.2f} 元，且低位轉折維持 ≥3/5，"
+                            "再升級為試單評估。"
+                        )
+                    elif _probe_trigger > 0 and _price_now_v86 >= _probe_trigger and not _p18.get("beta_probe_latched"):
+                        st.info(
+                            f"距下一步：現價已到達 {_probe_trigger:,.2f} 元以上，"
+                            "但仍須完成拉回後重新站上與穩定確認，才升級為試單評估。"
+                        )
 
                 if _entry_hard_veto_v98 and (_state_now or _decision_now) != "正式進場":
                     st.error(
@@ -5946,7 +6014,7 @@ if stock_input:
                         + "；".join(_entry_veto_reasons_v99)
                     )
 
-                    # v9.14.1：升級條件改成「已完成 / 待完成」雙清單，
+                    # v9.15：升級條件改成「已完成 / 待完成」雙清單，
                     # 不再把現價已經達成的價格條件重複列成待完成。
                     _entry_done_v913 = []
                     _entry_pending_v913 = []
@@ -6225,9 +6293,9 @@ if stock_input:
                     st.write("**下一步：**可建立小部位；若後續正式突破或條件完整度提升，再加碼。")
                 elif _state_now == "正式進場":
                     st.write(
-                        "**下一步：**依正式進場策略建立第一筆主要部位；"
-                        "低位轉折雷達只用來判斷後續拉回低接／加碼機會，"
-                        "不作為正式進場的前置門檻。"
+                        "**下一步：**依上方正式進場交易計畫的建議進場區建立第一筆部位；"
+                        "若已超過追價上限則不追價。進場後依第一／第二出場價分批獲利，"
+                        "跌破防守／失效價則執行風控。"
                     )
                 elif _entry_display_state_v98 == "等待轉強確認・暫不進場":
                     if _probe_trigger > 0:
@@ -6488,7 +6556,7 @@ if stock_input:
 
                 # v9.3：出場比例不再固定 30%，改由持股健康度與訊號一致度動態決定。
                 # 健康且一致度高：讓獲利奔跑；轉弱或一致度下降：提早收回較多部位。
-                # v9.14.1：出場比例直接使用畫面「訊號一致度」實際顯示的同一個計數。
+                # v9.15：出場比例直接使用畫面「訊號一致度」實際顯示的同一個計數。
                 # 畫面顯示 _hold_signal_score/_hold_signal_total，
                 # 因此出場引擎也只能讀 _hold_signal_score，不再使用舊的 _hold_agree。
                 _exit_signal_count = int(_hold_signal_score or 0)
@@ -6507,7 +6575,7 @@ if stock_input:
 
                 _exit_pct_final = max(0, 100 - _exit_pct1 - _exit_pct2)
 
-                # v9.14.1：所有出場比例文字一律從同一組變數產生，禁止任何 UI 區塊另寫固定百分比。
+                # v9.15：所有出場比例文字一律從同一組變數產生，禁止任何 UI 區塊另寫固定百分比。
                 _exit_plan_text = (
                     f"出場配置：{_exit_style}｜第一段 {_exit_pct1}%｜"
                     f"第二段 {_exit_pct2}%｜剩餘 {_exit_pct_final}% 採動態移動停利"
