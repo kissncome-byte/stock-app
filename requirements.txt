@@ -5,3 +5,4 @@ requests
 certifi
 pytz
 FinMind
+tqdm
