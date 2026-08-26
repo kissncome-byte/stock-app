@@ -3712,7 +3712,7 @@ with st.sidebar:
 
     st.caption("自選清單會寫入目前網址；建議把這個網址加入瀏覽器書籤。")
 
-st.markdown("## 🧭 StockPilot Beta v9.15｜個股操作決策")
+st.markdown("## 🧭 StockPilot Beta v9.16｜個股操作決策")
 st.caption("直接回答：現在要不要進場、持有、加碼、減碼或退出。")
 stock_input = st.text_input(
     "請輸入核心目標個股代碼：",
@@ -3840,7 +3840,7 @@ if stock_input:
                 # Decision Engine 對 non-holder 的 cost 必須是 0。
                 _shadow_user_cost = float(user_cost or 0) if user_holding else 0.0
 
-                # v9.15：Price Engine 某版本的 structural_exit / moving_protection
+                # v9.16：Price Engine 某版本的 structural_exit / moving_protection
                 # 驗證器會在「35.65 < 37.45」這種本來就正確的價格順序下仍誤拋錯誤。
                 # 先照正確語意送入；若只遇到這個已知矛盾驗證錯誤，
                 # 不讓整個最新操作模組失敗，改以 Shadow unavailable 降級處理。
@@ -3866,11 +3866,11 @@ if stock_input:
                     else:
                         raise
 
-                # v9.15：若 Shadow 因已知 validator bug 被停用，
+                # v9.16：若 Shadow 因已知 validator bug 被停用，
                 # 後續不得覆蓋正式決策；建立空結果代理僅供相容既有顯示流程。
                 if shadow_v4 is None:
-                    # v9.15：fallback 必須完整符合後續 Governance 讀取介面。
-                    # v9.15 只補了 action 等欄位，但後續會直接讀 snapshot，
+                    # v9.16：fallback 必須完整符合後續 Governance 讀取介面。
+                    # v9.16 只補了 action 等欄位，但後續會直接讀 snapshot，
                     # 因此造成 AttributeError。這裡補齊 snapshot 與其 enum-like .value。
                     class _ShadowValueV912:
                         def __init__(self, value):
@@ -5709,11 +5709,11 @@ if stock_input:
                 _probe_trigger = float(_p18.get("beta_probe_trigger", 0) or 0)
                 _strong_breakout = float(_p18.get("beta_strong_breakout", _b_confirm) or 0)
 
-                # v9.15：未持股顯示分級。
+                # v9.16：未持股顯示分級。
                 # 不改正式決策引擎，只把「不宜進場」拆成硬否決與接近觸發兩種情況，
                 # 避免條件已接近成熟時仍顯示過度負面的文字。
                 _entry_display_state_v98 = _state_now or _decision_now
-                # v9.15：硬風險否決改為「原因清單」，不能只顯示 True/False。
+                # v9.16：硬風險否決改為「原因清單」，不能只顯示 True/False。
                 _entry_veto_reasons_v99 = []
 
                 if _p18.get("beta_intraday_invalid"):
@@ -5964,21 +5964,45 @@ if stock_input:
                         )
                         p1.caption(f"目前狀態：{_pullback_status_v86}")
 
+                    _probe_available_v916 = bool(
+                        _p18.get("beta_probe_available", True)
+                    )
+                    _probe_ready_v916 = bool(
+                        _probe_available_v916 and _probe_trigger > 0
+                    )
+                    _probe_not_needed_v916 = bool(
+                        (_state_now or _decision_now) == "正式進場"
+                        or _p18.get("formal_entry")
+                    )
+
                     p2.metric(
                         "試單觸發價",
                         f"{_probe_trigger:,.2f} 元"
-                        if _p18.get("beta_probe_available", True) and _probe_trigger > 0
-                        else "不適用"
+                        if _probe_ready_v916
+                        else (
+                            "本策略不需要"
+                            if _probe_not_needed_v916
+                            else "尚未建立"
+                        )
                     )
-                    if _p18.get("beta_probe_available", True) and _probe_trigger > 0:
+
+                    if _probe_ready_v916:
                         if _p18.get("beta_probe_latched"):
                             p2.caption("目前狀態：已完成拉回後重新站上・本日鎖定")
                         elif _p18.get("beta_pullback_seen"):
                             p2.caption("目前狀態：曾拉回，等待真正重新站上")
                         else:
                             p2.caption("目前狀態：尚未完成先拉回、後站回的順序")
+                    elif _probe_not_needed_v916:
+                        p2.caption(
+                            "目前狀態：主策略已進入正式進場，"
+                            "不再需要中間試單層。"
+                        )
                     else:
-                        p2.caption("目前狀態：本檔暫無中間試單層")
+                        p2.caption(
+                            "目前狀態：尚未形成試單條件；"
+                            "待止跌／轉強條件改善後，系統才會建立試單觸發價。"
+                        )
 
                     p3.metric(
                         "突破價格門檻",
@@ -5993,7 +6017,7 @@ if stock_input:
                         if _b_invalid > 0 else "進場條件失效價：待建立"
                     )
 
-                    # v9.15：直接告訴使用者距離下一個可執行門檻還有多少。
+                    # v9.16：直接告訴使用者距離下一個可執行門檻還有多少。
                     if _probe_trigger > 0 and _price_now_v86 > 0 and _price_now_v86 < _probe_trigger:
                         _probe_gap_pct_v98 = (_probe_trigger / _price_now_v86 - 1) * 100
                         st.info(
@@ -6014,7 +6038,7 @@ if stock_input:
                         + "；".join(_entry_veto_reasons_v99)
                     )
 
-                    # v9.15：升級條件改成「已完成 / 待完成」雙清單，
+                    # v9.16：升級條件改成「已完成 / 待完成」雙清單，
                     # 不再把現價已經達成的價格條件重複列成待完成。
                     _entry_done_v913 = []
                     _entry_pending_v913 = []
@@ -6556,7 +6580,7 @@ if stock_input:
 
                 # v9.3：出場比例不再固定 30%，改由持股健康度與訊號一致度動態決定。
                 # 健康且一致度高：讓獲利奔跑；轉弱或一致度下降：提早收回較多部位。
-                # v9.15：出場比例直接使用畫面「訊號一致度」實際顯示的同一個計數。
+                # v9.16：出場比例直接使用畫面「訊號一致度」實際顯示的同一個計數。
                 # 畫面顯示 _hold_signal_score/_hold_signal_total，
                 # 因此出場引擎也只能讀 _hold_signal_score，不再使用舊的 _hold_agree。
                 _exit_signal_count = int(_hold_signal_score or 0)
@@ -6575,7 +6599,7 @@ if stock_input:
 
                 _exit_pct_final = max(0, 100 - _exit_pct1 - _exit_pct2)
 
-                # v9.15：所有出場比例文字一律從同一組變數產生，禁止任何 UI 區塊另寫固定百分比。
+                # v9.16：所有出場比例文字一律從同一組變數產生，禁止任何 UI 區塊另寫固定百分比。
                 _exit_plan_text = (
                     f"出場配置：{_exit_style}｜第一段 {_exit_pct1}%｜"
                     f"第二段 {_exit_pct2}%｜剩餘 {_exit_pct_final}% 採動態移動停利"
