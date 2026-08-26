@@ -3712,7 +3712,7 @@ with st.sidebar:
 
     st.caption("自選清單會寫入目前網址；建議把這個網址加入瀏覽器書籤。")
 
-st.markdown("## 🧭 StockPilot Beta v9.13｜個股操作決策")
+st.markdown("## 🧭 StockPilot Beta v9.14.1｜個股操作決策")
 st.caption("直接回答：現在要不要進場、持有、加碼、減碼或退出。")
 stock_input = st.text_input(
     "請輸入核心目標個股代碼：",
@@ -3840,7 +3840,7 @@ if stock_input:
                 # Decision Engine 對 non-holder 的 cost 必須是 0。
                 _shadow_user_cost = float(user_cost or 0) if user_holding else 0.0
 
-                # v9.13：Price Engine 某版本的 structural_exit / moving_protection
+                # v9.14.1：Price Engine 某版本的 structural_exit / moving_protection
                 # 驗證器會在「35.65 < 37.45」這種本來就正確的價格順序下仍誤拋錯誤。
                 # 先照正確語意送入；若只遇到這個已知矛盾驗證錯誤，
                 # 不讓整個最新操作模組失敗，改以 Shadow unavailable 降級處理。
@@ -3866,11 +3866,11 @@ if stock_input:
                     else:
                         raise
 
-                # v9.13：若 Shadow 因已知 validator bug 被停用，
+                # v9.14.1：若 Shadow 因已知 validator bug 被停用，
                 # 後續不得覆蓋正式決策；建立空結果代理僅供相容既有顯示流程。
                 if shadow_v4 is None:
-                    # v9.13：fallback 必須完整符合後續 Governance 讀取介面。
-                    # v9.13 只補了 action 等欄位，但後續會直接讀 snapshot，
+                    # v9.14.1：fallback 必須完整符合後續 Governance 讀取介面。
+                    # v9.14.1 只補了 action 等欄位，但後續會直接讀 snapshot，
                     # 因此造成 AttributeError。這裡補齊 snapshot 與其 enum-like .value。
                     class _ShadowValueV912:
                         def __init__(self, value):
@@ -5709,11 +5709,11 @@ if stock_input:
                 _probe_trigger = float(_p18.get("beta_probe_trigger", 0) or 0)
                 _strong_breakout = float(_p18.get("beta_strong_breakout", _b_confirm) or 0)
 
-                # v9.13：未持股顯示分級。
+                # v9.14.1：未持股顯示分級。
                 # 不改正式決策引擎，只把「不宜進場」拆成硬否決與接近觸發兩種情況，
                 # 避免條件已接近成熟時仍顯示過度負面的文字。
                 _entry_display_state_v98 = _state_now or _decision_now
-                # v9.13：硬風險否決改為「原因清單」，不能只顯示 True/False。
+                # v9.14.1：硬風險否決改為「原因清單」，不能只顯示 True/False。
                 _entry_veto_reasons_v99 = []
 
                 if _p18.get("beta_intraday_invalid"):
@@ -5784,6 +5784,12 @@ if stock_input:
                     and _entry_early_ok_v98
                 ):
                     _entry_display_state_v98 = "等待轉強確認・暫不進場"
+
+                if (_state_now or _decision_now) == "正式進場":
+                    st.success(
+                        "進場路徑：趨勢／價格確認進場。"
+                        "主決策已符合正式進場條件；低位承接雷達僅作為額外低接／加碼參考。"
+                    )
 
                 st.markdown("### 決策穩定器")
                 _stable_trend_label = str(
@@ -5919,7 +5925,7 @@ if stock_input:
                     if _b_invalid > 0 else "進場條件失效價：待建立"
                 )
 
-                # v9.13：直接告訴使用者距離下一個可執行門檻還有多少。
+                # v9.14.1：直接告訴使用者距離下一個可執行門檻還有多少。
                 if _probe_trigger > 0 and _price_now_v86 > 0 and _price_now_v86 < _probe_trigger:
                     _probe_gap_pct_v98 = (_probe_trigger / _price_now_v86 - 1) * 100
                     st.info(
@@ -5934,13 +5940,13 @@ if stock_input:
                         "但仍須完成拉回後重新站上與穩定確認，才升級為試單評估。"
                     )
 
-                if _entry_hard_veto_v98:
+                if _entry_hard_veto_v98 and (_state_now or _decision_now) != "正式進場":
                     st.error(
                         "目前否決原因："
                         + "；".join(_entry_veto_reasons_v99)
                     )
 
-                    # v9.13：升級條件改成「已完成 / 待完成」雙清單，
+                    # v9.14.1：升級條件改成「已完成 / 待完成」雙清單，
                     # 不再把現價已經達成的價格條件重複列成待完成。
                     _entry_done_v913 = []
                     _entry_pending_v913 = []
@@ -6055,9 +6061,14 @@ if stock_input:
                             + " → 全部完成後，才進入低位試單評估。"
                         )
                     else:
-                        st.success(
-                            "目前升級條件已全部完成，可進一步進入低位試單評估。"
-                        )
+                        if (_state_now or _decision_now) == "正式進場":
+                            st.success(
+                                "正式進場條件已成立；低位承接條件僅供後續加碼機會判斷。"
+                            )
+                        else:
+                            st.success(
+                                "目前升級條件已全部完成，可進一步進入低位試單評估。"
+                            )
 
                 
                 # v8.9e：所有未持股股票都顯示同一套完整新版雷達介面。
@@ -6077,12 +6088,22 @@ if stock_input:
                 _low_context_note_v89e = (
                     "｜目前已進入低位監控區。"
                     if _in_low_context_v89e
-                    else "｜目前尚未進入低位承接區，雷達持續監控。"
+                    else (
+                        "｜目前未形成額外低位承接／加碼機會；不影響既有正式進場判斷。"
+                        if (_state_now or _decision_now) == "正式進場"
+                        else "｜目前尚未進入低位承接區，雷達持續監控。"
+                    )
+                )
+
+                _low_radar_label_v914 = (
+                    "低位承接機會："
+                    if (_state_now or _decision_now) == "正式進場"
+                    else "低位轉折雷達："
                 )
 
                 st.info(
-                    "低位轉折雷達："
-                    f"{_low_score_v87}/5 項成立。"
+                    _low_radar_label_v914
+                    + f"{_low_score_v87}/5 項成立。"
                     + (
                         " 已出現：" + "、".join(_passed_v87)
                         if _passed_v87 else " 尚未出現明確轉折訊號"
@@ -6093,11 +6114,15 @@ if stock_input:
                         if _p18.get("low_hard_veto") else ""
                     )
                     + (
-                        "｜低位試單訊號已鎖定。"
-                        if _low_latched_v88
+                        ""
+                        if (_state_now or _decision_now) == "正式進場"
                         else (
-                            f"｜候選連續確認 {_low_count_v88}/2。"
-                            if _p18.get("low_probe_candidate") else ""
+                            "｜低位試單訊號已鎖定。"
+                            if _low_latched_v88
+                            else (
+                                f"｜候選連續確認 {_low_count_v88}/2。"
+                                if _p18.get("low_probe_candidate") else ""
+                            )
                         )
                     )
                     + (
@@ -6199,7 +6224,11 @@ if stock_input:
                 elif _state_now == "轉強試單":
                     st.write("**下一步：**可建立小部位；若後續正式突破或條件完整度提升，再加碼。")
                 elif _state_now == "正式進場":
-                    st.write("**下一步：**可建立第一筆主要部位，後續依失效價與加碼條件管理。")
+                    st.write(
+                        "**下一步：**依正式進場策略建立第一筆主要部位；"
+                        "低位轉折雷達只用來判斷後續拉回低接／加碼機會，"
+                        "不作為正式進場的前置門檻。"
+                    )
                 elif _entry_display_state_v98 == "等待轉強確認・暫不進場":
                     if _probe_trigger > 0:
                         st.write(
@@ -6459,7 +6488,7 @@ if stock_input:
 
                 # v9.3：出場比例不再固定 30%，改由持股健康度與訊號一致度動態決定。
                 # 健康且一致度高：讓獲利奔跑；轉弱或一致度下降：提早收回較多部位。
-                # v9.13：出場比例直接使用畫面「訊號一致度」實際顯示的同一個計數。
+                # v9.14.1：出場比例直接使用畫面「訊號一致度」實際顯示的同一個計數。
                 # 畫面顯示 _hold_signal_score/_hold_signal_total，
                 # 因此出場引擎也只能讀 _hold_signal_score，不再使用舊的 _hold_agree。
                 _exit_signal_count = int(_hold_signal_score or 0)
@@ -6478,7 +6507,7 @@ if stock_input:
 
                 _exit_pct_final = max(0, 100 - _exit_pct1 - _exit_pct2)
 
-                # v9.13：所有出場比例文字一律從同一組變數產生，禁止任何 UI 區塊另寫固定百分比。
+                # v9.14.1：所有出場比例文字一律從同一組變數產生，禁止任何 UI 區塊另寫固定百分比。
                 _exit_plan_text = (
                     f"出場配置：{_exit_style}｜第一段 {_exit_pct1}%｜"
                     f"第二段 {_exit_pct2}%｜剩餘 {_exit_pct_final}% 採動態移動停利"
