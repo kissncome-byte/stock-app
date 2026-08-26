@@ -642,6 +642,121 @@ def get_market_regime_context(market_type: str = "TSE"):
         ctx["scope_note"] += "資料抓取失敗，系統未以其他指數補值。"
     return ctx
 
+
+@st.cache_data(ttl=3600)
+def get_large_holder_radar(stock_id: str, days: int = 120) -> dict:
+    """
+    v9.19 大戶持股雷達：
+    使用 FinMind TaiwanStockHoldingSharesPer。
+    「大戶」定義為持股級距下限 > 400,000 股（約 400 張以上）。
+    主要看近約 4 週持股比例變化；資料不可用時不扣分、不否決。
+    """
+    empty = {
+        "available": False,
+        "source": "FinMind TaiwanStockHoldingSharesPer",
+        "definition": "400張以上大戶",
+        "latest_date": None,
+        "latest_pct": None,
+        "prev_pct": None,
+        "change_pp": None,
+        "trend": "資料不足",
+        "score_delta": 0,
+        "warning_points": 0,
+        "veto": None,
+        "note": "大戶持股分級資料目前無法取得，這一項不納入方向加減分。",
+        "table": pd.DataFrame(),
+    }
+    try:
+        start_date = (datetime.now(TZ) - timedelta(days=days)).strftime("%Y-%m-%d")
+        api = get_api()
+        if not hasattr(api, "taiwan_stock_holding_shares_per"):
+            return empty
+
+        raw = api.taiwan_stock_holding_shares_per(
+            stock_id=str(stock_id),
+            start_date=start_date,
+        )
+        if raw is None or raw.empty:
+            return empty
+
+        df = raw.copy()
+        if not {"date", "HoldingSharesLevel", "percent"}.issubset(df.columns):
+            return empty
+
+        df["date"] = df["date"].astype(str)
+        df["percent"] = pd.to_numeric(df["percent"], errors="coerce")
+        df = df.dropna(subset=["percent"])
+        if df.empty:
+            return empty
+
+        def _lower_bound(level):
+            nums = re.findall(r"\d+", str(level or "").replace(",", "").replace(" ", ""))
+            return int(nums[0]) if nums else 0
+
+        df["_lower"] = df["HoldingSharesLevel"].map(_lower_bound)
+        large = df[df["_lower"] > 400000].copy()
+        if large.empty:
+            return empty
+
+        weekly = (
+            large.groupby("date", as_index=False)["percent"]
+            .sum()
+            .sort_values("date")
+            .reset_index(drop=True)
+        )
+        if weekly.empty:
+            return empty
+
+        latest = weekly.iloc[-1]
+        prev = weekly.iloc[max(0, len(weekly) - 5)]
+
+        latest_pct = float(latest["percent"])
+        prev_pct = float(prev["percent"])
+        change_pp = latest_pct - prev_pct
+
+        if change_pp >= 1.0:
+            trend, delta, warn = "明顯增加", +10, 0
+        elif change_pp >= 0.30:
+            trend, delta, warn = "溫和增加", +5, 0
+        elif change_pp <= -1.0:
+            trend, delta, warn = "明顯下降", -10, 3
+        elif change_pp <= -0.30:
+            trend, delta, warn = "溫和下降", -5, 1
+        else:
+            trend, delta, warn = "大致持平", 0, 0
+
+        veto = (
+            "400張以上大戶持股比例近月明顯下降，籌碼集中度快速惡化。"
+            if change_pp <= -2.0 else None
+        )
+
+        note = (
+            f"400張以上大戶持股約 {latest_pct:.2f}%｜"
+            f"較約4週前 {change_pp:+.2f} 個百分點｜{trend}"
+        )
+        display = weekly.tail(8).copy()
+        display.columns = ["日期", "400張以上大戶持股比(%)"]
+
+        return {
+            "available": True,
+            "source": "FinMind TaiwanStockHoldingSharesPer",
+            "definition": "400張以上大戶",
+            "latest_date": str(latest["date"]),
+            "latest_pct": latest_pct,
+            "prev_pct": prev_pct,
+            "change_pp": change_pp,
+            "trend": trend,
+            "score_delta": delta,
+            "warning_points": warn,
+            "veto": veto,
+            "note": note,
+            "table": display,
+        }
+    except Exception as exc:
+        log_error(f"large holder radar {stock_id}", exc)
+        return empty
+
+
 @st.cache_data(ttl=900)
 def get_taiwan_enhanced_chips(stock_id: str, avg_daily_volume_shares: float, days: int = 30):
     s_trend, m_trend, s_3d, m_diff = "⚪ 資料不足", "⚪ 資料不足", 0.0, 0.0
@@ -1195,6 +1310,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     peer_resonance_text, peer_corr_val, peer_count = analyze_peer_resonance(stock_id, industry)
     avg_daily_volume_shares = float(df["vol"].tail(20).mean())
     sitc_trend, margin_trend, sitc_3d_sum, margin_diff = get_taiwan_enhanced_chips(stock_id, avg_daily_volume_shares)
+    large_holder_radar = get_large_holder_radar(stock_id, days=120)
     
     try: institutional_df = get_institutional_trading_df(stock_id, days=120)
     except Exception: pass
@@ -1344,6 +1460,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     res_dict["institutional_df"] = institutional_df
     res_dict["broker_consensus"] = broker_consensus
     res_dict["margin_trend"] = margin_trend
+    res_dict["large_holder_radar"] = large_holder_radar
     res_dict["box_width_pct"] = box_width_pct
     res_dict["market_vol_healthy"] = market_vol_healthy
     res_dict["is_box_compressed"] = is_box_compressed
@@ -1578,6 +1695,7 @@ def build_ai_investment_committee(res: dict, compass: dict) -> dict:
     consensus_label = str(inst.get("consensus_label", "資料不足"))
     sitc_trend = str(res.get("sitc_trend", "投信資料不足"))
     margin_trend = str(res.get("margin_trend", "融資資料不足"))
+    large_holder = res.get("large_holder_radar", {}) or {}
     bc_obj = res.get("broker_consensus", {})
     if isinstance(bc_obj, dict):
         if bc_obj.get("is_real") and bc_obj.get("mean") is not None:
@@ -1605,6 +1723,10 @@ def build_ai_investment_committee(res: dict, compass: dict) -> dict:
         chip_score += 5; chip_breakdown.append(("融資降溫", +5))
     elif any(k in margin_trend for k in ["大增", "暴增", "過熱"]):
         chip_score -= 7; chip_breakdown.append(("融資升溫", -7))
+    if large_holder.get("available"):
+        _lh_delta = int(large_holder.get("score_delta", 0) or 0)
+        chip_score += _lh_delta
+        chip_breakdown.append(("400張以上大戶", _lh_delta))
     chip_conf = clamp(chip_score)
     if chip_conf >= 66:
         chip_label, chip_color, chip_icon = "偏多", "#10B981", "🟢"
@@ -1612,10 +1734,19 @@ def build_ai_investment_committee(res: dict, compass: dict) -> dict:
         chip_label, chip_color, chip_icon = "偏空", "#EF4444", "🔴"
     else:
         chip_label, chip_color, chip_icon = "中性", "#F59E0B", "🟡"
-    chip_summary = f"三大法人20日一致性為「{consensus_label}」；{sitc_trend}，{margin_trend}。"
+    _large_holder_summary = (
+        str(large_holder.get("note"))
+        if large_holder.get("available")
+        else "400張以上大戶：資料未取得，不納入加減分"
+    )
+    chip_summary = (
+        f"三大法人20日一致性為「{consensus_label}」；{sitc_trend}，{margin_trend}；"
+        f"{_large_holder_summary}。"
+    )
     chip_evidence = [
         ("三大法人一致性", consensus_label), ("一致性分數", str(inst_score)),
         ("投信趨勢", sitc_trend), ("融資趨勢", margin_trend),
+        ("400張以上大戶", _large_holder_summary),
         ("券商共識", broker_consensus),
     ]
 
@@ -2998,13 +3129,30 @@ def _institution_window_stats(df: pd.DataFrame, col: str, window: int) -> dict:
 
 
 def build_chip_engine(res: dict) -> dict:
-    """三大法人籌碼引擎。只使用實際買賣超資料，不讀持有成本。"""
+    """
+    v9.19 籌碼引擎：三大法人 + 400張以上大戶持股變化。
+    大戶資料若不可用，不扣分、不否決。
+    """
     df=res.get("institutional_df", pd.DataFrame())
     daily=res.get("daily_df", pd.DataFrame())
+    large_holder=res.get("large_holder_radar", {}) or {}
     if df is None or df.empty:
-        return {"score":50,"state":"資料不足","quality":"LOW","foreign":{},"trust":{},"dealer":{},
-                "positive":[],"negative":["三大法人日資料不足，籌碼不納入方向加減分。"],
-                "warning_points":0,"veto":None,"rows":[]}
+        _lh_delta = int(large_holder.get("score_delta", 0) or 0) if large_holder.get("available") else 0
+        _lh_score = max(0, min(100, 50 + _lh_delta))
+        _lh_positive = []
+        _lh_negative = ["三大法人日資料不足。"]
+        if large_holder.get("available"):
+            if _lh_delta > 0:
+                _lh_positive.append(str(large_holder.get("note", "")))
+            elif _lh_delta < 0:
+                _lh_negative.append(str(large_holder.get("note", "")))
+        else:
+            _lh_negative.append("400張以上大戶資料未取得；此項不納入方向加減分。")
+        return {"score":_lh_score,"state":"資料不足" if not large_holder.get("available") else "僅大戶資料可用",
+                "quality":"LOW","foreign":{},"trust":{},"dealer":{},"large_holder":large_holder,
+                "positive":_lh_positive,"negative":_lh_negative,
+                "warning_points":int(large_holder.get("warning_points",0) or 0) if large_holder.get("available") else 0,
+                "veto":large_holder.get("veto") if large_holder.get("available") else None,"rows":[]}
     avg_lots=1.0
     if daily is not None and not daily.empty and "vol" in daily.columns:
         avg_lots=max(float(pd.to_numeric(daily["vol"],errors="coerce").tail(20).mean())/1000.0,1.0)
@@ -3033,6 +3181,16 @@ def build_chip_engine(res: dict) -> dict:
             warning_points += 1
         rows.append({"法人":label,"5日累計(張)":s5["sum"],"10日累計(張)":s10["sum"],"20日累計(張)":s20["sum"],
                      "20日買超天數":s20["buy_days"],"20日賣超天數":s20["sell_days"],"連續方向天數":s5["streak"],"分數":round(component)})
+    if large_holder.get("available"):
+        _lh_delta = int(large_holder.get("score_delta", 0) or 0)
+        score += _lh_delta
+        _lh_note = str(large_holder.get("note", "") or "")
+        if _lh_delta > 0:
+            positive.append(_lh_note)
+        elif _lh_delta < 0:
+            negative.append(_lh_note)
+        warning_points += int(large_holder.get("warning_points", 0) or 0)
+
     score=int(round(max(0,min(100,score))))
     state="明顯偏多" if score>=70 else "稍偏多" if score>=58 else "分歧" if score>=43 else "稍偏空" if score>=30 else "明顯偏空"
     veto=None
@@ -3040,8 +3198,11 @@ def build_chip_engine(res: dict) -> dict:
     trust20=details.get("投信",{}).get(20,{})
     if score<=25 and foreign20.get("sell_days",0)>=14 and trust20.get("sum",0)<0:
         veto="外資長期偏賣且投信同步轉賣，禁止把單日反彈視為籌碼翻多。"
+    if veto is None and large_holder.get("available") and large_holder.get("veto"):
+        veto=str(large_holder.get("veto"))
     return {"score":score,"state":state,"quality":"HIGH","foreign":details.get("外資",{}),"trust":details.get("投信",{}),
-            "dealer":details.get("自營商",{}),"positive":positive[:4],"negative":negative[:4],
+            "dealer":details.get("自營商",{}),"large_holder":large_holder,
+            "positive":positive[:5],"negative":negative[:5],
             "warning_points":warning_points,"veto":veto,"rows":rows}
 
 
@@ -3712,7 +3873,7 @@ with st.sidebar:
 
     st.caption("自選清單會寫入目前網址；建議把這個網址加入瀏覽器書籤。")
 
-st.markdown("## 🧭 StockPilot Beta v9.18｜個股操作決策")
+st.markdown("## 🧭 StockPilot Beta v9.19｜個股操作決策")
 st.caption("直接回答：現在要不要進場、持有、加碼、減碼或退出。")
 stock_input = st.text_input(
     "請輸入核心目標個股代碼：",
@@ -3840,7 +4001,7 @@ if stock_input:
                 # Decision Engine 對 non-holder 的 cost 必須是 0。
                 _shadow_user_cost = float(user_cost or 0) if user_holding else 0.0
 
-                # v9.18：Price Engine 某版本的 structural_exit / moving_protection
+                # v9.19：Price Engine 某版本的 structural_exit / moving_protection
                 # 驗證器會在「35.65 < 37.45」這種本來就正確的價格順序下仍誤拋錯誤。
                 # 先照正確語意送入；若只遇到這個已知矛盾驗證錯誤，
                 # 不讓整個最新操作模組失敗，改以 Shadow unavailable 降級處理。
@@ -3866,11 +4027,11 @@ if stock_input:
                     else:
                         raise
 
-                # v9.18：若 Shadow 因已知 validator bug 被停用，
+                # v9.19：若 Shadow 因已知 validator bug 被停用，
                 # 後續不得覆蓋正式決策；建立空結果代理僅供相容既有顯示流程。
                 if shadow_v4 is None:
-                    # v9.18：fallback 必須完整符合後續 Governance 讀取介面。
-                    # v9.18 只補了 action 等欄位，但後續會直接讀 snapshot，
+                    # v9.19：fallback 必須完整符合後續 Governance 讀取介面。
+                    # v9.19 只補了 action 等欄位，但後續會直接讀 snapshot，
                     # 因此造成 AttributeError。這裡補齊 snapshot 與其 enum-like .value。
                     class _ShadowValueV912:
                         def __init__(self, value):
@@ -5709,11 +5870,11 @@ if stock_input:
                 _probe_trigger = float(_p18.get("beta_probe_trigger", 0) or 0)
                 _strong_breakout = float(_p18.get("beta_strong_breakout", _b_confirm) or 0)
 
-                # v9.18：未持股顯示分級。
+                # v9.19：未持股顯示分級。
                 # 不改正式決策引擎，只把「不宜進場」拆成硬否決與接近觸發兩種情況，
                 # 避免條件已接近成熟時仍顯示過度負面的文字。
                 _entry_display_state_v98 = _state_now or _decision_now
-                # v9.18：硬風險否決改為「原因清單」，不能只顯示 True/False。
+                # v9.19：硬風險否決改為「原因清單」，不能只顯示 True/False。
                 _entry_veto_reasons_v99 = []
 
                 if _p18.get("beta_intraday_invalid"):
@@ -5853,7 +6014,7 @@ if stock_input:
                     )
                     _raw_moving_v917 = float(_p18.get("moving_protection", 0) or 0)
 
-                    # v9.18.1：先建立進場區中位數，再進行目標價合理性檢查。
+                    # v9.19.1：先建立進場區中位數，再進行目標價合理性檢查。
                     _entry_mid_v915 = (
                         (_entry_low_v915 + _entry_high_v915) / 2
                         if _entry_low_v915 > 0 and _entry_high_v915 > 0
@@ -5866,7 +6027,7 @@ if stock_input:
                         float(_current_price_beta or 0),
                         float(_entry_mid_v915 or 0),
                     )
-                    # v9.18：舊目標若已被突破，不再只顯示「待建立」；
+                    # v9.19：舊目標若已被突破，不再只顯示「待建立」；
                     # 先找近期真實壓力，再用 ATR / 交易風險建立動態延伸目標。
                     _old_target_passed_v917 = bool(
                         _raw_exit1_v917 > 0
@@ -6157,7 +6318,7 @@ if stock_input:
                         if _b_invalid > 0 else "進場條件失效價：待建立"
                     )
 
-                    # v9.18：直接告訴使用者距離下一個可執行門檻還有多少。
+                    # v9.19：直接告訴使用者距離下一個可執行門檻還有多少。
                     if _probe_trigger > 0 and _price_now_v86 > 0 and _price_now_v86 < _probe_trigger:
                         _probe_gap_pct_v98 = (_probe_trigger / _price_now_v86 - 1) * 100
                         st.info(
@@ -6178,7 +6339,7 @@ if stock_input:
                         + "；".join(_entry_veto_reasons_v99)
                     )
 
-                    # v9.18：升級條件改成「已完成 / 待完成」雙清單，
+                    # v9.19：升級條件改成「已完成 / 待完成」雙清單，
                     # 不再把現價已經達成的價格條件重複列成待完成。
                     _entry_done_v913 = []
                     _entry_pending_v913 = []
@@ -6720,7 +6881,7 @@ if stock_input:
 
                 # v9.3：出場比例不再固定 30%，改由持股健康度與訊號一致度動態決定。
                 # 健康且一致度高：讓獲利奔跑；轉弱或一致度下降：提早收回較多部位。
-                # v9.18：出場比例直接使用畫面「訊號一致度」實際顯示的同一個計數。
+                # v9.19：出場比例直接使用畫面「訊號一致度」實際顯示的同一個計數。
                 # 畫面顯示 _hold_signal_score/_hold_signal_total，
                 # 因此出場引擎也只能讀 _hold_signal_score，不再使用舊的 _hold_agree。
                 _exit_signal_count = int(_hold_signal_score or 0)
@@ -6739,7 +6900,7 @@ if stock_input:
 
                 _exit_pct_final = max(0, 100 - _exit_pct1 - _exit_pct2)
 
-                # v9.18：所有出場比例文字一律從同一組變數產生，禁止任何 UI 區塊另寫固定百分比。
+                # v9.19：所有出場比例文字一律從同一組變數產生，禁止任何 UI 區塊另寫固定百分比。
                 _exit_plan_text = (
                     f"出場配置：{_exit_style}｜第一段 {_exit_pct1}%｜"
                     f"第二段 {_exit_pct2}%｜剩餘 {_exit_pct_final}% 採動態移動停利"
@@ -7257,6 +7418,23 @@ if stock_input:
                 """, unsafe_allow_html=True)
 
                 # 區塊 B：三大法人明細大表
+                _lh_ui = res.get("large_holder_radar", {}) or {}
+                with st.expander("🏦 大戶持股雷達（400張以上）", expanded=False):
+                    if _lh_ui.get("available"):
+                        lh1, lh2, lh3 = st.columns(3)
+                        lh1.metric("最新大戶持股比", f"{float(_lh_ui.get('latest_pct',0) or 0):.2f}%")
+                        lh2.metric("近約4週變化", f"{float(_lh_ui.get('change_pp',0) or 0):+.2f} 個百分點")
+                        lh3.metric("籌碼趨勢", str(_lh_ui.get("trend","資料不足")))
+                        st.caption(str(_lh_ui.get("note","")))
+                        _lh_table = _lh_ui.get("table", pd.DataFrame())
+                        if isinstance(_lh_table, pd.DataFrame) and not _lh_table.empty:
+                            st.dataframe(_lh_table, use_container_width=True, hide_index=True)
+                    else:
+                        st.caption(
+                            "目前無法取得400張以上大戶持股分級資料；"
+                            "此項不扣分、不否決，也不會用其他資料冒充大戶持股。"
+                        )
+
                 with st.expander("🦅 三大法人每日實時進出買賣超佈局明細大表 (近30日現況) ─ 點擊展開明細 [數據來源: 證交所三大法人日報]", expanded=False):
                     if not res["institutional_summary"]["table"].empty:
                         st.markdown("**20日法人一致性摘要**")
