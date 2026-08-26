@@ -13,6 +13,7 @@ from stockpilot.services.shadow_integration import ShadowIntegration
 
 # ============ 1. Page Config ============
 st.set_page_config(page_title="Project Compass V3｜單一決策執行中心", layout="wide")
+# StockPilot v9.20：低位承接區 + 核心承接價
 
 # ============ 2. Global Constants ============
 TZ = pytz.timezone("Asia/Taipei")
@@ -4911,6 +4912,84 @@ if stock_input:
                             _s14_進場區_low
                         )
 
+                # v9.20：核心承接價
+                # 優先使用近期落在低位承接區內的「成交量加權典型價格」，
+                # 讓核心承接價反映實際成交密集位置，而不是直接拿建議進場價代替。
+                _s87_core_support_price = 0.0
+                _s87_core_support_method = "資料不足"
+                if (
+                    _s87_low_zone_low > 0
+                    and _s87_low_zone_high > 0
+                    and isinstance(_s19_daily, pd.DataFrame)
+                    and not _s19_daily.empty
+                ):
+                    try:
+                        _s87_zone_df = _s19_daily.tail(60).copy()
+                        _s87_zone_close = pd.to_numeric(
+                            _s87_zone_df.get("close"), errors="coerce"
+                        )
+                        _s87_zone_low_series = pd.to_numeric(
+                            _s87_zone_df.get("low", _s87_zone_close), errors="coerce"
+                        )
+                        _s87_zone_high_series = pd.to_numeric(
+                            _s87_zone_df.get("high", _s87_zone_close), errors="coerce"
+                        )
+                        _s87_zone_typical = (
+                            _s87_zone_low_series + _s87_zone_high_series + _s87_zone_close
+                        ) / 3.0
+                        _s87_zone_mask = (
+                            (_s87_zone_typical >= _s87_low_zone_low)
+                            & (_s87_zone_typical <= _s87_low_zone_high)
+                        )
+
+                        if "vol" in _s87_zone_df.columns:
+                            _s87_zone_vol = pd.to_numeric(
+                                _s87_zone_df["vol"], errors="coerce"
+                            ).fillna(0.0)
+                        else:
+                            _s87_zone_vol = pd.Series(
+                                0.0, index=_s87_zone_df.index
+                            )
+
+                        _s87_valid_price = _s87_zone_typical[_s87_zone_mask].dropna()
+                        _s87_valid_vol = _s87_zone_vol.reindex(
+                            _s87_valid_price.index
+                        ).fillna(0.0)
+
+                        if (
+                            len(_s87_valid_price) >= 2
+                            and float(_s87_valid_vol.sum()) > 0
+                        ):
+                            _s87_core_support_price = float(
+                                (_s87_valid_price * _s87_valid_vol).sum()
+                                / _s87_valid_vol.sum()
+                            )
+                            _s87_core_support_method = "近60日承接區成交量加權"
+                        elif len(_s87_valid_price) >= 1:
+                            _s87_core_support_price = float(
+                                _s87_valid_price.median()
+                            )
+                            _s87_core_support_method = "近60日承接區典型價中位數"
+                    except Exception:
+                        pass
+
+                # 區內沒有足夠成交樣本時才採區間中位數備援。
+                if (
+                    _s87_core_support_price <= 0
+                    and _s87_low_zone_low > 0
+                    and _s87_low_zone_high > 0
+                ):
+                    _s87_core_support_price = (
+                        _s87_low_zone_low + _s87_low_zone_high
+                    ) / 2.0
+                    _s87_core_support_method = "承接區中位數備援"
+
+                if _s87_core_support_price > 0:
+                    _s87_core_support_price = round_to_tick(
+                        _s87_core_support_price,
+                        tick_size(_s87_core_support_price),
+                    )
+
                 _s87_below_old_entry = bool(
                     _s14_進場區_low > 0
                     and _s19_price < _s14_進場區_low
@@ -5672,6 +5751,8 @@ if stock_input:
                     ],
                     "low_zone_low": _s87_low_zone_low,
                     "low_zone_high": _s87_low_zone_high,
+                    "core_support_price": _s87_core_support_price,
+                    "core_support_method": _s87_core_support_method,
                     "in_low_zone": _s87_in_low_zone,
                     "turn_probe": _s21_turn_probe,
                     "formal_entry": _s21_formal_entry,
@@ -6494,6 +6575,35 @@ if stock_input:
                     else "低位轉折雷達："
                 )
 
+                # v9.20：低位承接雷達直接顯示可操作的價格資訊。
+                _low_zone_low_v920 = float(_p18.get("low_zone_low", 0) or 0)
+                _low_zone_high_v920 = float(_p18.get("low_zone_high", 0) or 0)
+                _core_support_v920 = float(_p18.get("core_support_price", 0) or 0)
+                _core_support_method_v920 = str(
+                    _p18.get("core_support_method", "資料不足") or "資料不足"
+                )
+
+                _lr1_v920, _lr2_v920, _lr3_v920 = st.columns(3)
+                _lr1_v920.metric("低位承接訊號", f"{_low_score_v87}/5")
+                _lr2_v920.metric(
+                    "承接區間",
+                    (
+                        f"{_low_zone_low_v920:,.2f}～{_low_zone_high_v920:,.2f} 元"
+                        if _low_zone_low_v920 > 0 and _low_zone_high_v920 > 0
+                        else "待建立"
+                    ),
+                )
+                _lr3_v920.metric(
+                    "核心承接價",
+                    f"{_core_support_v920:,.2f} 元"
+                    if _core_support_v920 > 0 else "待建立",
+                )
+                if _core_support_v920 > 0:
+                    st.caption(
+                        f"核心承接價計算：{_core_support_method_v920}。"
+                        "承接區是市場低位支撐證據，不等同系統建議進場區。"
+                    )
+
                 st.info(
                     _low_radar_label_v914
                     + f"{_low_score_v87}/5 項成立。"
@@ -6548,7 +6658,7 @@ if stock_input:
                     )
 
                 _low_details_v88a = _p18.get("low_turn_details", []) or []
-                with st.expander("查看低位轉折 5 項明細"):
+                with st.expander("查看低位承接 5 項明細"):
                     if _low_details_v88a:
                         _low_rows_v88a = []
                         for _item in _low_details_v88a:
