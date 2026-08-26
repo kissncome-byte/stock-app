@@ -3712,7 +3712,7 @@ with st.sidebar:
 
     st.caption("自選清單會寫入目前網址；建議把這個網址加入瀏覽器書籤。")
 
-st.markdown("## 🧭 StockPilot Beta v9.17.1｜個股操作決策")
+st.markdown("## 🧭 StockPilot Beta v9.18｜個股操作決策")
 st.caption("直接回答：現在要不要進場、持有、加碼、減碼或退出。")
 stock_input = st.text_input(
     "請輸入核心目標個股代碼：",
@@ -3840,7 +3840,7 @@ if stock_input:
                 # Decision Engine 對 non-holder 的 cost 必須是 0。
                 _shadow_user_cost = float(user_cost or 0) if user_holding else 0.0
 
-                # v9.17.1：Price Engine 某版本的 structural_exit / moving_protection
+                # v9.18：Price Engine 某版本的 structural_exit / moving_protection
                 # 驗證器會在「35.65 < 37.45」這種本來就正確的價格順序下仍誤拋錯誤。
                 # 先照正確語意送入；若只遇到這個已知矛盾驗證錯誤，
                 # 不讓整個最新操作模組失敗，改以 Shadow unavailable 降級處理。
@@ -3866,11 +3866,11 @@ if stock_input:
                     else:
                         raise
 
-                # v9.17.1：若 Shadow 因已知 validator bug 被停用，
+                # v9.18：若 Shadow 因已知 validator bug 被停用，
                 # 後續不得覆蓋正式決策；建立空結果代理僅供相容既有顯示流程。
                 if shadow_v4 is None:
-                    # v9.17.1：fallback 必須完整符合後續 Governance 讀取介面。
-                    # v9.17.1 只補了 action 等欄位，但後續會直接讀 snapshot，
+                    # v9.18：fallback 必須完整符合後續 Governance 讀取介面。
+                    # v9.18 只補了 action 等欄位，但後續會直接讀 snapshot，
                     # 因此造成 AttributeError。這裡補齊 snapshot 與其 enum-like .value。
                     class _ShadowValueV912:
                         def __init__(self, value):
@@ -5709,11 +5709,11 @@ if stock_input:
                 _probe_trigger = float(_p18.get("beta_probe_trigger", 0) or 0)
                 _strong_breakout = float(_p18.get("beta_strong_breakout", _b_confirm) or 0)
 
-                # v9.17.1：未持股顯示分級。
+                # v9.18：未持股顯示分級。
                 # 不改正式決策引擎，只把「不宜進場」拆成硬否決與接近觸發兩種情況，
                 # 避免條件已接近成熟時仍顯示過度負面的文字。
                 _entry_display_state_v98 = _state_now or _decision_now
-                # v9.17.1：硬風險否決改為「原因清單」，不能只顯示 True/False。
+                # v9.18：硬風險否決改為「原因清單」，不能只顯示 True/False。
                 _entry_veto_reasons_v99 = []
 
                 if _p18.get("beta_intraday_invalid"):
@@ -5853,7 +5853,7 @@ if stock_input:
                     )
                     _raw_moving_v917 = float(_p18.get("moving_protection", 0) or 0)
 
-                    # v9.17.1.1：先建立進場區中位數，再進行目標價合理性檢查。
+                    # v9.18.1：先建立進場區中位數，再進行目標價合理性檢查。
                     _entry_mid_v915 = (
                         (_entry_low_v915 + _entry_high_v915) / 2
                         if _entry_low_v915 > 0 and _entry_high_v915 > 0
@@ -5866,23 +5866,45 @@ if stock_input:
                         float(_current_price_beta or 0),
                         float(_entry_mid_v915 or 0),
                     )
-                    _exit_candidates_v917 = sorted({
-                        float(v) for v in (
-                            _raw_exit1_v917,
-                            _raw_exit2_v917,
-                            float(_strong_breakout or 0),
-                        )
-                        if float(v or 0) > _entry_reference_v917
-                    })
-                    _exit1_v915 = _exit_candidates_v917[0] if _exit_candidates_v917 else 0.0
-                    _exit2_v915 = _exit_candidates_v917[1] if len(_exit_candidates_v917) > 1 else 0.0
+                    # v9.18：舊目標若已被突破，不再只顯示「待建立」；
+                    # 先找近期真實壓力，再用 ATR / 交易風險建立動態延伸目標。
                     _old_target_passed_v917 = bool(
                         _raw_exit1_v917 > 0
                         and _entry_reference_v917 >= _raw_exit1_v917
                     )
 
-                    # 交易防守與結構失效分離。交易防守優先使用較近的移動防守；
-                    # 若它不存在或離正式進場基準過遠，改以進場區下緣附近建立風控參考。
+                    _recent_high_candidates_v918 = []
+                    try:
+                        if isinstance(_s19_daily, pd.DataFrame) and not _s19_daily.empty:
+                            _high_series_v918 = (
+                                pd.to_numeric(_s19_daily["high"], errors="coerce").dropna()
+                                if "high" in _s19_daily.columns
+                                else pd.to_numeric(_s19_daily["close"], errors="coerce").dropna()
+                            )
+                            for _window_v918 in (20, 60, 120):
+                                if len(_high_series_v918) >= 2:
+                                    _h_v918 = float(_high_series_v918.tail(_window_v918).max())
+                                    if _h_v918 > _entry_reference_v917:
+                                        _recent_high_candidates_v918.append(_h_v918)
+                    except Exception:
+                        _recent_high_candidates_v918 = []
+
+                    _atr_v918 = float(_s19_atr or 0)
+                    _tick_v918 = tick_size(_entry_reference_v917) if _entry_reference_v917 > 0 else 0.01
+
+                    # 先把既有仍有效的技術目標、突破價與近期高點納入候選。
+                    _exit_candidates_v917 = sorted({
+                        round_to_tick(float(v), _tick_v918)
+                        for v in (
+                            _raw_exit1_v917,
+                            _raw_exit2_v917,
+                            float(_strong_breakout or 0),
+                            *_recent_high_candidates_v918,
+                        )
+                        if float(v or 0) > _entry_reference_v917
+                    })
+
+                    # 交易防守先建立，後面用它算真正的風險距離。
                     _trade_defense_candidates_v917 = [
                         float(v) for v in (
                             _raw_moving_v917,
@@ -5897,6 +5919,70 @@ if stock_input:
                     _defense_v915 = _trade_defense_v917
                     _force_exit_v915 = _structural_exit_v917
 
+                    _risk_distance_v918 = (
+                        _entry_reference_v917 - _defense_v915
+                        if _entry_reference_v917 > _defense_v915 > 0
+                        else 0.0
+                    )
+
+                    # 最低可接受第一目標：至少要提供約 1.2R；
+                    # ATR 有效時，同時要求至少一個 ATR 的上行空間。
+                    _min_target1_v918 = _entry_reference_v917
+                    if _risk_distance_v918 > 0:
+                        _min_target1_v918 = max(
+                            _min_target1_v918,
+                            _entry_reference_v917 + _risk_distance_v918 * 1.20,
+                        )
+                    if _atr_v918 > 0:
+                        _min_target1_v918 = max(
+                            _min_target1_v918,
+                            _entry_reference_v917 + _atr_v918,
+                        )
+                    _min_target1_v918 = ceil_to_tick(_min_target1_v918, _tick_v918)
+
+                    # 先用高於最低風報門檻的真實技術候選。
+                    _valid_target_candidates_v918 = [
+                        v for v in _exit_candidates_v917
+                        if v >= _min_target1_v918
+                    ]
+
+                    if _valid_target_candidates_v918:
+                        _exit1_v915 = _valid_target_candidates_v918[0]
+                    else:
+                        # 沒有既有壓力可用時，才以風險 / ATR 投影建立第一動態目標。
+                        _exit1_v915 = _min_target1_v918 if _min_target1_v918 > _entry_reference_v917 else 0.0
+
+                    # 第二目標優先採下一個真實技術壓力；
+                    # 若沒有，使用較大的 2R / 2ATR 延伸。
+                    _target2_candidates_v918 = [
+                        v for v in _exit_candidates_v917
+                        if v > _exit1_v915
+                    ]
+                    if _target2_candidates_v918:
+                        _exit2_v915 = _target2_candidates_v918[0]
+                    else:
+                        _dynamic_target2_v918 = _entry_reference_v917
+                        if _risk_distance_v918 > 0:
+                            _dynamic_target2_v918 = max(
+                                _dynamic_target2_v918,
+                                _entry_reference_v917 + _risk_distance_v918 * 2.0,
+                            )
+                        if _atr_v918 > 0:
+                            _dynamic_target2_v918 = max(
+                                _dynamic_target2_v918,
+                                _entry_reference_v917 + _atr_v918 * 2.0,
+                            )
+                        _exit2_v915 = (
+                            ceil_to_tick(_dynamic_target2_v918, _tick_v918)
+                            if _dynamic_target2_v918 > _exit1_v915
+                            else ceil_to_tick(_exit1_v915 + _tick_v918, _tick_v918)
+                        )
+
+                    _targets_rebuilt_v918 = bool(
+                        _old_target_passed_v917
+                        or not (_raw_exit1_v917 > _entry_reference_v917)
+                    )
+
                     _risk_v915 = _entry_reference_v917 - _defense_v915 if _entry_reference_v917 > _defense_v915 > 0 else 0
                     _reward_v915 = _exit1_v915 - _entry_reference_v917 if _exit1_v915 > _entry_reference_v917 > 0 else 0
                     _rr_v915 = _reward_v915 / _risk_v915 if _risk_v915 > 0 and _reward_v915 > 0 else 0
@@ -5909,8 +5995,7 @@ if stock_input:
                     x1,x2,x3 = st.columns(3)
                     x1.metric(
                         "第一出場價",
-                        f"{_exit1_v915:,.2f} 元" if _exit1_v915 > 0
-                        else ("原第一目標已突破・待建立新目標" if _old_target_passed_v917 else "待建立")
+                        f"{_exit1_v915:,.2f} 元" if _exit1_v915 > 0 else "待建立"
                     )
                     x2.metric("第二出場價", f"{_exit2_v915:,.2f} 元" if _exit2_v915 > _exit1_v915 > 0 else "待建立")
                     x3.metric("交易防守價", f"{_defense_v915:,.2f} 元" if _defense_v915 > 0 else "待建立")
@@ -5920,7 +6005,13 @@ if stock_input:
                     if _old_target_passed_v917:
                         st.info(
                             f"原第一目標 {_raw_exit1_v917:,.2f} 元已被目前價格突破，"
-                            "不再作為新進場部位的獲利出場價；系統改採下一個仍高於目前價格的有效目標。"
+                            f"系統已重新建立新目標：第一出場 {_exit1_v915:,.2f} 元、"
+                            f"第二出場 {_exit2_v915:,.2f} 元。"
+                        )
+                    elif _targets_rebuilt_v918:
+                        st.info(
+                            f"原交易計畫缺少有效的未來目標，系統已依近期壓力、ATR 與交易風險"
+                            f"重建第一出場 {_exit1_v915:,.2f} 元、第二出場 {_exit2_v915:,.2f} 元。"
                         )
 
                     if _entry_low_v915 > 0 and _entry_high_v915 > 0 and _current_price_beta > 0:
@@ -6066,7 +6157,7 @@ if stock_input:
                         if _b_invalid > 0 else "進場條件失效價：待建立"
                     )
 
-                    # v9.17.1：直接告訴使用者距離下一個可執行門檻還有多少。
+                    # v9.18：直接告訴使用者距離下一個可執行門檻還有多少。
                     if _probe_trigger > 0 and _price_now_v86 > 0 and _price_now_v86 < _probe_trigger:
                         _probe_gap_pct_v98 = (_probe_trigger / _price_now_v86 - 1) * 100
                         st.info(
@@ -6087,7 +6178,7 @@ if stock_input:
                         + "；".join(_entry_veto_reasons_v99)
                     )
 
-                    # v9.17.1：升級條件改成「已完成 / 待完成」雙清單，
+                    # v9.18：升級條件改成「已完成 / 待完成」雙清單，
                     # 不再把現價已經達成的價格條件重複列成待完成。
                     _entry_done_v913 = []
                     _entry_pending_v913 = []
@@ -6629,7 +6720,7 @@ if stock_input:
 
                 # v9.3：出場比例不再固定 30%，改由持股健康度與訊號一致度動態決定。
                 # 健康且一致度高：讓獲利奔跑；轉弱或一致度下降：提早收回較多部位。
-                # v9.17.1：出場比例直接使用畫面「訊號一致度」實際顯示的同一個計數。
+                # v9.18：出場比例直接使用畫面「訊號一致度」實際顯示的同一個計數。
                 # 畫面顯示 _hold_signal_score/_hold_signal_total，
                 # 因此出場引擎也只能讀 _hold_signal_score，不再使用舊的 _hold_agree。
                 _exit_signal_count = int(_hold_signal_score or 0)
@@ -6648,7 +6739,7 @@ if stock_input:
 
                 _exit_pct_final = max(0, 100 - _exit_pct1 - _exit_pct2)
 
-                # v9.17.1：所有出場比例文字一律從同一組變數產生，禁止任何 UI 區塊另寫固定百分比。
+                # v9.18：所有出場比例文字一律從同一組變數產生，禁止任何 UI 區塊另寫固定百分比。
                 _exit_plan_text = (
                     f"出場配置：{_exit_style}｜第一段 {_exit_pct1}%｜"
                     f"第二段 {_exit_pct2}%｜剩餘 {_exit_pct_final}% 採動態移動停利"
