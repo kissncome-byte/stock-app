@@ -3712,7 +3712,7 @@ with st.sidebar:
 
     st.caption("自選清單會寫入目前網址；建議把這個網址加入瀏覽器書籤。")
 
-st.markdown("## 🧭 StockPilot Beta v9.16｜個股操作決策")
+st.markdown("## 🧭 StockPilot Beta v9.17｜個股操作決策")
 st.caption("直接回答：現在要不要進場、持有、加碼、減碼或退出。")
 stock_input = st.text_input(
     "請輸入核心目標個股代碼：",
@@ -3840,7 +3840,7 @@ if stock_input:
                 # Decision Engine 對 non-holder 的 cost 必須是 0。
                 _shadow_user_cost = float(user_cost or 0) if user_holding else 0.0
 
-                # v9.16：Price Engine 某版本的 structural_exit / moving_protection
+                # v9.17：Price Engine 某版本的 structural_exit / moving_protection
                 # 驗證器會在「35.65 < 37.45」這種本來就正確的價格順序下仍誤拋錯誤。
                 # 先照正確語意送入；若只遇到這個已知矛盾驗證錯誤，
                 # 不讓整個最新操作模組失敗，改以 Shadow unavailable 降級處理。
@@ -3866,11 +3866,11 @@ if stock_input:
                     else:
                         raise
 
-                # v9.16：若 Shadow 因已知 validator bug 被停用，
+                # v9.17：若 Shadow 因已知 validator bug 被停用，
                 # 後續不得覆蓋正式決策；建立空結果代理僅供相容既有顯示流程。
                 if shadow_v4 is None:
-                    # v9.16：fallback 必須完整符合後續 Governance 讀取介面。
-                    # v9.16 只補了 action 等欄位，但後續會直接讀 snapshot，
+                    # v9.17：fallback 必須完整符合後續 Governance 讀取介面。
+                    # v9.17 只補了 action 等欄位，但後續會直接讀 snapshot，
                     # 因此造成 AttributeError。這裡補齊 snapshot 與其 enum-like .value。
                     class _ShadowValueV912:
                         def __init__(self, value):
@@ -5709,11 +5709,11 @@ if stock_input:
                 _probe_trigger = float(_p18.get("beta_probe_trigger", 0) or 0)
                 _strong_breakout = float(_p18.get("beta_strong_breakout", _b_confirm) or 0)
 
-                # v9.16：未持股顯示分級。
+                # v9.17：未持股顯示分級。
                 # 不改正式決策引擎，只把「不宜進場」拆成硬否決與接近觸發兩種情況，
                 # 避免條件已接近成熟時仍顯示過度負面的文字。
                 _entry_display_state_v98 = _state_now or _decision_now
-                # v9.16：硬風險否決改為「原因清單」，不能只顯示 True/False。
+                # v9.17：硬風險否決改為「原因清單」，不能只顯示 True/False。
                 _entry_veto_reasons_v99 = []
 
                 if _p18.get("beta_intraday_invalid"):
@@ -5846,22 +5846,57 @@ if stock_input:
                         _probe_trigger if _probe_trigger > _entry_high_v915
                         else (_strong_breakout if _strong_breakout > _entry_high_v915 else _entry_high_v915)
                     )
-                    _exit1_v915 = float(_p18.get("target1", 0) or 0)
-                    _exit2_v915 = float(_p18.get("target2", 0) or 0)
-                    _defense_v915 = float(
-                        _p18.get("moving_protection", 0)
-                        or _p18.get("structural_exit", 0)
-                        or _b_invalid or 0
+                    _raw_exit1_v917 = float(_p18.get("target1", 0) or 0)
+                    _raw_exit2_v917 = float(_p18.get("target2", 0) or 0)
+                    _structural_exit_v917 = float(
+                        _p18.get("structural_exit", 0) or _b_invalid or 0
                     )
-                    _force_exit_v915 = float(_p18.get("structural_exit", 0) or _b_invalid or 0)
+                    _raw_moving_v917 = float(_p18.get("moving_protection", 0) or 0)
+
+                    # v9.17：正式進場後，獲利目標必須高於可執行買進基準。
+                    # 若舊 target1 已被現價突破，不再把它當作「未來出場價」。
+                    _entry_reference_v917 = max(
+                        float(_current_price_beta or 0),
+                        float(_entry_mid_v915 or 0),
+                    )
+                    _exit_candidates_v917 = sorted({
+                        float(v) for v in (
+                            _raw_exit1_v917,
+                            _raw_exit2_v917,
+                            float(_strong_breakout or 0),
+                        )
+                        if float(v or 0) > _entry_reference_v917
+                    })
+                    _exit1_v915 = _exit_candidates_v917[0] if _exit_candidates_v917 else 0.0
+                    _exit2_v915 = _exit_candidates_v917[1] if len(_exit_candidates_v917) > 1 else 0.0
+                    _old_target_passed_v917 = bool(
+                        _raw_exit1_v917 > 0
+                        and _entry_reference_v917 >= _raw_exit1_v917
+                    )
+
+                    # 交易防守與結構失效分離。交易防守優先使用較近的移動防守；
+                    # 若它不存在或離正式進場基準過遠，改以進場區下緣附近建立風控參考。
+                    _trade_defense_candidates_v917 = [
+                        float(v) for v in (
+                            _raw_moving_v917,
+                            float(_entry_low_v915 or 0) * 0.985 if _entry_low_v915 > 0 else 0,
+                        )
+                        if 0 < float(v or 0) < _entry_reference_v917
+                    ]
+                    _trade_defense_v917 = (
+                        max(_trade_defense_candidates_v917)
+                        if _trade_defense_candidates_v917 else 0.0
+                    )
+                    _defense_v915 = _trade_defense_v917
+                    _force_exit_v915 = _structural_exit_v917
 
                     _entry_mid_v915 = (
                         (_entry_low_v915 + _entry_high_v915) / 2
                         if _entry_low_v915 > 0 and _entry_high_v915 > 0
                         else float(_current_price_beta or 0)
                     )
-                    _risk_v915 = _entry_mid_v915 - _defense_v915 if _entry_mid_v915 > _defense_v915 > 0 else 0
-                    _reward_v915 = _exit1_v915 - _entry_mid_v915 if _exit1_v915 > _entry_mid_v915 > 0 else 0
+                    _risk_v915 = _entry_reference_v917 - _defense_v915 if _entry_reference_v917 > _defense_v915 > 0 else 0
+                    _reward_v915 = _exit1_v915 - _entry_reference_v917 if _exit1_v915 > _entry_reference_v917 > 0 else 0
                     _rr_v915 = _reward_v915 / _risk_v915 if _risk_v915 > 0 and _reward_v915 > 0 else 0
 
                     q1,q2,q3 = st.columns(3)
@@ -5870,9 +5905,21 @@ if stock_input:
                     q3.metric("目前價格", f"{_current_price_beta:,.2f} 元" if _current_price_beta > 0 else "待取得")
 
                     x1,x2,x3 = st.columns(3)
-                    x1.metric("第一出場價", f"{_exit1_v915:,.2f} 元" if _exit1_v915 > 0 else "待建立")
+                    x1.metric(
+                        "第一出場價",
+                        f"{_exit1_v915:,.2f} 元" if _exit1_v915 > 0
+                        else ("原第一目標已突破・待建立新目標" if _old_target_passed_v917 else "待建立")
+                    )
                     x2.metric("第二出場價", f"{_exit2_v915:,.2f} 元" if _exit2_v915 > _exit1_v915 > 0 else "待建立")
-                    x3.metric("防守／失效價", f"{_defense_v915:,.2f} 元" if _defense_v915 > 0 else "待建立")
+                    x3.metric("交易防守價", f"{_defense_v915:,.2f} 元" if _defense_v915 > 0 else "待建立")
+
+                    if _force_exit_v915 > 0:
+                        st.caption(f"結構失效價：{_force_exit_v915:,.2f} 元（中期結構完全破壞的底線，與交易防守價分開）")
+                    if _old_target_passed_v917:
+                        st.info(
+                            f"原第一目標 {_raw_exit1_v917:,.2f} 元已被目前價格突破，"
+                            "不再作為新進場部位的獲利出場價；系統改採下一個仍高於目前價格的有效目標。"
+                        )
 
                     if _entry_low_v915 > 0 and _entry_high_v915 > 0 and _current_price_beta > 0:
                         if _entry_low_v915 <= _current_price_beta <= _entry_high_v915:
@@ -6017,7 +6064,7 @@ if stock_input:
                         if _b_invalid > 0 else "進場條件失效價：待建立"
                     )
 
-                    # v9.16：直接告訴使用者距離下一個可執行門檻還有多少。
+                    # v9.17：直接告訴使用者距離下一個可執行門檻還有多少。
                     if _probe_trigger > 0 and _price_now_v86 > 0 and _price_now_v86 < _probe_trigger:
                         _probe_gap_pct_v98 = (_probe_trigger / _price_now_v86 - 1) * 100
                         st.info(
@@ -6038,7 +6085,7 @@ if stock_input:
                         + "；".join(_entry_veto_reasons_v99)
                     )
 
-                    # v9.16：升級條件改成「已完成 / 待完成」雙清單，
+                    # v9.17：升級條件改成「已完成 / 待完成」雙清單，
                     # 不再把現價已經達成的價格條件重複列成待完成。
                     _entry_done_v913 = []
                     _entry_pending_v913 = []
@@ -6580,7 +6627,7 @@ if stock_input:
 
                 # v9.3：出場比例不再固定 30%，改由持股健康度與訊號一致度動態決定。
                 # 健康且一致度高：讓獲利奔跑；轉弱或一致度下降：提早收回較多部位。
-                # v9.16：出場比例直接使用畫面「訊號一致度」實際顯示的同一個計數。
+                # v9.17：出場比例直接使用畫面「訊號一致度」實際顯示的同一個計數。
                 # 畫面顯示 _hold_signal_score/_hold_signal_total，
                 # 因此出場引擎也只能讀 _hold_signal_score，不再使用舊的 _hold_agree。
                 _exit_signal_count = int(_hold_signal_score or 0)
@@ -6599,7 +6646,7 @@ if stock_input:
 
                 _exit_pct_final = max(0, 100 - _exit_pct1 - _exit_pct2)
 
-                # v9.16：所有出場比例文字一律從同一組變數產生，禁止任何 UI 區塊另寫固定百分比。
+                # v9.17：所有出場比例文字一律從同一組變數產生，禁止任何 UI 區塊另寫固定百分比。
                 _exit_plan_text = (
                     f"出場配置：{_exit_style}｜第一段 {_exit_pct1}%｜"
                     f"第二段 {_exit_pct2}%｜剩餘 {_exit_pct_final}% 採動態移動停利"
