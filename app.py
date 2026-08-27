@@ -4131,115 +4131,105 @@ def build_historical_replay(stock_id: str, market_type: str, trading_days_back: 
 
 
 def render_historical_replay_panel(res: dict, stock_id: str) -> None:
-    """顯示目前 vs 歷史日線重算，不宣稱是當時完整盤中快照。"""
-    st.markdown("### 🕰️ 歷史日線重算／前期比較")
-    st.caption(
-        "這不是資料庫保存的舊畫面，而是把可回溯資料真正截斷到指定交易日後重新計算。"
-        "未保存的盤中觸發、當時新聞與分析師共識不會用今天資料倒灌。"
-    )
-
-    _hist_c1, _hist_c2 = st.columns([1, 2])
-    with _hist_c1:
-        back_days = st.number_input(
-            "回看前幾個已完成交易日",
-            min_value=1,
-            max_value=120,
-            value=1,
-            step=1,
-            key=f"_history_replay_days_{stock_id}",
-            help="1 = 最近一個已完成交易日；不以日曆日計算，所以週一的前1日會回到上週五。",
-        )
-    with _hist_c2:
+    """
+    v9.23：歷史重算改成預設收合。
+    主畫面先看今日決策；需要比較過去時再展開，不讓歷史分析佔據上半頁。
+    """
+    with st.expander("🕰️ 歷史日線重算／前期比較", expanded=False):
         st.caption(
-            "可回溯：日線、價量、三大法人、融資融券、大戶分級（有資料時）。"
-            "不可完整回放：分鐘盤中觸發、當時即時新聞、當時分析師共識。"
+            "使用真實可回溯資料截斷到指定交易日後重算；"
+            "未保存的盤中觸發、當時新聞與分析師共識不會用今天資料倒灌。"
         )
 
-    hist = build_historical_replay(
-        str(stock_id),
-        str(res.get("market_type", "TSE")),
-        int(back_days),
-    )
-    if not hist.get("available"):
-        st.warning("歷史重算目前不可用：" + str(hist.get("reason", "資料不足")))
-        return
+        _hist_c1, _hist_c2 = st.columns([1, 2.4])
+        with _hist_c1:
+            back_days = st.number_input(
+                "回看交易日",
+                min_value=1,
+                max_value=120,
+                value=1,
+                step=1,
+                key=f"_history_replay_days_{stock_id}",
+                help="以已完成交易日計算，1 代表最近一個已完成交易日。",
+            )
+        with _hist_c2:
+            st.caption(
+                "可回溯：日線、價量、三大法人、融資融券、大戶分級（有資料時）。"
+            )
 
-    st.success(
-        f"歷史重算日期：{hist['as_of_date']}｜"
-        f"前 {hist['trading_days_back']} 個已完成交易日｜"
-        f"狀態：{hist['replay_state']}"
-    )
+        hist = build_historical_replay(
+            str(stock_id),
+            str(res.get("market_type", "TSE")),
+            int(back_days),
+        )
+        if not hist.get("available"):
+            st.warning("歷史重算目前不可用：" + str(hist.get("reason", "資料不足")))
+            return
 
-    r1, r2, r3, r4 = st.columns(4)
-    r1.metric("當時收盤價", f"{hist['price']:,.2f} 元", f"{hist['daily_pct']:+.2f}%")
-    r2.metric("當時日線趨勢", hist["trend_label"], f"{hist['trend_score']}/100")
-    r3.metric("當時低位承接", f"{hist['low_score']}/5")
-    r4.metric("當時籌碼", hist["chip_state"], f"{hist['chip_score']}/100")
+        st.info(
+            f"{hist['as_of_date']}｜前 {hist['trading_days_back']} 個已完成交易日｜"
+            f"{hist['replay_state']}"
+        )
 
-    p1, p2, p3 = st.columns(3)
-    p1.metric(
-        "當時承接區間",
-        (
-            f"{hist['low_zone_low']:,.2f}～{hist['low_zone_high']:,.2f} 元"
-            if hist["low_zone_low"] > 0 and hist["low_zone_high"] > 0
-            else "待建立"
-        ),
-    )
-    p2.metric(
-        "當時核心承接價",
-        f"{hist['core_support']:,.2f} 元" if hist["core_support"] > 0 else "待建立",
-    )
-    p3.metric(
-        "當時價量狀態",
-        hist["volume_state"],
-        f"{hist['volume_score']}/100",
-    )
+        r1, r2, r3, r4 = st.columns(4)
+        r1.metric("收盤價", f"{hist['price']:,.2f}", f"{hist['daily_pct']:+.2f}%")
+        r2.metric("日線趨勢", hist["trend_label"], f"{hist['trend_score']}/100")
+        r3.metric("低位承接", f"{hist['low_score']}/5")
+        r4.metric("籌碼", hist["chip_state"], f"{hist['chip_score']}/100")
 
-    current_price = float(res.get("current_price", 0) or 0)
-    current_trend = str(res.get("trend_state_detail", {}).get("state_label", "資料不足"))
-    current_chip = build_chip_engine(res)
-    current_volume = build_volume_engine(res)
-
-    compare_df = pd.DataFrame([
-        {
-            "項目": "股價",
-            "歷史重算": f"{hist['price']:,.2f}",
-            "現在": f"{current_price:,.2f}" if current_price > 0 else "資料不足",
-        },
-        {
-            "項目": "日線趨勢",
-            "歷史重算": hist["trend_label"],
-            "現在": current_trend,
-        },
-        {
-            "項目": "籌碼狀態",
-            "歷史重算": hist["chip_state"],
-            "現在": current_chip.get("state", "資料不足"),
-        },
-        {
-            "項目": "價量狀態",
-            "歷史重算": hist["volume_state"],
-            "現在": current_volume.get("state", "資料不足"),
-        },
-        {
-            "項目": "核心承接價",
-            "歷史重算": (
-                f"{hist['core_support']:,.2f}"
-                if hist["core_support"] > 0 else "待建立"
+        p1, p2, p3 = st.columns(3)
+        p1.metric(
+            "承接區",
+            (
+                f"{hist['low_zone_low']:,.2f}～{hist['low_zone_high']:,.2f}"
+                if hist["low_zone_low"] > 0 and hist["low_zone_high"] > 0
+                else "待建立"
             ),
-            "現在": "請見目前低位承接雷達",
-        },
-    ])
-    st.dataframe(compare_df, use_container_width=True, hide_index=True)
-
-    with st.expander("查看歷史重算的真實資料來源與限制", expanded=False):
-        for k, v in hist.get("data_sources", {}).items():
-            st.write(f"**{k}：** {v}")
-        st.write("**無法可靠回放：** " + "、".join(hist.get("unreplayable", [])))
-        st.caption(
-            "因此「歷史重算狀態」不是當時完整正式策略的資料庫快照；"
-            "它只代表可被歷史資料驗證的日線／籌碼／價量重算結果。"
         )
+        p2.metric(
+            "核心承接價",
+            f"{hist['core_support']:,.2f}" if hist["core_support"] > 0 else "待建立",
+        )
+        p3.metric("價量", hist["volume_state"], f"{hist['volume_score']}/100")
+
+        current_price = float(res.get("current_price", 0) or 0)
+        current_trend = str(
+            res.get("trend_state_detail", {}).get("state_label", "資料不足")
+        )
+        current_chip = build_chip_engine(res)
+        current_volume = build_volume_engine(res)
+
+        compare_df = pd.DataFrame([
+            {
+                "項目": "股價",
+                "歷史": f"{hist['price']:,.2f}",
+                "現在": f"{current_price:,.2f}" if current_price > 0 else "資料不足",
+            },
+            {
+                "項目": "日線趨勢",
+                "歷史": hist["trend_label"],
+                "現在": current_trend,
+            },
+            {
+                "項目": "籌碼",
+                "歷史": hist["chip_state"],
+                "現在": current_chip.get("state", "資料不足"),
+            },
+            {
+                "項目": "價量",
+                "歷史": hist["volume_state"],
+                "現在": current_volume.get("state", "資料不足"),
+            },
+        ])
+        st.dataframe(compare_df, use_container_width=True, hide_index=True)
+
+        with st.expander("資料來源與回放限制", expanded=False):
+            for k, v in hist.get("data_sources", {}).items():
+                st.write(f"**{k}：** {v}")
+            st.write(
+                "**無法可靠回放：** "
+                + "、".join(hist.get("unreplayable", []))
+            )
 
 
 
@@ -4501,7 +4491,9 @@ if "_stock_input_widget" not in st.session_state:
 with st.sidebar:
     st.header("⚙️ 操作設定")
     slip_input = st.slider("預估滑價 (Ticks)", 0, 5, 1)
-    sector_panic_toggle = st.checkbox("🔥 同族群龍頭同步重挫", value=False)
+    # v9.23：左側「同族群龍頭同步重挫」手動開關移除。
+    # 舊 evaluate_stock 仍保留 sector_panic 參數，因此固定 False 以維持相容。
+    sector_panic_toggle = False
     auto_refresh = st.checkbox("🔄 盤中每 15 秒更新報價", value=False)
     show_evidence_default = False
     debug_mode = False
@@ -4560,12 +4552,21 @@ with st.sidebar:
 
     st.caption("自選清單會寫入目前網址；建議把這個網址加入瀏覽器書籤。")
 
-st.markdown("## 🧭 StockPilot Beta v9.22｜個股操作決策")
-st.caption("直接回答：現在要不要進場、持有、加碼、減碼或退出。")
-stock_input = st.text_input(
-    "請輸入核心目標個股代碼：",
-    key="_stock_input_widget",
-).strip()
+st.markdown("## 🧭 StockPilot Beta v9.23｜個股操作決策")
+st.caption("主決策優先；盤中即時價格只更新執行狀態。")
+
+# v9.23：操作輸入壓縮成一排，避免上半段先被表單吃掉大量高度。
+_top1, _top2 = st.columns([3.2, 1.2])
+with _top1:
+    stock_input = st.text_input(
+        "個股代碼",
+        key="_stock_input_widget",
+        label_visibility="collapsed",
+        placeholder="輸入股票代碼，例如 2327",
+    ).strip()
+with _top2:
+    user_holding = st.checkbox("📊 已持有此股", value=False)
+
 stock_input = _normalize_stock_code(stock_input)
 
 try:
@@ -4574,25 +4575,27 @@ try:
 except Exception:
     pass
 
-u_col1, u_col2 = st.columns(2)
-with u_col1:
-    user_holding = st.checkbox("📊 我手中「已持有」此個股", value=False)
-with u_col2:
-    user_cost = st.number_input(
-        "每股真實持股成本 (元)",
-        value=0.0,
-        step=1.0,
-        min_value=0.0,
-        disabled=not user_holding,
-    )
-user_shares = st.number_input(
-    "目前持有股數",
-    value=0,
-    step=100,
-    min_value=0,
-    disabled=not user_holding,
-    help="用於計算目前部位風險與可否再加碼；若未持有可維持 0。",
-)
+# 只有真的已持有時才顯示成本與股數，未持有者完全不占畫面高度。
+if user_holding:
+    _hold1, _hold2 = st.columns(2)
+    with _hold1:
+        user_cost = st.number_input(
+            "持股成本（元）",
+            value=0.0,
+            step=1.0,
+            min_value=0.0,
+        )
+    with _hold2:
+        user_shares = st.number_input(
+            "持有股數",
+            value=0,
+            step=100,
+            min_value=0,
+            help="用於計算目前部位風險與可否再加碼。",
+        )
+else:
+    user_cost = 0.0
+    user_shares = 0
 
 if stock_input:
     res = evaluate_stock(stock_input, capital, risk_pct, slip_input, is_holding=user_holding, 進場區_cost=user_cost, sector_panic=sector_panic_toggle)
@@ -4610,8 +4613,6 @@ if stock_input:
         st.info(f"資料完整度：{res['data_quality_score']:.0f}%｜缺少：{missing_text}。資料不足的項目不納入方向判斷。")
         st.caption(f"資料更新時間：{datetime.now(TZ).strftime('%Y-%m-%d %H:%M:%S')}（台北時間）｜報價來源：{res.get('rt_source', res.get('quote_source', '依目前可用資料'))}")
 
-        render_historical_replay_panel(res, stock_input)
-
         # 0. Project Compass 首頁：先回答該怎麼做，再展開證據
         compass = build_compass_home_summary(res, user_holding)
         committee_seed = build_ai_investment_committee(res, compass)
@@ -4621,6 +4622,9 @@ if stock_input:
         decision_snapshot["strategy_stability_validation"] = build_strategy_stability_validation(res)
         decision_snapshot["strategy_outcome_validation"] = build_strategy_outcome_validation(res)
         decision_snapshot["strategy_audit"] = build_strategy_consistency_audit(decision_snapshot, strategy_state, user_holding)
+
+        # v9.23：歷史比較移到主決策邏輯建立後，且預設收合。
+        render_historical_replay_panel(res, stock_input)
 
         # StockPilot 4.0 Shadow：只做平行比對，不改寫 3.3 正式策略。
         shadow_v4 = None
