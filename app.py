@@ -13,7 +13,6 @@ from stockpilot.services.shadow_integration import ShadowIntegration
 
 # ============ 1. Page Config ============
 st.set_page_config(page_title="Project Compass V3｜單一決策執行中心", layout="wide")
-# StockPilot v9.20：低位承接區 + 核心承接價
 
 # ============ 2. Global Constants ============
 TZ = pytz.timezone("Asia/Taipei")
@@ -3759,6 +3758,693 @@ risk_pct = 1.0
 
 # Beta v8.5：自選股票
 # 以網址參數保存代碼，重新整理或沿用同一網址開啟時不必重新輸入。
+
+@st.cache_data(ttl=1800)
+def get_large_holder_radar_asof(stock_id: str, as_of_date: str, days: int = 180) -> dict:
+    """只使用 as_of_date 當日以前已存在的大戶持股分級資料。"""
+    empty = {
+        "available": False,
+        "latest_date": None,
+        "latest_pct": None,
+        "change_pp": None,
+        "trend": "資料不足",
+        "score_delta": 0,
+        "warning_points": 0,
+        "veto": None,
+        "note": "截至該日無可用的400張以上大戶分級資料。",
+        "table": pd.DataFrame(),
+    }
+    try:
+        cutoff = pd.Timestamp(as_of_date)
+        start_date = (cutoff - pd.Timedelta(days=days)).strftime("%Y-%m-%d")
+        api = get_api()
+        if not hasattr(api, "taiwan_stock_holding_shares_per"):
+            return empty
+
+        raw = api.taiwan_stock_holding_shares_per(
+            stock_id=str(stock_id),
+            start_date=start_date,
+        )
+        if raw is None or raw.empty:
+            return empty
+
+        df = raw.copy()
+        if not {"date", "HoldingSharesLevel", "percent"}.issubset(df.columns):
+            return empty
+
+        df["date"] = pd.to_datetime(df["date"], errors="coerce")
+        df["percent"] = pd.to_numeric(df["percent"], errors="coerce")
+        df = df.dropna(subset=["date", "percent"])
+        df = df[df["date"] <= cutoff]
+        if df.empty:
+            return empty
+
+        def _lower_bound(level):
+            nums = re.findall(r"\d+", str(level or "").replace(",", "").replace(" ", ""))
+            return int(nums[0]) if nums else 0
+
+        df["_lower"] = df["HoldingSharesLevel"].map(_lower_bound)
+        large = df[df["_lower"] > 400000].copy()
+        if large.empty:
+            return empty
+
+        weekly = (
+            large.groupby("date", as_index=False)["percent"]
+            .sum()
+            .sort_values("date")
+            .reset_index(drop=True)
+        )
+        if weekly.empty:
+            return empty
+
+        latest = weekly.iloc[-1]
+        prev = weekly.iloc[max(0, len(weekly) - 5)]
+        latest_pct = float(latest["percent"])
+        change_pp = latest_pct - float(prev["percent"])
+
+        if change_pp >= 1.0:
+            trend, delta, warn = "明顯增加", +10, 0
+        elif change_pp >= 0.30:
+            trend, delta, warn = "溫和增加", +5, 0
+        elif change_pp <= -1.0:
+            trend, delta, warn = "明顯下降", -10, 3
+        elif change_pp <= -0.30:
+            trend, delta, warn = "溫和下降", -5, 1
+        else:
+            trend, delta, warn = "大致持平", 0, 0
+
+        veto = (
+            "400張以上大戶持股比例近月快速下降。"
+            if change_pp <= -2.0 else None
+        )
+        note = (
+            f"截至 {latest['date'].strftime('%Y-%m-%d')}，400張以上大戶持股約 "
+            f"{latest_pct:.2f}%｜較約4週前 {change_pp:+.2f} 個百分點｜{trend}"
+        )
+        display = weekly.tail(8).copy()
+        display["date"] = display["date"].dt.strftime("%Y-%m-%d")
+        display.columns = ["日期", "400張以上大戶持股比(%)"]
+
+        return {
+            "available": True,
+            "latest_date": latest["date"].strftime("%Y-%m-%d"),
+            "latest_pct": latest_pct,
+            "change_pp": change_pp,
+            "trend": trend,
+            "score_delta": delta,
+            "warning_points": warn,
+            "veto": veto,
+            "note": note,
+            "table": display,
+        }
+    except Exception as exc:
+        log_error(f"large holder asof {stock_id}", exc)
+        return empty
+
+
+@st.cache_data(ttl=1800)
+def get_margin_radar_asof(stock_id: str, as_of_date: str, days: int = 90) -> dict:
+    """只使用指定日期以前的融資融券餘額。"""
+    empty = {
+        "available": False,
+        "latest_date": None,
+        "margin_balance": None,
+        "change_5d": None,
+        "trend": "資料不足",
+        "note": "截至該日無可用融資餘額資料。",
+    }
+    try:
+        cutoff = pd.Timestamp(as_of_date)
+        start_date = (cutoff - pd.Timedelta(days=days)).strftime("%Y-%m-%d")
+        raw = get_api().taiwan_stock_margin_purchase_short_sale(
+            stock_id=str(stock_id),
+            start_date=start_date,
+        )
+        if raw is None or raw.empty or "MarginPurchaseTodayBalance" not in raw.columns:
+            return empty
+
+        df = raw.copy()
+        df["date"] = pd.to_datetime(df["date"], errors="coerce")
+        df["MarginPurchaseTodayBalance"] = pd.to_numeric(
+            df["MarginPurchaseTodayBalance"], errors="coerce"
+        )
+        df = (
+            df.dropna(subset=["date", "MarginPurchaseTodayBalance"])
+            .sort_values("date")
+        )
+        df = df[df["date"] <= cutoff]
+        if df.empty:
+            return empty
+
+        latest = df.iloc[-1]
+        prev = df.iloc[max(0, len(df) - 5)]
+        diff = float(
+            latest["MarginPurchaseTodayBalance"]
+            - prev["MarginPurchaseTodayBalance"]
+        )
+        if diff > 0:
+            trend = "近5日融資增加"
+        elif diff < 0:
+            trend = "近5日融資下降"
+        else:
+            trend = "近5日融資持平"
+
+        return {
+            "available": True,
+            "latest_date": latest["date"].strftime("%Y-%m-%d"),
+            "margin_balance": float(latest["MarginPurchaseTodayBalance"]),
+            "change_5d": diff,
+            "trend": trend,
+            "note": f"{trend}｜5日變化 {diff:+,.0f} 張",
+        }
+    except Exception as exc:
+        log_error(f"margin asof {stock_id}", exc)
+        return empty
+
+
+@st.cache_data(ttl=900)
+def build_historical_replay(stock_id: str, market_type: str, trading_days_back: int) -> dict:
+    """
+    歷史日線重算：
+    僅使用指定「已完成交易日」當時及以前可觀測到的資料。
+    不使用目前即時報價、盤中 session 狀態、今日新聞或今日分析師共識。
+    """
+    result = {
+        "available": False,
+        "reason": "",
+        "replay_type": "歷史日線重算",
+        "unreplayable": [
+            "盤中觸發／本日鎖定",
+            "指定日期當下的分鐘即時報價",
+            "當時新聞輿情快照（未保存）",
+            "當時分析師共識快照（未保存）",
+        ],
+    }
+    try:
+        days_back = max(1, int(trading_days_back))
+        raw = get_daily_df(str(stock_id), market_type=market_type, days=700)
+        if raw is None or raw.empty:
+            result["reason"] = "日線資料取得失敗。"
+            return result
+
+        d = raw.copy().sort_values("date").drop_duplicates("date").reset_index(drop=True)
+        d["date"] = pd.to_datetime(d["date"], errors="coerce")
+        d = d.dropna(subset=["date", "close"])
+
+        # 歷史回放只使用「今天以前」的日線，避免把今日盤中未完成K棒當成完整交易日。
+        today = pd.Timestamp(datetime.now(TZ).strftime("%Y-%m-%d"))
+        completed = d[d["date"] < today].copy().reset_index(drop=True)
+        if len(completed) < max(35, days_back):
+            result["reason"] = f"已完成歷史交易日不足，無法回看前 {days_back} 日。"
+            return result
+
+        cutoff_idx = len(completed) - days_back
+        if cutoff_idx < 0:
+            result["reason"] = "指定回看天數超出目前可取得的歷史資料。"
+            return result
+
+        cutoff_date = completed.iloc[cutoff_idx]["date"]
+        hist_raw = completed.iloc[:cutoff_idx + 1].copy().reset_index(drop=True)
+        if len(hist_raw) < 30:
+            result["reason"] = "指定日期以前的日線不足30筆，無法可靠計算技術指標。"
+            return result
+
+        hist_raw["date"] = hist_raw["date"].dt.strftime("%Y-%m-%d")
+        hist = prepare_indicator_df(hist_raw.copy())
+        if hist is None or hist.empty:
+            result["reason"] = "歷史技術指標重算失敗。"
+            return result
+
+        last = hist.iloc[-1]
+        prev = hist.iloc[-2] if len(hist) >= 2 else last
+        price = safe_float(last.get("close"), 0)
+        prev_close = safe_float(prev.get("close"), price)
+        daily_pct = ((price / prev_close) - 1) * 100 if prev_close > 0 else 0.0
+
+        trend_score = _daily_trend_score(last)
+        trend_state = _score_bucket(trend_score)
+        trend_label = _state_label(trend_state)
+
+        # 低位承接 5 項，完全使用 cutoff 當日及以前日線重建。
+        ma5 = safe_float(last.get("MA5"), 0)
+        atr = safe_float(last.get("ATR14"), 0)
+        vol = pd.to_numeric(hist["vol"], errors="coerce")
+        vol_ma20 = float(vol.tail(20).mean()) if len(vol) >= 20 else 0.0
+        vol_ratio = float(vol.iloc[-1] / vol_ma20) if vol_ma20 > 0 else None
+        ret3 = (
+            float(hist["close"].iloc[-1] / hist["close"].iloc[-4] - 1) * 100
+            if len(hist) >= 4 and safe_float(hist["close"].iloc[-4], 0) > 0
+            else None
+        )
+        prev2_high = (
+            float(pd.to_numeric(hist["high"], errors="coerce").iloc[-3:-1].max())
+            if len(hist) >= 3 and "high" in hist.columns
+            else 0.0
+        )
+        reclaim_2d = bool(prev2_high > 0 and price >= prev2_high)
+
+        low_signals = {
+            "當日收紅": daily_pct > 0,
+            "站回5日均線": ma5 > 0 and price >= ma5,
+            "收復前2日高點": reclaim_2d,
+            "近3日跌勢已明顯收斂": ret3 is not None and ret3 >= -1.5,
+            "量能不極度萎縮": vol_ratio is not None and vol_ratio >= 0.55,
+        }
+        low_score = sum(1 for ok in low_signals.values() if ok)
+
+        low_series = pd.to_numeric(hist["low"], errors="coerce").dropna()
+        recent_low = float(low_series.tail(10).min()) if not low_series.empty else 0.0
+        low_zone_low = recent_low
+        low_zone_high = 0.0
+        if recent_low > 0:
+            low_buffer = max(
+                atr * 0.45 if atr > 0 else 0,
+                recent_low * 0.035,
+                tick_size(recent_low),
+            )
+            low_zone_high = recent_low + low_buffer
+
+        core_support = 0.0
+        core_method = "資料不足"
+        if low_zone_low > 0 and low_zone_high > 0:
+            zone_df = hist.tail(60).copy()
+            zc = pd.to_numeric(zone_df["close"], errors="coerce")
+            zl = pd.to_numeric(zone_df.get("low", zc), errors="coerce")
+            zh = pd.to_numeric(zone_df.get("high", zc), errors="coerce")
+            typical = (zl + zh + zc) / 3.0
+            mask = (typical >= low_zone_low) & (typical <= low_zone_high)
+            zv = pd.to_numeric(zone_df.get("vol", 0), errors="coerce").fillna(0)
+            valid_price = typical[mask].dropna()
+            valid_vol = zv.reindex(valid_price.index).fillna(0)
+            if len(valid_price) >= 2 and float(valid_vol.sum()) > 0:
+                core_support = float((valid_price * valid_vol).sum() / valid_vol.sum())
+                core_method = "近60日承接區成交量加權"
+            elif len(valid_price) >= 1:
+                core_support = float(valid_price.median())
+                core_method = "近60日承接區典型價中位數"
+            else:
+                core_support = (low_zone_low + low_zone_high) / 2.0
+                core_method = "承接區中位數備援"
+
+            core_support = round_to_tick(core_support, tick_size(core_support))
+
+        # 三大法人：先取得歷史資料，再嚴格截斷到 cutoff。
+        inst_all = get_institutional_trading_df(str(stock_id), days=500)
+        inst_hist = pd.DataFrame()
+        if inst_all is not None and not inst_all.empty:
+            inst_hist = inst_all.copy()
+            inst_hist["date"] = pd.to_datetime(inst_hist["date"], errors="coerce")
+            inst_hist = inst_hist.dropna(subset=["date"])
+            inst_hist = inst_hist[inst_hist["date"] <= cutoff_date].copy()
+            inst_hist["date"] = inst_hist["date"].dt.strftime("%Y-%m-%d")
+
+        large_holder = get_large_holder_radar_asof(
+            str(stock_id), cutoff_date.strftime("%Y-%m-%d"), days=240
+        )
+        chip_res = {
+            "institutional_df": inst_hist,
+            "daily_df": hist_raw,
+            "large_holder_radar": large_holder,
+        }
+        chip_engine = build_chip_engine(chip_res)
+        volume_engine = build_volume_engine({"daily_df": hist_raw})
+
+        margin = get_margin_radar_asof(
+            str(stock_id), cutoff_date.strftime("%Y-%m-%d"), days=120
+        )
+
+        # 「歷史重算狀態」刻意只依可回溯資料，不冒充當時完整正式策略。
+        hard_veto = bool(chip_engine.get("veto") or volume_engine.get("veto"))
+        if hard_veto:
+            replay_state = "風險偏高／不宜追進"
+        elif trend_score >= 62 and low_score >= 3:
+            replay_state = "趨勢與承接同步轉強"
+        elif low_score >= 3:
+            replay_state = "低位承接形成"
+        elif trend_score >= 45:
+            replay_state = "等待轉強確認"
+        else:
+            replay_state = "弱勢觀察"
+
+        result.update({
+            "available": True,
+            "as_of_date": cutoff_date.strftime("%Y-%m-%d"),
+            "trading_days_back": days_back,
+            "price": price,
+            "daily_pct": daily_pct,
+            "trend_score": trend_score,
+            "trend_state": trend_state,
+            "trend_label": trend_label,
+            "replay_state": replay_state,
+            "low_score": low_score,
+            "low_signals": low_signals,
+            "low_zone_low": low_zone_low,
+            "low_zone_high": low_zone_high,
+            "core_support": core_support,
+            "core_support_method": core_method,
+            "volume_state": volume_engine.get("state", "資料不足"),
+            "volume_score": volume_engine.get("score", 50),
+            "volume_ratio": volume_engine.get("volume_ratio"),
+            "chip_state": chip_engine.get("state", "資料不足"),
+            "chip_score": chip_engine.get("score", 50),
+            "chip_veto": chip_engine.get("veto"),
+            "institutional_available": not inst_hist.empty,
+            "institutional_summary": summarize_institutional_flow(inst_hist, hist_raw),
+            "margin": margin,
+            "large_holder": large_holder,
+            "data_sources": {
+                "日線": "Yahoo/FinMind 歷史日線，已截斷至指定交易日",
+                "三大法人": "FinMind/證交所歷史法人資料，已截斷至指定交易日",
+                "融資融券": "FinMind 歷史融資融券，已截斷至指定交易日",
+                "大戶持股": (
+                    "FinMind HoldingSharesPer，使用指定日期以前最近一期"
+                    if large_holder.get("available")
+                    else "指定日期以前無可用資料，不納入"
+                ),
+            },
+        })
+        return result
+    except Exception as exc:
+        log_error(f"historical replay {stock_id}", exc)
+        result["reason"] = f"歷史重算失敗：{type(exc).__name__}"
+        return result
+
+
+def render_historical_replay_panel(res: dict, stock_id: str) -> None:
+    """顯示目前 vs 歷史日線重算，不宣稱是當時完整盤中快照。"""
+    st.markdown("### 🕰️ 歷史日線重算／前期比較")
+    st.caption(
+        "這不是資料庫保存的舊畫面，而是把可回溯資料真正截斷到指定交易日後重新計算。"
+        "未保存的盤中觸發、當時新聞與分析師共識不會用今天資料倒灌。"
+    )
+
+    _hist_c1, _hist_c2 = st.columns([1, 2])
+    with _hist_c1:
+        back_days = st.number_input(
+            "回看前幾個已完成交易日",
+            min_value=1,
+            max_value=120,
+            value=1,
+            step=1,
+            key=f"_history_replay_days_{stock_id}",
+            help="1 = 最近一個已完成交易日；不以日曆日計算，所以週一的前1日會回到上週五。",
+        )
+    with _hist_c2:
+        st.caption(
+            "可回溯：日線、價量、三大法人、融資融券、大戶分級（有資料時）。"
+            "不可完整回放：分鐘盤中觸發、當時即時新聞、當時分析師共識。"
+        )
+
+    hist = build_historical_replay(
+        str(stock_id),
+        str(res.get("market_type", "TSE")),
+        int(back_days),
+    )
+    if not hist.get("available"):
+        st.warning("歷史重算目前不可用：" + str(hist.get("reason", "資料不足")))
+        return
+
+    st.success(
+        f"歷史重算日期：{hist['as_of_date']}｜"
+        f"前 {hist['trading_days_back']} 個已完成交易日｜"
+        f"狀態：{hist['replay_state']}"
+    )
+
+    r1, r2, r3, r4 = st.columns(4)
+    r1.metric("當時收盤價", f"{hist['price']:,.2f} 元", f"{hist['daily_pct']:+.2f}%")
+    r2.metric("當時日線趨勢", hist["trend_label"], f"{hist['trend_score']}/100")
+    r3.metric("當時低位承接", f"{hist['low_score']}/5")
+    r4.metric("當時籌碼", hist["chip_state"], f"{hist['chip_score']}/100")
+
+    p1, p2, p3 = st.columns(3)
+    p1.metric(
+        "當時承接區間",
+        (
+            f"{hist['low_zone_low']:,.2f}～{hist['low_zone_high']:,.2f} 元"
+            if hist["low_zone_low"] > 0 and hist["low_zone_high"] > 0
+            else "待建立"
+        ),
+    )
+    p2.metric(
+        "當時核心承接價",
+        f"{hist['core_support']:,.2f} 元" if hist["core_support"] > 0 else "待建立",
+    )
+    p3.metric(
+        "當時價量狀態",
+        hist["volume_state"],
+        f"{hist['volume_score']}/100",
+    )
+
+    current_price = float(res.get("current_price", 0) or 0)
+    current_trend = str(res.get("trend_state_detail", {}).get("state_label", "資料不足"))
+    current_chip = build_chip_engine(res)
+    current_volume = build_volume_engine(res)
+
+    compare_df = pd.DataFrame([
+        {
+            "項目": "股價",
+            "歷史重算": f"{hist['price']:,.2f}",
+            "現在": f"{current_price:,.2f}" if current_price > 0 else "資料不足",
+        },
+        {
+            "項目": "日線趨勢",
+            "歷史重算": hist["trend_label"],
+            "現在": current_trend,
+        },
+        {
+            "項目": "籌碼狀態",
+            "歷史重算": hist["chip_state"],
+            "現在": current_chip.get("state", "資料不足"),
+        },
+        {
+            "項目": "價量狀態",
+            "歷史重算": hist["volume_state"],
+            "現在": current_volume.get("state", "資料不足"),
+        },
+        {
+            "項目": "核心承接價",
+            "歷史重算": (
+                f"{hist['core_support']:,.2f}"
+                if hist["core_support"] > 0 else "待建立"
+            ),
+            "現在": "請見目前低位承接雷達",
+        },
+    ])
+    st.dataframe(compare_df, use_container_width=True, hide_index=True)
+
+    with st.expander("查看歷史重算的真實資料來源與限制", expanded=False):
+        for k, v in hist.get("data_sources", {}).items():
+            st.write(f"**{k}：** {v}")
+        st.write("**無法可靠回放：** " + "、".join(hist.get("unreplayable", [])))
+        st.caption(
+            "因此「歷史重算狀態」不是當時完整正式策略的資料庫快照；"
+            "它只代表可被歷史資料驗證的日線／籌碼／價量重算結果。"
+        )
+
+
+
+def resolve_daily_strategy_lock(
+    stock_id: str,
+    position_mode: str,
+    candidate_decision: str,
+    candidate_state: str,
+    candidate_reason: str,
+    current_price: float = 0.0,
+    invalidation_price: float = 0.0,
+    protective_stop: float = 0.0,
+    governed_action: str = "",
+) -> dict:
+    """
+    v9.22 每日主策略鎖定：
+    - 同一股票、同一持股模式、同一台北交易日，只鎖定一個主策略。
+    - 15秒即時報價只更新「盤中執行狀態」，不反覆改主策略。
+    - 只有重大風控（失效價／保護價／EXIT／REDUCE）可覆寫。
+    - SQLite 若因 Streamlit Cloud 重啟而遺失，session_state 仍可在同一瀏覽器工作階段維持。
+    """
+    today = datetime.now(TZ).strftime("%Y-%m-%d")
+    sid = str(stock_id)
+    mode = str(position_mode or "UNHELD").upper()
+    session_key = f"_daily_strategy_lock_{sid}_{mode}_{today}"
+
+    locked = st.session_state.get(session_key)
+    if not locked:
+        try:
+            with sqlite3.connect(HISTORY_DB, timeout=5) as conn:
+                conn.row_factory = sqlite3.Row
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS daily_strategy_lock (
+                        stock_id TEXT NOT NULL,
+                        position_mode TEXT NOT NULL,
+                        strategy_date TEXT NOT NULL,
+                        created_at TEXT NOT NULL,
+                        decision_label TEXT,
+                        state_label TEXT,
+                        reason TEXT,
+                        PRIMARY KEY (stock_id, position_mode, strategy_date)
+                    )
+                """)
+                row = conn.execute("""
+                    SELECT * FROM daily_strategy_lock
+                    WHERE stock_id=? AND position_mode=? AND strategy_date=?
+                """, (sid, mode, today)).fetchone()
+
+                if row:
+                    locked = {
+                        "decision": str(row["decision_label"] or candidate_decision),
+                        "state": str(row["state_label"] or candidate_state),
+                        "reason": str(row["reason"] or candidate_reason),
+                        "locked_at": str(row["created_at"] or ""),
+                    }
+                else:
+                    locked = {
+                        "decision": str(candidate_decision or "繼續等待"),
+                        "state": str(candidate_state or candidate_decision or "繼續等待"),
+                        "reason": str(candidate_reason or "依今日首次穩定分析建立主策略。"),
+                        "locked_at": datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S"),
+                    }
+                    conn.execute("""
+                        INSERT OR IGNORE INTO daily_strategy_lock (
+                            stock_id, position_mode, strategy_date, created_at,
+                            decision_label, state_label, reason
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """, (
+                        sid, mode, today, locked["locked_at"],
+                        locked["decision"], locked["state"], locked["reason"]
+                    ))
+                    conn.commit()
+        except Exception as exc:
+            log_error("daily strategy lock", exc)
+            locked = {
+                "decision": str(candidate_decision or "繼續等待"),
+                "state": str(candidate_state or candidate_decision or "繼續等待"),
+                "reason": str(candidate_reason or "依今日首次穩定分析建立主策略。"),
+                "locked_at": datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S"),
+            }
+
+        st.session_state[session_key] = locked
+
+    # 重大風控覆寫：這不是「改變趨勢」，而是保護資金。
+    price = float(current_price or 0)
+    invalid = float(invalidation_price or 0)
+    protect = float(protective_stop or 0)
+    governed = str(governed_action or "").upper()
+
+    emergency = None
+    if mode == "UNHELD":
+        if price > 0 and invalid > 0 and price <= invalid:
+            emergency = {
+                "decision": "停止進場",
+                "state": "風控失效",
+                "reason": f"現價已跌破進場失效價 {invalid:,.2f} 元；今日主策略暫停執行。",
+                "emergency": True,
+            }
+    else:
+        if governed == "EXIT" or (price > 0 and protect > 0 and price <= protect):
+            emergency = {
+                "decision": "退場",
+                "state": "退場",
+                "reason": (
+                    f"現價已觸及／跌破保護價 {protect:,.2f} 元。"
+                    if protect > 0 else "核心風控已觸發，優先退出。"
+                ),
+                "emergency": True,
+            }
+        elif governed == "REDUCE":
+            emergency = {
+                "decision": "減碼",
+                "state": "減碼",
+                "reason": "核心風控已進入減碼狀態；此為風險覆寫，不是盤中雜訊翻轉。",
+                "emergency": True,
+            }
+
+    if emergency:
+        emergency["locked_at"] = locked.get("locked_at", "")
+        emergency["base_decision"] = locked.get("decision", "")
+        emergency["base_state"] = locked.get("state", "")
+        return emergency
+
+    return {
+        "decision": locked.get("decision", candidate_decision),
+        "state": locked.get("state", candidate_state),
+        "reason": locked.get("reason", candidate_reason),
+        "locked_at": locked.get("locked_at", ""),
+        "base_decision": locked.get("decision", candidate_decision),
+        "base_state": locked.get("state", candidate_state),
+        "emergency": False,
+    }
+
+
+def derive_intraday_execution_state(
+    locked_decision: str,
+    locked_state: str,
+    p18: dict,
+    current_price: float,
+) -> str:
+    """
+    盤中只回答「現在執行到哪一步」，不改寫今日主策略。
+    """
+    decision = str(locked_decision or "")
+    state = str(locked_state or "")
+    price = float(current_price or 0)
+
+    entry_low = float(p18.get("beta_entry_low", 0) or 0)
+    entry_high = float(p18.get("beta_entry_high", 0) or 0)
+    pull_low = float(p18.get("beta_pullback_low", entry_low) or 0)
+    pull_high = float(p18.get("beta_pullback_high", entry_high) or 0)
+    probe = float(p18.get("beta_probe_trigger", 0) or 0)
+    strong = float(p18.get("beta_strong_breakout", 0) or 0)
+    invalid = float(p18.get("beta_invalidation_price", 0) or 0)
+
+    if price > 0 and invalid > 0 and price <= invalid:
+        return f"風控失效：現價已低於 {invalid:,.2f} 元"
+
+    if decision == "正式進場" or state == "正式進場":
+        chase_cap = entry_high
+        if probe > entry_high:
+            chase_cap = probe
+        elif strong > entry_high:
+            chase_cap = strong
+
+        if entry_low > 0 and entry_high > 0:
+            if price < entry_low:
+                return "等待回到／確認進場區，不因低價直接追接"
+            if entry_low <= price <= entry_high:
+                return "位於理想進場區，可依主策略建立第一筆部位"
+            if chase_cap > 0 and price <= chase_cap:
+                return f"高於理想區但未超過追價上限 {chase_cap:,.2f} 元；可進場但勿追滿"
+            if chase_cap > 0 and price > chase_cap:
+                return f"已超過追價上限 {chase_cap:,.2f} 元；主策略不變，但等待拉回"
+        return "正式進場主策略成立，等待合理執行價格"
+
+    if decision in {"轉強試單", "低位試單"} or state in {"轉強試單", "低位試單"}:
+        if p18.get("beta_probe_latched"):
+            return "試單條件已確認並本日鎖定"
+        if probe > 0 and price >= probe:
+            return f"已到達試單價 {probe:,.2f} 元；等待穩定確認"
+        if probe > 0:
+            gap = ((probe / price) - 1) * 100 if price > 0 else 0
+            return f"等待試單觸發 {probe:,.2f} 元（尚差 {gap:.2f}%）"
+        return "等待試單條件建立"
+
+    if decision == "等待拉回" or state == "等待拉回":
+        if pull_low > 0 and pull_high > 0 and pull_low <= price <= pull_high:
+            return "已回到拉回觀察區，開始等待止跌／重新站上"
+        return "仍在等待拉回到合理承接位置"
+
+    if decision in {"繼續等待", "止跌形成", "低位觀察", "低位轉折確認中"}:
+        if probe > 0 and price > 0 and price < probe:
+            gap = ((probe / price) - 1) * 100
+            if gap <= 3.0:
+                return f"接近試單觸發價 {probe:,.2f} 元（尚差 {gap:.2f}%），主策略仍等待"
+        return "等待趨勢／止跌／承接條件進一步成熟"
+
+    if decision in {"不宜進場", "停止進場"}:
+        return "目前不執行新進場"
+
+    return "盤中僅監控價格位置與風控，不改寫今日主策略"
+
+
+
 def _normalize_stock_code(value):
     value = str(value or "").strip().upper()
     value = value.replace(".TW", "").replace(".TWO", "")
@@ -3874,7 +4560,7 @@ with st.sidebar:
 
     st.caption("自選清單會寫入目前網址；建議把這個網址加入瀏覽器書籤。")
 
-st.markdown("## 🧭 StockPilot Beta v9.19｜個股操作決策")
+st.markdown("## 🧭 StockPilot Beta v9.22｜個股操作決策")
 st.caption("直接回答：現在要不要進場、持有、加碼、減碼或退出。")
 stock_input = st.text_input(
     "請輸入核心目標個股代碼：",
@@ -3923,6 +4609,8 @@ if stock_input:
         missing_text = "、".join(res["missing_data"]) if res["missing_data"] else "無"
         st.info(f"資料完整度：{res['data_quality_score']:.0f}%｜缺少：{missing_text}。資料不足的項目不納入方向判斷。")
         st.caption(f"資料更新時間：{datetime.now(TZ).strftime('%Y-%m-%d %H:%M:%S')}（台北時間）｜報價來源：{res.get('rt_source', res.get('quote_source', '依目前可用資料'))}")
+
+        render_historical_replay_panel(res, stock_input)
 
         # 0. Project Compass 首頁：先回答該怎麼做，再展開證據
         compass = build_compass_home_summary(res, user_holding)
@@ -4912,84 +5600,6 @@ if stock_input:
                             _s14_進場區_low
                         )
 
-                # v9.20：核心承接價
-                # 優先使用近期落在低位承接區內的「成交量加權典型價格」，
-                # 讓核心承接價反映實際成交密集位置，而不是直接拿建議進場價代替。
-                _s87_core_support_price = 0.0
-                _s87_core_support_method = "資料不足"
-                if (
-                    _s87_low_zone_low > 0
-                    and _s87_low_zone_high > 0
-                    and isinstance(_s19_daily, pd.DataFrame)
-                    and not _s19_daily.empty
-                ):
-                    try:
-                        _s87_zone_df = _s19_daily.tail(60).copy()
-                        _s87_zone_close = pd.to_numeric(
-                            _s87_zone_df.get("close"), errors="coerce"
-                        )
-                        _s87_zone_low_series = pd.to_numeric(
-                            _s87_zone_df.get("low", _s87_zone_close), errors="coerce"
-                        )
-                        _s87_zone_high_series = pd.to_numeric(
-                            _s87_zone_df.get("high", _s87_zone_close), errors="coerce"
-                        )
-                        _s87_zone_typical = (
-                            _s87_zone_low_series + _s87_zone_high_series + _s87_zone_close
-                        ) / 3.0
-                        _s87_zone_mask = (
-                            (_s87_zone_typical >= _s87_low_zone_low)
-                            & (_s87_zone_typical <= _s87_low_zone_high)
-                        )
-
-                        if "vol" in _s87_zone_df.columns:
-                            _s87_zone_vol = pd.to_numeric(
-                                _s87_zone_df["vol"], errors="coerce"
-                            ).fillna(0.0)
-                        else:
-                            _s87_zone_vol = pd.Series(
-                                0.0, index=_s87_zone_df.index
-                            )
-
-                        _s87_valid_price = _s87_zone_typical[_s87_zone_mask].dropna()
-                        _s87_valid_vol = _s87_zone_vol.reindex(
-                            _s87_valid_price.index
-                        ).fillna(0.0)
-
-                        if (
-                            len(_s87_valid_price) >= 2
-                            and float(_s87_valid_vol.sum()) > 0
-                        ):
-                            _s87_core_support_price = float(
-                                (_s87_valid_price * _s87_valid_vol).sum()
-                                / _s87_valid_vol.sum()
-                            )
-                            _s87_core_support_method = "近60日承接區成交量加權"
-                        elif len(_s87_valid_price) >= 1:
-                            _s87_core_support_price = float(
-                                _s87_valid_price.median()
-                            )
-                            _s87_core_support_method = "近60日承接區典型價中位數"
-                    except Exception:
-                        pass
-
-                # 區內沒有足夠成交樣本時才採區間中位數備援。
-                if (
-                    _s87_core_support_price <= 0
-                    and _s87_low_zone_low > 0
-                    and _s87_low_zone_high > 0
-                ):
-                    _s87_core_support_price = (
-                        _s87_low_zone_low + _s87_low_zone_high
-                    ) / 2.0
-                    _s87_core_support_method = "承接區中位數備援"
-
-                if _s87_core_support_price > 0:
-                    _s87_core_support_price = round_to_tick(
-                        _s87_core_support_price,
-                        tick_size(_s87_core_support_price),
-                    )
-
                 _s87_below_old_entry = bool(
                     _s14_進場區_low > 0
                     and _s19_price < _s14_進場區_low
@@ -5751,8 +6361,6 @@ if stock_input:
                     ],
                     "low_zone_low": _s87_low_zone_low,
                     "low_zone_high": _s87_low_zone_high,
-                    "core_support_price": _s87_core_support_price,
-                    "core_support_method": _s87_core_support_method,
                     "in_low_zone": _s87_in_low_zone,
                     "turn_probe": _s21_turn_probe,
                     "formal_entry": _s21_formal_entry,
@@ -5884,19 +6492,67 @@ if stock_input:
                     "請直接把這一段錯誤訊息貼回來；不需要再到 Streamlit Manage app 找 logs。"
                 )
         else:
-            _decision_now = str(_p18.get("trade_decision", "等待"))
-            _decision_reason = str(_p18.get("trade_reason", "等待更多確認。"))
-            _state_now = str(_p18.get("early_entry_state_zh", ""))
+            _raw_decision_now = str(_p18.get("trade_decision", "等待"))
+            _raw_decision_reason = str(_p18.get("trade_reason", "等待更多確認。"))
+            _raw_state_now = str(_p18.get("early_entry_state_zh", ""))
+
+            _position_mode_v922 = (
+                "HELD"
+                if user_holding and int(_p18.get("current_shares", 0) or 0) > 0
+                else "UNHELD"
+            )
+            _strategy_lock_v922 = resolve_daily_strategy_lock(
+                stock_id=_stock_id_beta,
+                position_mode=_position_mode_v922,
+                candidate_decision=_raw_decision_now,
+                candidate_state=_raw_state_now,
+                candidate_reason=_raw_decision_reason,
+                current_price=_current_price_beta,
+                invalidation_price=float(_p18.get("beta_invalidation_price", 0) or 0),
+                protective_stop=float(
+                    _p18.get("moving_protection", 0)
+                    or _p18.get("protective_stop", 0)
+                    or 0
+                ),
+                governed_action=str(
+                    decision_snapshot.get("governance", {}).get("governed_action", "")
+                    if isinstance(decision_snapshot.get("governance", {}), dict)
+                    else ""
+                ),
+            )
+
+            _decision_now = str(_strategy_lock_v922.get("decision", _raw_decision_now))
+            _decision_reason = str(_strategy_lock_v922.get("reason", _raw_decision_reason))
+            _state_now = str(_strategy_lock_v922.get("state", _raw_state_now))
+            _intraday_exec_v922 = derive_intraday_execution_state(
+                _decision_now, _state_now, _p18, _current_price_beta
+            )
 
             c1, c2, c3 = st.columns([1.3, 1, 1])
             with c1:
-                st.metric("目前操作", _decision_now)
+                st.metric("今日主策略", _decision_now)
             with c2:
                 st.metric("個股", f"{_stock_name_beta}（{_stock_id_beta}）")
             with c3:
                 st.metric("資料完整度", f"{int(decision_snapshot.get('data_reliability', 0) or 0)}%")
 
             st.info(f"一句話判斷：{_decision_reason}")
+            if _strategy_lock_v922.get("emergency"):
+                st.error("盤中風控覆寫：" + _intraday_exec_v922)
+            else:
+                st.caption(
+                    f"盤中執行狀態：{_intraday_exec_v922}｜"
+                    f"今日主策略鎖定時間：{_strategy_lock_v922.get('locked_at','')}。"
+                )
+            if (
+                _raw_decision_now != _decision_now
+                or _raw_state_now != _state_now
+            ) and not _strategy_lock_v922.get("emergency"):
+                st.caption(
+                    f"即時計算目前為「{_raw_decision_now or _raw_state_now}」，"
+                    "但不因盤中價格的小幅變動改寫今日主策略；"
+                    "即時計算只作為執行位置參考。"
+                )
 
             # 未持股：只顯示進場相關資訊
             if not user_holding or int(_p18.get("current_shares", 0) or 0) <= 0:
@@ -6055,8 +6711,9 @@ if stock_input:
 
                 _st1, _st2, _st3 = st.columns(3)
                 _st1.metric("主趨勢（日線）", _stable_trend_label)
-                _st2.metric("目前策略", _stable_strategy_label)
+                _st2.metric("今日主策略", _decision_now)
                 _st3.metric("盤中觸發", _stable_trigger_label)
+                st.caption(f"盤中執行：{_intraday_exec_v922}")
 
                 if _entry_display_state_v98 != (_state_now or _decision_now):
                     st.info(
@@ -6065,9 +6722,10 @@ if stock_input:
                     )
 
                 st.caption(
-                    "趨勢決定方向，盤中價格只決定是否到達執行點。"
-                    "一旦拉回轉強試單成立，當日不因觸發價附近的小幅震盪反覆改變；"
-                    "只有跌破進場失效價才解除。"
+                    "今日主策略由趨勢／結構／籌碼／價量綜合決定並於當日鎖定；"
+                    "15 秒即時報價只更新執行狀態、距離觸發價、追價上限與風控位置。"
+                    "只有跌破進場失效價／持股保護價，或核心治理進入減碼／退場，"
+                    "才允許盤中風控覆寫主策略。"
                 )
                 st.caption(
                     "短線進場條件完成度與低位轉折訊號分開計算："
@@ -6575,35 +7233,6 @@ if stock_input:
                     else "低位轉折雷達："
                 )
 
-                # v9.20：低位承接雷達直接顯示可操作的價格資訊。
-                _low_zone_low_v920 = float(_p18.get("low_zone_low", 0) or 0)
-                _low_zone_high_v920 = float(_p18.get("low_zone_high", 0) or 0)
-                _core_support_v920 = float(_p18.get("core_support_price", 0) or 0)
-                _core_support_method_v920 = str(
-                    _p18.get("core_support_method", "資料不足") or "資料不足"
-                )
-
-                _lr1_v920, _lr2_v920, _lr3_v920 = st.columns(3)
-                _lr1_v920.metric("低位承接訊號", f"{_low_score_v87}/5")
-                _lr2_v920.metric(
-                    "承接區間",
-                    (
-                        f"{_low_zone_low_v920:,.2f}～{_low_zone_high_v920:,.2f} 元"
-                        if _low_zone_low_v920 > 0 and _low_zone_high_v920 > 0
-                        else "待建立"
-                    ),
-                )
-                _lr3_v920.metric(
-                    "核心承接價",
-                    f"{_core_support_v920:,.2f} 元"
-                    if _core_support_v920 > 0 else "待建立",
-                )
-                if _core_support_v920 > 0:
-                    st.caption(
-                        f"核心承接價計算：{_core_support_method_v920}。"
-                        "承接區是市場低位支撐證據，不等同系統建議進場區。"
-                    )
-
                 st.info(
                     _low_radar_label_v914
                     + f"{_low_score_v87}/5 項成立。"
@@ -6658,7 +7287,7 @@ if stock_input:
                     )
 
                 _low_details_v88a = _p18.get("low_turn_details", []) or []
-                with st.expander("查看低位承接 5 項明細"):
+                with st.expander("查看低位轉折 5 項明細"):
                     if _low_details_v88a:
                         _low_rows_v88a = []
                         for _item in _low_details_v88a:
