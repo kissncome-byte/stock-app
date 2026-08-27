@@ -4552,7 +4552,7 @@ with st.sidebar:
 
     st.caption("自選清單會寫入目前網址；建議把這個網址加入瀏覽器書籤。")
 
-st.markdown("## 🧭 StockPilot Beta v9.23｜個股操作決策")
+st.markdown("## 🧭 StockPilot Beta v9.24｜個股操作決策")
 st.caption("主決策優先；盤中即時價格只更新執行狀態。")
 
 # v9.23：操作輸入壓縮成一排，避免上半段先被表單吃掉大量高度。
@@ -6541,12 +6541,22 @@ if stock_input:
                 st.metric("資料完整度", f"{int(decision_snapshot.get('data_reliability', 0) or 0)}%")
 
             st.info(f"一句話判斷：{_decision_reason}")
+            # v9.24：把「盤中執行狀態」獨立成主畫面明確區塊。
+            # 今日主策略負責方向；盤中狀態只回答此刻價格該如何執行。
             if _strategy_lock_v922.get("emergency"):
-                st.error("盤中風控覆寫：" + _intraday_exec_v922)
+                st.error("🚨 盤中執行狀態｜風控覆寫：" + _intraday_exec_v922)
             else:
+                _exec_text_v924 = str(_intraday_exec_v922 or "等待新的盤中價格條件")
+                _exec_lower_v924 = _exec_text_v924.lower()
+                if any(k in _exec_text_v924 for k in ["停止追價", "不要追", "失效", "跌破", "風控", "退出"]):
+                    st.warning("⚡ 盤中執行狀態｜" + _exec_text_v924)
+                elif any(k in _exec_text_v924 for k in ["可建立", "可執行", "進入建議", "第一筆", "加碼"]):
+                    st.success("⚡ 盤中執行狀態｜" + _exec_text_v924)
+                else:
+                    st.info("⚡ 盤中執行狀態｜" + _exec_text_v924)
                 st.caption(
-                    f"盤中執行狀態：{_intraday_exec_v922}｜"
-                    f"今日主策略鎖定時間：{_strategy_lock_v922.get('locked_at','')}。"
+                    f"今日主策略鎖定時間：{_strategy_lock_v922.get('locked_at','')}｜"
+                    "盤中報價只更新這個執行狀態，不改寫今日主策略。"
                 )
             if (
                 _raw_decision_now != _decision_now
@@ -6717,7 +6727,6 @@ if stock_input:
                 _st1.metric("主趨勢（日線）", _stable_trend_label)
                 _st2.metric("今日主策略", _decision_now)
                 _st3.metric("盤中觸發", _stable_trigger_label)
-                st.caption(f"盤中執行：{_intraday_exec_v922}")
 
                 if _entry_display_state_v98 != (_state_now or _decision_now):
                     st.info(
@@ -6928,6 +6937,20 @@ if stock_input:
                         else:
                             _entry_position_v915 = "目前已超過追價上限；正式進場訊號仍成立，但先不要追價。"
                         st.info("目前位置：" + _entry_position_v915)
+
+                        # v9.24：正式進場後，以交易計畫價位給出更具體的盤中執行指令。
+                        if _entry_low_v915 <= _current_price_beta <= _entry_high_v915:
+                            _formal_exec_v924 = "已進入建議進場區，可依交易計畫建立第一筆部位。"
+                            st.success("⚡ 盤中執行更新｜" + _formal_exec_v924)
+                        elif _current_price_beta < _entry_low_v915:
+                            _formal_exec_v924 = "目前低於建議進場區；先確認未持續破底，再執行第一筆。"
+                            st.info("⚡ 盤中執行更新｜" + _formal_exec_v924)
+                        elif _chase_cap_v915 > 0 and _current_price_beta <= _chase_cap_v915:
+                            _formal_exec_v924 = "已高於理想進場區但仍在追價上限內；若執行僅宜小部位，不追滿。"
+                            st.warning("⚡ 盤中執行更新｜" + _formal_exec_v924)
+                        else:
+                            _formal_exec_v924 = "已超過追價上限；今日正式進場策略維持，但此刻停止追價，等待拉回。"
+                            st.warning("⚡ 盤中執行更新｜" + _formal_exec_v924)
 
                     if _rr_v915 > 0:
                         st.caption(f"第一目標風險報酬比約 1：{_rr_v915:.2f}")
