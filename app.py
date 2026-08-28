@@ -4345,7 +4345,7 @@ def resolve_daily_strategy_lock(
     sid = str(stock_id)
     # v9.27：同一股票同一天只允許一個股票主策略，不再因 HELD/UNHELD 分裂。
     mode = "COMMON"
-    lock_version = "v928"
+    lock_version = "v929"
     session_key = f"_daily_strategy_lock_{lock_version}_{sid}_{today}"
     db_mode = f"COMMON_{lock_version.upper()}"
 
@@ -6755,10 +6755,66 @@ if stock_input:
             _decision_now = str(_strategy_lock_v922.get("decision", _stock_stance_zh_v925))
             _decision_reason = str(_strategy_lock_v922.get("reason", _stock_stance_reason_v925))
             _state_now = _raw_state_now
-            _execution_action_v927 = _raw_decision_now
+
+            # v9.29：共同主策略是最高權限。身分執行只能在主策略允許的範圍內翻譯，
+            # 絕不允許「主策略等待確認，但未持股正式進場」這類上下層衝突。
+            _holding_now_v929 = bool(
+                user_holding and int(_p18.get("current_shares", 0) or 0) > 0
+            )
+
+            def _execution_from_common_strategy_v929(common_strategy, raw_action, holding):
+                s = str(common_strategy or "").strip()
+                raw = str(raw_action or "").strip()
+
+                if s == "可建立部位":
+                    if holding:
+                        return "加碼" if raw == "加碼" else "持有"
+                    return "正式進場"
+
+                if s == "可小部位試單":
+                    if holding:
+                        return "持有"
+                    if raw in {"轉強試單", "低位試單"}:
+                        return raw
+                    return "小部位試單"
+
+                if s == "等待拉回":
+                    return "持有・暫不加碼" if holding else "等待拉回"
+
+                if s == "等待確認":
+                    return "持有觀察" if holding else "等待確認"
+
+                if s == "轉弱防守":
+                    return "減碼" if holding else "暫不進場"
+
+                if s == "風險退出":
+                    return "退場" if holding else "不宜進場"
+
+                if s == "暫不建立新部位":
+                    return "持有觀察" if holding else "暫不進場"
+
+                # 未知共同策略採保守降級，不得擅自升級成正式進場。
+                return "持有觀察" if holding else "等待確認"
+
+            _execution_action_v927 = _execution_from_common_strategy_v929(
+                _decision_now, _raw_decision_now, _holding_now_v929
+            )
+
             _intraday_exec_v922 = derive_intraday_execution_state(
                 _execution_action_v927, _raw_state_now, _p18, _current_price_beta
             )
+
+            # 盤中執行也不得越權。若共同策略尚未授權建立部位，
+            # 即使 raw early-state 曾短暫出現 FORMAL_ENTRY，也只能等待。
+            if not _holding_now_v929:
+                if _decision_now == "等待確認":
+                    _intraday_exec_v922 = "主策略仍在等待確認；盤中價格不得升級為正式進場。"
+                elif _decision_now == "等待拉回":
+                    _intraday_exec_v922 = "主策略等待拉回；目前不追價，等待重新進入可執行區。"
+                elif _decision_now in {"轉弱防守", "暫不建立新部位"}:
+                    _intraday_exec_v922 = "主策略尚未允許建立新部位；目前暫不進場。"
+                elif _decision_now == "風險退出":
+                    _intraday_exec_v922 = "主策略為風險退出；目前不建立新部位。"
 
             c1, c2, c3 = st.columns([1.3, 1, 1])
             with c1:
@@ -6986,7 +7042,7 @@ if stock_input:
                 else:
                     st.caption("本日尚未建立新的試單鎖定。")
 
-                _formal_entry_v915 = (_raw_state_now or _execution_action_v927) == "正式進場"
+                _formal_entry_v915 = (_decision_now == "可建立部位" and _execution_action_v927 == "正式進場")
                 if _formal_entry_v915:
                     st.markdown("### 正式進場交易計畫")
 
