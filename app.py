@@ -4335,18 +4335,19 @@ def resolve_daily_strategy_lock(
     governed_action: str = "",
 ) -> dict:
     """
-    v9.22 每日主策略鎖定：
-    - 同一股票、同一持股模式、同一台北交易日，只鎖定一個主策略。
+    v9.28 股票共同主策略鎖定：
+    - 同一股票、同一台北交易日只鎖定一個共同主策略；持股身分不參與方向。
     - 15秒即時報價只更新「盤中執行狀態」，不反覆改主策略。
     - 只有重大風控（失效價／保護價／EXIT／REDUCE）可覆寫。
     - SQLite 若因 Streamlit Cloud 重啟而遺失，session_state 仍可在同一瀏覽器工作階段維持。
     """
     today = datetime.now(TZ).strftime("%Y-%m-%d")
     sid = str(stock_id)
-    mode = str(position_mode or "UNHELD").upper()
-    lock_version = "v925"
-    session_key = f"_daily_strategy_lock_{lock_version}_{sid}_{mode}_{today}"
-    db_mode = f"{mode}_{lock_version.upper()}"
+    # v9.27：同一股票同一天只允許一個股票主策略，不再因 HELD/UNHELD 分裂。
+    mode = "COMMON"
+    lock_version = "v928"
+    session_key = f"_daily_strategy_lock_{lock_version}_{sid}_{today}"
+    db_mode = f"COMMON_{lock_version.upper()}"
 
     locked = st.session_state.get(session_key)
     if not locked:
@@ -4412,32 +4413,22 @@ def resolve_daily_strategy_lock(
     governed = str(governed_action or "").upper()
 
     emergency = None
-    if mode == "UNHELD":
-        if price > 0 and invalid > 0 and price <= invalid:
-            emergency = {
-                "decision": "停止進場",
-                "state": "風控失效",
-                "reason": f"現價已跌破進場失效價 {invalid:,.2f} 元；今日主策略暫停執行。",
-                "emergency": True,
-            }
-    else:
-        if governed == "EXIT" or (price > 0 and protect > 0 and price <= protect):
-            emergency = {
-                "decision": "退場",
-                "state": "退場",
-                "reason": (
-                    f"現價已觸及／跌破保護價 {protect:,.2f} 元。"
-                    if protect > 0 else "核心風控已觸發，優先退出。"
-                ),
-                "emergency": True,
-            }
-        elif governed == "REDUCE":
-            emergency = {
-                "decision": "減碼",
-                "state": "減碼",
-                "reason": "核心風控已進入減碼狀態；此為風險覆寫，不是盤中雜訊翻轉。",
-                "emergency": True,
-            }
+    # v9.27：共同主策略只允許「股票本身失效」覆寫。
+    # 持股專屬的 REDUCE / 部位管理不能改寫共同主策略。
+    if governed == "EXIT":
+        emergency = {
+            "decision": "風險退出",
+            "state": "風險退出",
+            "reason": "股票共同風控已進入退出狀態。",
+            "emergency": True,
+        }
+    elif price > 0 and invalid > 0 and price <= invalid:
+        emergency = {
+            "decision": "不宜進場",
+            "state": "風控失效",
+            "reason": f"現價已跌破共同進場失效價 {invalid:,.2f} 元；股票主策略暫停。",
+            "emergency": True,
+        }
 
     if emergency:
         emergency["locked_at"] = locked.get("locked_at", "")
@@ -4644,7 +4635,7 @@ with st.sidebar:
 
     st.caption("自選清單會寫入目前網址；建議把這個網址加入瀏覽器書籤。")
 
-st.markdown("## 🧭 StockPilot Beta v9.26｜個股操作決策")
+st.markdown("## 🧭 StockPilot Beta v9.28｜個股操作決策")
 st.caption("主決策優先；盤中即時價格只更新執行狀態。")
 
 # v9.23：操作輸入壓縮成一排，避免上半段先被表單吃掉大量高度。
@@ -4711,6 +4702,18 @@ if stock_input:
         decision_snapshot = build_decision_snapshot(res, compass, committee_seed, user_holding, user_cost)
         strategy_state = build_strategy_state_machine(res, decision_snapshot, user_holding, user_cost)
         decision_snapshot["strategy"] = strategy_state
+
+        # v9.28：股票方向必須與持股身分、成本完全無關。
+        # 額外建立一份固定以「未持股 / 成本0」計算的共同股票快照。
+        _common_compass_v928 = build_compass_home_summary(res, False)
+        _common_committee_v928 = build_ai_investment_committee(res, _common_compass_v928)
+        _common_decision_snapshot_v928 = build_decision_snapshot(
+            res, _common_compass_v928, _common_committee_v928, False, 0.0
+        )
+        _common_strategy_state_v928 = build_strategy_state_machine(
+            res, _common_decision_snapshot_v928, False, 0.0
+        )
+        _common_decision_snapshot_v928["strategy"] = _common_strategy_state_v928
         decision_snapshot["strategy_stability_validation"] = build_strategy_stability_validation(res)
         decision_snapshot["strategy_outcome_validation"] = build_strategy_outcome_validation(res)
         decision_snapshot["strategy_audit"] = build_strategy_consistency_audit(decision_snapshot, strategy_state, user_holding)
@@ -4728,7 +4731,7 @@ if stock_input:
                 shadow_margin_df = get_shadow_margin_df(res["stock_id"])
 
                 _legacy_levels_shadow = dict(
-                    decision_snapshot.get("levels", {}) or {}
+                    _common_decision_snapshot_v928.get("levels", {}) or {}
                 )
                 _legacy_moving = float(
                     _legacy_levels_shadow.get("protective_stop", 0) or 0
@@ -4780,9 +4783,9 @@ if stock_input:
                     "structure_stop": _legacy_levels_shadow.get("structure_stop"),
                 }
 
-                # Sprint 19.1：未持股時，成本欄即使殘留舊值也不得送進 Shadow。
-                # Decision Engine 對 non-holder 的 cost 必須是 0。
-                _shadow_user_cost = float(user_cost or 0) if user_holding else 0.0
+                # v9.28：Shadow 在此只負責「股票共同方向」。
+                # 固定未持股、成本0；使用者持股資訊只能進入後面的 Portfolio/Execution 層。
+                _shadow_user_cost = 0.0
 
                 # v9.19：Price Engine 某版本的 structural_exit / moving_protection
                 # 驗證器會在「35.65 < 37.45」這種本來就正確的價格順序下仍誤拋錯誤。
@@ -4791,9 +4794,9 @@ if stock_input:
                 try:
                     shadow_v4 = ShadowIntegration().run(
                         shadow_payload,
-                        is_holding=user_holding,
-                        cost=_shadow_user_cost,
-                        legacy_action=strategy_state.get("action"),
+                        is_holding=False,
+                        cost=0.0,
+                        legacy_action=_common_strategy_state_v928.get("action"),
                     )
                 except Exception as _shadow_exc_v911:
                     _shadow_msg_v911 = str(_shadow_exc_v911)
@@ -4822,8 +4825,12 @@ if stock_input:
 
                     class _ShadowSnapshotFallbackV912:
                         def __init__(self):
-                            _fallback_state = str(strategy_state.get("state", "") or "").lower()
-                            _fallback_action = str(strategy_state.get("action", "") or "").lower()
+                            _fallback_state = str(
+                                _common_strategy_state_v928.get("state", "") or ""
+                            ).lower()
+                            _fallback_action = str(
+                                _common_strategy_state_v928.get("action", "") or ""
+                            ).lower()
 
                             # 只做相容映射，不反向改寫正式 strategy_state。
                             _trend_map = {
@@ -4876,7 +4883,7 @@ if stock_input:
                 # Trend 是慢狀態；Action 是快狀態。治理層不改 Trend，只限制「現在能不能進場」。
                 _s12 = shadow_v4.snapshot
                 _s12_price = float(res.get("current_price", 0) or 0)
-                _s12_levels = decision_snapshot.get("levels", {}) or {}
+                _s12_levels = _common_decision_snapshot_v928.get("levels", {}) or {}
                 _s12_confirm = float(_s12_levels.get("突破確認價", 0) or 0)
                 _s12_stop = float(_s12_levels.get("protective_stop", 0) or 0)
 
@@ -5364,7 +5371,7 @@ if stock_input:
                 _s19_ma60 = _s19_safe_float(res.get("ma60_val", 0), 0.0)
                 _s19_ta = res.get("trend_analysis", {}) or {}
                 _s19_strategy_state = str(strategy_state.get("state", "RANGE") or "RANGE")
-                _s19_strategy_label = str(strategy_state.get("state_label", "資料不足") or "資料不足")
+                _s19_strategy_label = str(_common_strategy_state_v928.get("state_label", "資料不足") or "資料不足")
                 _s19_strategy_score = _s19_safe_int(strategy_state.get("trend_score", 50), 50)
 
                 _s19_regime = decision_snapshot.get("regime", {}) or {}
@@ -6141,18 +6148,23 @@ if stock_input:
                     and _s181_excess_shares > 0
                 )
 
+                # v9.27：持股專屬的獲利了結／部位管理，不得再覆寫「股票主策略」。
+                # 它只是一個額外的持股執行建議；股票方向仍由 _s925_stock_stance 唯一決定。
+                _s927_holding_management_action = ""
+                _s927_holding_management_reason = ""
+
                 if _s925_stock_stance in {"ENTRY_OK", "PROBE_OK", "WAIT_PULLBACK", "WAIT"}:
                     if _s925_profit_take:
-                        _s183_trade_decision = "獲利減碼"
-                        _s183_trade_reason = (
-                            f"個股共同方向未轉弱，但現價已達第一獲利目標 {_s925_target1:,.2f} 元；"
-                            "此為持股專屬的分批獲利了結，不代表未持股者的方向轉空。"
+                        _s927_holding_management_action = "獲利減碼"
+                        _s927_holding_management_reason = (
+                            f"現價已達第一獲利目標 {_s925_target1:,.2f} 元；"
+                            "可分批落袋，但這不代表股票方向轉弱。"
                         )
                     elif _s925_position_reduce:
-                        _s183_trade_decision = "部位減碼"
-                        _s183_trade_reason = (
-                            f"個股共同方向未轉弱，但目前持股超過風險/資金上限約 {_s181_excess_shares:,} 股；"
-                            "此為部位管理減碼，不代表個股方向轉弱。"
+                        _s927_holding_management_action = "部位減碼"
+                        _s927_holding_management_reason = (
+                            f"目前持股超過風險/資金上限約 {_s181_excess_shares:,} 股；"
+                            "屬於部位管理，不代表股票方向轉弱。"
                         )
 
                 # 保護價跌破具有最高優先權。
@@ -6372,6 +6384,25 @@ if stock_input:
                         "拉回轉強路徑成立，可用小部位試單，正式確認後再加碼。"
                     )
 
+                # v9.28 最終一致性防線：
+                # 若股票共同方向仍允許建立部位，持股執行不可因身份本身變成方向性減碼。
+                # 真正跌破保護價的退場已在前面優先處理，不受此防線影響。
+                if (
+                    user_holding
+                    and _s18_current_shares > 0
+                    and _s925_stock_stance in {"ENTRY_OK", "PROBE_OK"}
+                    and _s183_trade_decision in {"減碼", "部位減碼", "獲利減碼"}
+                ):
+                    _s183_trade_decision = (
+                        "加碼"
+                        if _s925_stock_stance == "ENTRY_OK"
+                        and _s183_governed in {"ADD_ON_CONFIRMATION", "BUILD_BASE", "BUILD"}
+                        else "持有"
+                    )
+                    _s183_trade_reason = (
+                        "股票共同方向仍允許建立部位；持股身分不得反向改寫為方向性減碼。"
+                    )
+
                 _s18_position_plan = {
                     "action": _s12_action,
                     "action_zh": _s18_action_zh,
@@ -6421,6 +6452,8 @@ if stock_input:
                     "decision_consistency_conflict": _s925_conflict,
                     "holding_profit_take": _s925_profit_take,
                     "holding_position_reduce": _s925_position_reduce,
+                    "holding_management_action": _s927_holding_management_action,
+                    "holding_management_reason": _s927_holding_management_reason,
                     "early_entry_state": _s19_early_state,
                     "early_entry_state_zh": _s19_early_state_zh,
                     "early_entry_score": _s19_early_score,
@@ -6695,17 +6728,13 @@ if stock_input:
             _stock_stance_zh_v925 = str(_p18.get("stock_stance_zh", "等待確認"))
             _stock_stance_reason_v925 = str(_p18.get("stock_stance_reason", ""))
 
-            _position_mode_v922 = (
-                "HELD"
-                if user_holding and int(_p18.get("current_shares", 0) or 0) > 0
-                else "UNHELD"
-            )
+            _position_mode_v922 = "COMMON"
             _strategy_lock_v922 = resolve_daily_strategy_lock(
                 stock_id=_stock_id_beta,
-                position_mode=_position_mode_v922,
-                candidate_decision=_raw_decision_now,
-                candidate_state=_raw_state_now,
-                candidate_reason=_raw_decision_reason,
+                position_mode="COMMON",
+                candidate_decision=_stock_stance_zh_v925,
+                candidate_state=_stock_stance_zh_v925,
+                candidate_reason=_stock_stance_reason_v925,
                 current_price=_current_price_beta,
                 invalidation_price=float(_p18.get("beta_invalidation_price", 0) or 0),
                 protective_stop=float(
@@ -6713,18 +6742,22 @@ if stock_input:
                     or _p18.get("protective_stop", 0)
                     or 0
                 ),
-                governed_action=str(
-                    decision_snapshot.get("governance", {}).get("governed_action", "")
-                    if isinstance(decision_snapshot.get("governance", {}), dict)
+                # v9.28：共同主策略的風控來源只看共同股票方向。
+                # 不允許已持股 Portfolio 的 REDUCE/EXIT 反向污染股票主策略。
+                governed_action=(
+                    "EXIT"
+                    if str(_p18.get("stock_stance", "") or "") == "RISK_OFF"
                     else ""
                 ),
             )
 
-            _decision_now = str(_strategy_lock_v922.get("decision", _raw_decision_now))
-            _decision_reason = str(_strategy_lock_v922.get("reason", _raw_decision_reason))
-            _state_now = str(_strategy_lock_v922.get("state", _raw_state_now))
+            # v9.27：今日主策略 = 股票共同方向；持股/未持股動作只是執行層。
+            _decision_now = str(_strategy_lock_v922.get("decision", _stock_stance_zh_v925))
+            _decision_reason = str(_strategy_lock_v922.get("reason", _stock_stance_reason_v925))
+            _state_now = _raw_state_now
+            _execution_action_v927 = _raw_decision_now
             _intraday_exec_v922 = derive_intraday_execution_state(
-                _decision_now, _state_now, _p18, _current_price_beta
+                _execution_action_v927, _raw_state_now, _p18, _current_price_beta
             )
 
             c1, c2, c3 = st.columns([1.3, 1, 1])
@@ -6736,9 +6769,10 @@ if stock_input:
                 st.metric("資料完整度", f"{int(decision_snapshot.get('data_reliability', 0) or 0)}%")
 
             st.info(f"一句話判斷：{_decision_reason}")
+            _identity_label_v927 = "已持股操作" if user_holding and int(_p18.get("current_shares", 0) or 0) > 0 else "未持股操作"
             st.caption(
-                f"個股共同方向：{_stock_stance_zh_v925}"
-                + (f"｜{_stock_stance_reason_v925}" if _stock_stance_reason_v925 else "")
+                f"{_identity_label_v927}：{_execution_action_v927}｜"
+                "此為執行動作，不會反向改寫股票共同主策略。"
             )
             # v9.24：把「盤中執行狀態」獨立成主畫面明確區塊。
             # 今日主策略負責方向；盤中狀態只回答此刻價格該如何執行。
@@ -6757,14 +6791,10 @@ if stock_input:
                     f"今日主策略鎖定時間：{_strategy_lock_v922.get('locked_at','')}｜"
                     "盤中報價只更新這個執行狀態，不改寫今日主策略。"
                 )
-            if (
-                _raw_decision_now != _decision_now
-                or _raw_state_now != _state_now
-            ) and not _strategy_lock_v922.get("emergency"):
+            if not _strategy_lock_v922.get("emergency"):
                 st.caption(
-                    f"即時計算目前為「{_raw_decision_now or _raw_state_now}」，"
-                    "但不因盤中價格的小幅變動改寫今日主策略；"
-                    "即時計算只作為執行位置參考。"
+                    f"股票共同主策略今日鎖定為「{_decision_now}」；"
+                    f"目前身分執行動作為「{_execution_action_v927}」。"
                 )
 
             # v9.26：歷史比較放在今日主策略之後，直接比較「那天 vs 今天」。
@@ -6784,7 +6814,7 @@ if stock_input:
 
                 st.markdown("### 未持股進場判斷")
                 u1, u2, u3, u4 = st.columns(4)
-                u1.metric("進場狀態", _state_now or _decision_now)
+                u1.metric("進場狀態", _raw_state_now or _execution_action_v927)
                 u2.metric("短線進場條件完成度", f"{_er*100:.0f}%")
                 u3.metric(
                     "止跌雷達",
@@ -6801,21 +6831,21 @@ if stock_input:
                     "「短線進場條件完成度」表示目前短線條件距可執行進場還差多少；主趨勢仍由日線判斷。三者用途不同。"
                 )
 
-                if _state_now == "等待拉回":
+                if _raw_state_now == "等待拉回":
                     st.warning("目前已有起漲結構，但位置偏高，不適合追價。")
-                elif _state_now in {"低位觀察", "低位觀察・暫不試單"}:
+                elif _raw_state_now in {"低位觀察", "低位觀察・暫不試單"}:
                     st.warning("股價已進入低位承接區，但目前仍以觀察為主，尚未形成可執行的試單訊號。")
-                elif _state_now == "止跌形成":
+                elif _raw_state_now == "止跌形成":
                     st.info("股價仍在低位區，但已開始出現較早期的止跌訊號；先提高注意，不急著下單。")
-                elif _state_now == "低位轉折確認中":
+                elif _raw_state_now == "低位轉折確認中":
                     st.info("低位轉折訊號正在累積確認；目前先不下單，避免因單一分鐘反彈就追進。")
-                elif _state_now == "低位試單":
+                elif _raw_state_now == "低位試單":
                     st.success("低位轉折訊號已通過穩定確認，可用很小部位試單；正式趨勢尚未翻多。")
-                elif _state_now == "轉強試單":
+                elif _raw_state_now == "轉強試單":
                     st.success("反轉結構與短線動能已轉強，可小部位試單，正式確認後再加碼。")
-                elif _state_now == "正式進場":
+                elif _raw_state_now == "正式進場":
                     st.success("目前已達正式進場條件，可建立第一筆主要部位。")
-                elif _state_now == "不宜進場":
+                elif _raw_state_now == "不宜進場":
                     st.warning(
                         "目前暫不進場；短線條件已接近成熟，但仍有風控條件尚未解除。"
                     )
@@ -6830,7 +6860,7 @@ if stock_input:
                 # v9.19：未持股顯示分級。
                 # 不改正式決策引擎，只把「不宜進場」拆成硬否決與接近觸發兩種情況，
                 # 避免條件已接近成熟時仍顯示過度負面的文字。
-                _entry_display_state_v98 = _state_now or _decision_now
+                _entry_display_state_v98 = _raw_state_now or _execution_action_v927
                 # v9.19：硬風險否決改為「原因清單」，不能只顯示 True/False。
                 _entry_veto_reasons_v99 = []
 
@@ -6849,10 +6879,10 @@ if stock_input:
                 # low_hard_veto 是綜合否決旗標，往下拆成目前可辨識的實際來源。
                 if _p18.get("low_hard_veto"):
                     _formal_trend_state_v99 = str(
-                        strategy_state.get("state", "") or ""
+                        _common_strategy_state_v928.get("state", "") or ""
                     )
                     _formal_trend_label_v99 = str(
-                        strategy_state.get("state_label", "") or ""
+                        _common_strategy_state_v928.get("state_label", "") or ""
                     )
 
                     if _formal_trend_state_v99 in {"BEAR", "STRONG_BEAR", "WEAK_BEAR"}:
@@ -6903,9 +6933,9 @@ if stock_input:
                 ):
                     _entry_display_state_v98 = "等待轉強確認・暫不進場"
 
-                if (_state_now or _decision_now) == "正式進場":
-                    _formal_trend_upper_v915 = str(strategy_state.get("state", "") or "").upper()
-                    _formal_trend_label_v915 = str(strategy_state.get("state_label", "") or "")
+                if (_raw_state_now or _execution_action_v927) == "正式進場":
+                    _formal_trend_upper_v915 = str(_common_strategy_state_v928.get("state", "") or "").upper()
+                    _formal_trend_label_v915 = str(_common_strategy_state_v928.get("state_label", "") or "")
                     _entry_path_v915 = (
                         "逆勢轉強進場"
                         if _formal_trend_upper_v915 in {"BEAR", "STRONG_BEAR", "WEAK_BEAR"}
@@ -6919,7 +6949,7 @@ if stock_input:
 
                 st.markdown("### 決策穩定器")
                 _stable_trend_label = str(
-                    strategy_state.get("state_label", "資料不足") or "資料不足"
+                    _common_strategy_state_v928.get("state_label", "資料不足") or "資料不足"
                 )
                 _stable_strategy_label = _entry_display_state_v98
                 if _p18.get("beta_probe_latched"):
@@ -6929,10 +6959,11 @@ if stock_input:
                 else:
                     _stable_trigger_label = "尚未觸發"
 
-                _st1, _st2, _st3 = st.columns(3)
+                _st1, _st2, _st3, _st4 = st.columns(4)
                 _st1.metric("主趨勢（日線）", _stable_trend_label)
-                _st2.metric("今日主策略", _decision_now)
-                _st3.metric("盤中觸發", _stable_trigger_label)
+                _st2.metric("股票主策略", _decision_now)
+                _st3.metric("身分執行", _execution_action_v927)
+                _st4.metric("盤中觸發", _stable_trigger_label)
 
                 if _entry_display_state_v98 != (_state_now or _decision_now):
                     st.info(
@@ -6955,7 +6986,7 @@ if stock_input:
                 else:
                     st.caption("本日尚未建立新的試單鎖定。")
 
-                _formal_entry_v915 = (_state_now or _decision_now) == "正式進場"
+                _formal_entry_v915 = (_raw_state_now or _execution_action_v927) == "正式進場"
                 if _formal_entry_v915:
                     st.markdown("### 正式進場交易計畫")
 
@@ -7678,7 +7709,7 @@ if stock_input:
                 _hold_signal_checks = [
                     (
                         "日線趨勢",
-                        str(strategy_state.get("state", "")) in {"STRONG_BULL", "BULL_PULLBACK"}
+                        str(_common_strategy_state_v928.get("state", "")) in {"STRONG_BULL", "BULL_PULLBACK"}
                         or int(strategy_state.get("trend_score", 0) or 0) >= 60
                     ),
                     (
@@ -7701,15 +7732,15 @@ if stock_input:
                 _hold_signal_score = sum(1 for _, ok in _hold_signal_checks if ok)
                 _hold_signal_total = len(_hold_signal_checks)
 
-                if _decision_now == "退場" or (
+                if _execution_action_v927 == "退場" or (
                     _hold_structural > 0 and _hold_price <= _hold_structural
                 ):
                     _hold_health = "危險"
-                elif _decision_now == "減碼" or (
+                elif _execution_action_v927 == "減碼" or (
                     _hold_protect > 0 and _hold_price <= _hold_protect
                 ):
                     _hold_health = "防守"
-                elif _decision_now in {"獲利減碼", "部位減碼"}:
+                elif _execution_action_v927 in {"獲利減碼", "部位減碼"}:
                     _hold_health = "健康管理"
                 elif _hold_signal_score >= 4:
                     _hold_health = "健康"
@@ -7720,7 +7751,7 @@ if stock_input:
 
                 # 第一列：真正需要先看到的持股資訊
                 h1, h2, h3, h4 = st.columns(4)
-                h1.metric("目前操作", _decision_now)
+                h1.metric("目前操作", _execution_action_v927)
                 h2.metric("持股健康度", _hold_health)
                 h3.metric("訊號一致度", f"{_hold_signal_score}/{_hold_signal_total}")
                 h4.metric(
@@ -7748,6 +7779,14 @@ if stock_input:
                 for _name, _ok in _hold_signal_checks:
                     _health_parts.append(f"{'✅' if _ok else '⚠️'} {_name}")
                 st.caption("持股健康度依據：" + "｜".join(_health_parts))
+
+                _holding_mgmt_action_v927 = str(_p18.get("holding_management_action", "") or "")
+                _holding_mgmt_reason_v927 = str(_p18.get("holding_management_reason", "") or "")
+                if _holding_mgmt_action_v927:
+                    st.info(
+                        f"部位管理建議：{_holding_mgmt_action_v927}｜{_holding_mgmt_reason_v927}"
+                    )
+                    st.caption("此為持股專屬的部位／獲利管理，不代表股票主策略轉弱。")
 
                 # v9.1：已持股改為「出場價格」導向
                 # 第一/第二出場價屬獲利了結路徑；防守/強制出場價屬風控路徑。
