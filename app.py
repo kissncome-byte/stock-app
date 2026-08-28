@@ -4073,15 +4073,85 @@ def build_historical_replay(stock_id: str, market_type: str, trading_days_back: 
             str(stock_id), cutoff_date.strftime("%Y-%m-%d"), days=120
         )
 
-        # 「歷史重算狀態」刻意只依可回溯資料，不冒充當時完整正式策略。
+        # v9.26：歷史資料不只給狀態，也重算成和今日主畫面一致的「主策略語言」。
+        # 這是歷史重算，不冒充當時真的有被資料庫保存的策略快照。
         hard_veto = bool(chip_engine.get("veto") or volume_engine.get("veto"))
+        chip_score_hist = int(chip_engine.get("score", 50) or 50)
+        volume_score_hist = int(volume_engine.get("score", 50) or 50)
+
+        ma20_hist = safe_float(last.get("MA20"), 0)
+        ma60_hist = safe_float(last.get("MA60"), 0)
+        ma20_distance_pct_hist = (
+            ((price / ma20_hist) - 1.0) * 100.0
+            if price > 0 and ma20_hist > 0 else None
+        )
+        above_ma20_hist = bool(ma20_hist > 0 and price >= ma20_hist)
+        above_ma60_hist = bool(ma60_hist > 0 and price >= ma60_hist)
+
+        # 歷史策略採保守重算：沒有盤中快照的條件絕不假設成立。
+        if hard_veto:
+            historical_main_strategy = "不宜進場"
+            historical_strategy_reason = "當時籌碼或價量存在明確否決訊號。"
+        elif (
+            trend_score >= 65
+            and low_score >= 3
+            and chip_score_hist >= 45
+            and volume_score_hist >= 50
+            and above_ma20_hist
+        ):
+            # 趨勢已正式轉強，且籌碼/價量沒有反對。
+            if ma20_distance_pct_hist is not None and ma20_distance_pct_hist > 10:
+                historical_main_strategy = "等待拉回"
+                historical_strategy_reason = (
+                    f"當時趨勢已轉強，但股價高於20日線約 "
+                    f"{ma20_distance_pct_hist:.1f}%，位置偏高，不適合追價。"
+                )
+            else:
+                historical_main_strategy = "正式進場"
+                historical_strategy_reason = (
+                    "當時日線趨勢、低位承接、籌碼與價量條件已同步達到可建立主要部位的標準。"
+                )
+        elif (
+            trend_score >= 52
+            and low_score >= 4
+            and chip_score_hist >= 40
+            and volume_score_hist >= 45
+        ):
+            historical_main_strategy = "轉強試單"
+            historical_strategy_reason = (
+                "當時低位轉折條件已高度成立，趨勢也開始改善，但尚未達正式進場強度。"
+            )
+        elif (
+            low_score >= 3
+            and low_zone_low > 0
+            and low_zone_high > 0
+            and low_zone_low <= price <= low_zone_high * 1.02
+        ):
+            historical_main_strategy = "低位試單"
+            historical_strategy_reason = (
+                "當時位於低位承接區，至少3項低位承接條件成立；"
+                "可視為低風險試單階段，但尚非正式趨勢翻多。"
+            )
+        elif trend_score >= 45 or low_score >= 2:
+            historical_main_strategy = "繼續等待"
+            historical_strategy_reason = (
+                "當時已有部分趨勢或承接條件改善，但仍不足以升級到可執行進場。"
+            )
+        else:
+            historical_main_strategy = "不宜進場"
+            historical_strategy_reason = (
+                "當時日線與承接條件仍偏弱，沒有足夠證據支持建立新部位。"
+            )
+
         if hard_veto:
             replay_state = "風險偏高／不宜追進"
-        elif trend_score >= 62 and low_score >= 3:
+        elif historical_main_strategy == "正式進場":
             replay_state = "趨勢與承接同步轉強"
-        elif low_score >= 3:
-            replay_state = "低位承接形成"
-        elif trend_score >= 45:
+        elif historical_main_strategy in {"轉強試單", "低位試單"}:
+            replay_state = "低位承接／轉強形成"
+        elif historical_main_strategy == "等待拉回":
+            replay_state = "趨勢成立但位置偏高"
+        elif historical_main_strategy == "繼續等待":
             replay_state = "等待轉強確認"
         else:
             replay_state = "弱勢觀察"
@@ -4096,6 +4166,9 @@ def build_historical_replay(stock_id: str, market_type: str, trading_days_back: 
             "trend_state": trend_state,
             "trend_label": trend_label,
             "replay_state": replay_state,
+            "historical_main_strategy": historical_main_strategy,
+            "historical_strategy_reason": historical_strategy_reason,
+            "ma20_distance_pct": ma20_distance_pct_hist,
             "low_score": low_score,
             "low_signals": low_signals,
             "low_zone_low": low_zone_low,
@@ -4130,7 +4203,7 @@ def build_historical_replay(stock_id: str, market_type: str, trading_days_back: 
         return result
 
 
-def render_historical_replay_panel(res: dict, stock_id: str) -> None:
+def render_historical_replay_panel(res: dict, stock_id: str, current_strategy: str = "") -> None:
     """
     v9.23：歷史重算改成預設收合。
     主畫面先看今日決策；需要比較過去時再展開，不讓歷史分析佔據上半頁。
@@ -4168,14 +4241,22 @@ def render_historical_replay_panel(res: dict, stock_id: str) -> None:
 
         st.info(
             f"{hist['as_of_date']}｜前 {hist['trading_days_back']} 個已完成交易日｜"
-            f"{hist['replay_state']}"
+            f"歷史重算主策略：{hist['historical_main_strategy']}"
         )
 
+        _hs1, _hs2 = st.columns(2)
+        _hs1.metric("歷史重算主策略", hist["historical_main_strategy"])
+        _hs2.metric(
+            "今日主策略",
+            str(current_strategy or "請見今日主策略")
+        )
+        st.caption("歷史策略理由：" + str(hist.get("historical_strategy_reason", "")))
+
         r1, r2, r3, r4 = st.columns(4)
-        r1.metric("收盤價", f"{hist['price']:,.2f}", f"{hist['daily_pct']:+.2f}%")
-        r2.metric("日線趨勢", hist["trend_label"], f"{hist['trend_score']}/100")
-        r3.metric("低位承接", f"{hist['low_score']}/5")
-        r4.metric("籌碼", hist["chip_state"], f"{hist['chip_score']}/100")
+        r1.metric("當時收盤價", f"{hist['price']:,.2f}", f"{hist['daily_pct']:+.2f}%")
+        r2.metric("當時日線趨勢", hist["trend_label"], f"{hist['trend_score']}/100")
+        r3.metric("當時低位承接", f"{hist['low_score']}/5")
+        r4.metric("當時籌碼", hist["chip_state"], f"{hist['chip_score']}/100")
 
         p1, p2, p3 = st.columns(3)
         p1.metric(
@@ -4200,6 +4281,11 @@ def render_historical_replay_panel(res: dict, stock_id: str) -> None:
         current_volume = build_volume_engine(res)
 
         compare_df = pd.DataFrame([
+            {
+                "項目": "主策略",
+                "歷史": hist["historical_main_strategy"],
+                "現在": str(current_strategy or "請見今日主策略"),
+            },
             {
                 "項目": "股價",
                 "歷史": f"{hist['price']:,.2f}",
@@ -4230,6 +4316,10 @@ def render_historical_replay_panel(res: dict, stock_id: str) -> None:
                 "**無法可靠回放：** "
                 + "、".join(hist.get("unreplayable", []))
             )
+            st.caption(
+                "「歷史重算主策略」只使用當時以前可取得的日線、價量、法人、融資與大戶資料。"
+                "因未保存當時盤中 tick / 新聞 / 分析師快照，因此不宣稱是當時畫面的原始紀錄。"
+            )
 
 
 
@@ -4254,7 +4344,9 @@ def resolve_daily_strategy_lock(
     today = datetime.now(TZ).strftime("%Y-%m-%d")
     sid = str(stock_id)
     mode = str(position_mode or "UNHELD").upper()
-    session_key = f"_daily_strategy_lock_{sid}_{mode}_{today}"
+    lock_version = "v925"
+    session_key = f"_daily_strategy_lock_{lock_version}_{sid}_{mode}_{today}"
+    db_mode = f"{mode}_{lock_version.upper()}"
 
     locked = st.session_state.get(session_key)
     if not locked:
@@ -4276,7 +4368,7 @@ def resolve_daily_strategy_lock(
                 row = conn.execute("""
                     SELECT * FROM daily_strategy_lock
                     WHERE stock_id=? AND position_mode=? AND strategy_date=?
-                """, (sid, mode, today)).fetchone()
+                """, (sid, db_mode, today)).fetchone()
 
                 if row:
                     locked = {
@@ -4298,7 +4390,7 @@ def resolve_daily_strategy_lock(
                             decision_label, state_label, reason
                         ) VALUES (?, ?, ?, ?, ?, ?, ?)
                     """, (
-                        sid, mode, today, locked["locked_at"],
+                        sid, db_mode, today, locked["locked_at"],
                         locked["decision"], locked["state"], locked["reason"]
                     ))
                     conn.commit()
@@ -4552,7 +4644,7 @@ with st.sidebar:
 
     st.caption("自選清單會寫入目前網址；建議把這個網址加入瀏覽器書籤。")
 
-st.markdown("## 🧭 StockPilot Beta v9.24｜個股操作決策")
+st.markdown("## 🧭 StockPilot Beta v9.26｜個股操作決策")
 st.caption("主決策優先；盤中即時價格只更新執行狀態。")
 
 # v9.23：操作輸入壓縮成一排，避免上半段先被表單吃掉大量高度。
@@ -4623,9 +4715,7 @@ if stock_input:
         decision_snapshot["strategy_outcome_validation"] = build_strategy_outcome_validation(res)
         decision_snapshot["strategy_audit"] = build_strategy_consistency_audit(decision_snapshot, strategy_state, user_holding)
 
-        # v9.23：歷史比較移到主決策邏輯建立後，且預設收合。
-        render_historical_replay_panel(res, stock_input)
-
+        # 歷史比較延後到「今日主策略」真正建立後再顯示，才能直接比較。
         # StockPilot 4.0 Shadow：只做平行比對，不改寫 3.3 正式策略。
         shadow_v4 = None
         shadow_v4_error = None
@@ -5884,27 +5974,75 @@ if stock_input:
                     _s19_early_state = "WAIT_CONFIRM"
                     _s19_early_state_zh = "繼續等待"
 
-                # Sprint 18.3：最終只回答四件事：進場、退場、加碼、減碼。
+                # v9.25：先建立「個股共同方向」，再依持股/未持股翻譯操作。
+                # 同一檔股票不允許出現「未持股正式進場，但已持股因個股轉弱而減碼」。
                 _s183_governed = str(_s12_governance.get("governed_action") or "").upper()
                 _s183_trend = str(_s12_governance.get("trend_state") or "").lower()
                 _s183_price_in_entry = bool(
                     _s14_進場區_low <= _s12_price <= _s14_進場區_high
                 )
 
+                _s925_entry_actions = {
+                    "ADD_ON_CONFIRMATION", "BUILD_BASE", "BUILD", "PROBE",
+                    "允許建立部位_BASE", "允許建立部位"
+                }
+                _s925_conflict = bool(
+                    _s19_early_state in {"FORMAL_ENTRY", "TURN_PROBE", "LOW_PROBE"}
+                    and _s183_governed in {"REDUCE", "EXIT"}
+                )
+
+                if _s183_governed == "EXIT":
+                    _s925_stock_stance = "RISK_OFF"
+                    _s925_stock_stance_zh = "風險退出"
+                    _s925_stock_stance_reason = "個股治理層已進入退出條件。"
+                elif _s183_governed == "REDUCE":
+                    _s925_stock_stance = "WEAKENING"
+                    _s925_stock_stance_zh = "轉弱防守"
+                    _s925_stock_stance_reason = (
+                        "個股治理層已轉弱；既有部位應降低曝險，未持股者不得同時建立新部位。"
+                    )
+                elif _s19_early_state == "FORMAL_ENTRY":
+                    _s925_stock_stance = "ENTRY_OK"
+                    _s925_stock_stance_zh = "可建立部位"
+                    _s925_stock_stance_reason = "趨勢、結構與進場條件已達正式建立部位標準。"
+                elif _s19_early_state in {"TURN_PROBE", "LOW_PROBE"}:
+                    _s925_stock_stance = "PROBE_OK"
+                    _s925_stock_stance_zh = "可小部位試單"
+                    _s925_stock_stance_reason = "轉強/低位承接條件已達試單標準，但尚未完成正式進場確認。"
+                elif _s19_early_state == "WAIT_PULLBACK":
+                    _s925_stock_stance = "WAIT_PULLBACK"
+                    _s925_stock_stance_zh = "等待拉回"
+                    _s925_stock_stance_reason = "方向未破壞，但目前位置的風險報酬不適合追價。"
+                elif _s19_early_state == "NO_ENTRY" or not _s21_no_hard_veto:
+                    _s925_stock_stance = "NO_ENTRY"
+                    _s925_stock_stance_zh = "暫不建立新部位"
+                    _s925_stock_stance_reason = "目前仍有硬風險或價格結構尚未解除。"
+                else:
+                    _s925_stock_stance = "WAIT"
+                    _s925_stock_stance_zh = "等待確認"
+                    _s925_stock_stance_reason = "目前條件尚未成熟到可執行的新部位標準。"
+
                 if not user_holding or _s18_current_shares <= 0:
-                    if _s19_early_state == "FORMAL_ENTRY":
+                    if _s925_stock_stance == "RISK_OFF":
+                        _s183_trade_decision = "不宜進場"
+                        _s183_trade_reason = "個股共同方向已進入風險退出；未持股者不建立新部位。"
+                    elif _s925_stock_stance == "WEAKENING":
+                        _s183_trade_decision = "暫不進場"
+                        _s183_trade_reason = (
+                            "個股共同方向已轉弱；既有持股需降低曝險，因此未持股者同步停止新進場。"
+                        )
+                    elif _s925_stock_stance == "ENTRY_OK":
                         _s183_trade_decision = "正式進場"
                         _s183_trade_reason = (
-                            "價格、趨勢結構、短線動能與外部條件已達正式進場標準；"
-                            "不必再等待更遠的確認價才第一次建立部位。"
+                            "個股共同方向允許建立部位；價格、趨勢結構與短線條件已達正式進場標準。"
                         )
-                    elif _s19_early_state == "TURN_PROBE":
+                    elif _s925_stock_stance == "PROBE_OK" and _s19_early_state == "TURN_PROBE":
                         _s183_trade_decision = "轉強試單"
                         _s183_trade_reason = (
                             "反轉起漲結構已形成，短線動能也開始轉強；"
                             "可先用小部位卡位，後續若正式確認再加碼。"
                         )
-                    elif _s19_early_state == "LOW_PROBE":
+                    elif _s925_stock_stance == "PROBE_OK" and _s19_early_state == "LOW_PROBE":
                         _s183_trade_decision = "低位試單"
                         _s183_trade_reason = (
                             f"股價位於低位區，止跌轉折條件 {_s87_bottom_score}/5 項成立，"
@@ -5955,18 +6093,67 @@ if stock_input:
                             "持續觀察，不因完成度高就提前追價。"
                         )
                 else:
-                    if _s183_governed == "EXIT":
+                    # v9.25：已持股是「共同方向的持股翻譯」，不是另一套股票方向。
+                    if _s925_stock_stance == "RISK_OFF":
                         _s183_trade_decision = "退場"
-                        _s183_trade_reason = "個股風控／趨勢條件已進入退出狀態。"
-                    elif _s183_governed == "REDUCE":
+                        _s183_trade_reason = "個股共同方向已進入風險退出，優先退出既有部位。"
+                    elif _s925_stock_stance == "WEAKENING":
                         _s183_trade_decision = "減碼"
-                        _s183_trade_reason = "個股條件轉弱，先降低持股曝險。"
-                    elif _s183_governed in {"ADD_ON_CONFIRMATION", "BUILD_BASE", "BUILD", "PROBE"}:
-                        _s183_trade_decision = "加碼"
-                        _s183_trade_reason = "既有持股仍成立，且個股條件允許增加部位。"
+                        _s183_trade_reason = (
+                            "個股共同方向轉弱，降低既有持股曝險；同一時間未持股者也會停止新進場。"
+                        )
+                    elif _s925_stock_stance == "ENTRY_OK":
+                        if _s183_governed in {"ADD_ON_CONFIRMATION", "BUILD_BASE", "BUILD"}:
+                            _s183_trade_decision = "加碼"
+                            _s183_trade_reason = "個股共同方向可建立部位；既有持股可依確認條件增加部位。"
+                        else:
+                            _s183_trade_decision = "持有"
+                            _s183_trade_reason = "個股共同方向仍允許建立部位；既有持股續抱，不因持股身分反向減碼。"
+                    elif _s925_stock_stance == "PROBE_OK":
+                        _s183_trade_decision = "持有"
+                        _s183_trade_reason = "個股共同方向仍屬試單階段；已有持股先續抱，不額外追價。"
+                    elif _s925_stock_stance == "WAIT_PULLBACK":
+                        _s183_trade_decision = "持有"
+                        _s183_trade_reason = "個股方向未失效但位置偏高；既有持股續抱，暫不加碼。"
+                    elif _s925_stock_stance == "NO_ENTRY":
+                        _s183_trade_decision = "持有觀察"
+                        _s183_trade_reason = (
+                            "目前不適合建立新部位；既有持股若仍在保護價上方則先觀察，"
+                            "跌破保護價再依風控退出。"
+                        )
                     else:
                         _s183_trade_decision = "持有"
-                        _s183_trade_reason = "目前尚未出現退場或減碼條件，也未形成新的加碼條件。"
+                        _s183_trade_reason = "個股共同方向等待確認；既有持股在風控未破壞前續抱。"
+
+                # v9.25：持股專屬減碼只能來自「獲利了結 / 部位過大」，
+                # 這類減碼不代表股票方向轉弱，因此可以和未持股的可進場判斷並存，
+                # 但畫面必須明確標示原因。
+                _s925_target1 = float(_s12_levels.get("target1", 0) or 0)
+                _s925_profit_take = bool(
+                    user_holding and _s18_current_shares > 0
+                    and _s925_target1 > 0
+                    and _s12_price >= _s925_target1
+                    and float(user_cost or 0) > 0
+                    and _s12_price > float(user_cost or 0)
+                )
+                _s925_position_reduce = bool(
+                    user_holding and _s18_current_shares > 0
+                    and _s181_excess_shares > 0
+                )
+
+                if _s925_stock_stance in {"ENTRY_OK", "PROBE_OK", "WAIT_PULLBACK", "WAIT"}:
+                    if _s925_profit_take:
+                        _s183_trade_decision = "獲利減碼"
+                        _s183_trade_reason = (
+                            f"個股共同方向未轉弱，但現價已達第一獲利目標 {_s925_target1:,.2f} 元；"
+                            "此為持股專屬的分批獲利了結，不代表未持股者的方向轉空。"
+                        )
+                    elif _s925_position_reduce:
+                        _s183_trade_decision = "部位減碼"
+                        _s183_trade_reason = (
+                            f"個股共同方向未轉弱，但目前持股超過風險/資金上限約 {_s181_excess_shares:,} 股；"
+                            "此為部位管理減碼，不代表個股方向轉弱。"
+                        )
 
                 # 保護價跌破具有最高優先權。
                 if user_holding and _s18_current_shares > 0 and _s12_price <= _s18_stop_fill:
@@ -6228,6 +6415,12 @@ if stock_input:
                     "profit_giveback_status": _s182_giveback_status,
                     "trade_decision": _s183_trade_decision,
                     "trade_reason": _s183_trade_reason,
+                    "stock_stance": _s925_stock_stance,
+                    "stock_stance_zh": _s925_stock_stance_zh,
+                    "stock_stance_reason": _s925_stock_stance_reason,
+                    "decision_consistency_conflict": _s925_conflict,
+                    "holding_profit_take": _s925_profit_take,
+                    "holding_position_reduce": _s925_position_reduce,
                     "early_entry_state": _s19_early_state,
                     "early_entry_state_zh": _s19_early_state_zh,
                     "early_entry_score": _s19_early_score,
@@ -6499,6 +6692,8 @@ if stock_input:
             _raw_decision_now = str(_p18.get("trade_decision", "等待"))
             _raw_decision_reason = str(_p18.get("trade_reason", "等待更多確認。"))
             _raw_state_now = str(_p18.get("early_entry_state_zh", ""))
+            _stock_stance_zh_v925 = str(_p18.get("stock_stance_zh", "等待確認"))
+            _stock_stance_reason_v925 = str(_p18.get("stock_stance_reason", ""))
 
             _position_mode_v922 = (
                 "HELD"
@@ -6541,6 +6736,10 @@ if stock_input:
                 st.metric("資料完整度", f"{int(decision_snapshot.get('data_reliability', 0) or 0)}%")
 
             st.info(f"一句話判斷：{_decision_reason}")
+            st.caption(
+                f"個股共同方向：{_stock_stance_zh_v925}"
+                + (f"｜{_stock_stance_reason_v925}" if _stock_stance_reason_v925 else "")
+            )
             # v9.24：把「盤中執行狀態」獨立成主畫面明確區塊。
             # 今日主策略負責方向；盤中狀態只回答此刻價格該如何執行。
             if _strategy_lock_v922.get("emergency"):
@@ -6567,6 +6766,13 @@ if stock_input:
                     "但不因盤中價格的小幅變動改寫今日主策略；"
                     "即時計算只作為執行位置參考。"
                 )
+
+            # v9.26：歷史比較放在今日主策略之後，直接比較「那天 vs 今天」。
+            render_historical_replay_panel(
+                res,
+                stock_input,
+                current_strategy=_decision_now,
+            )
 
             # 未持股：只顯示進場相關資訊
             if not user_holding or int(_p18.get("current_shares", 0) or 0) <= 0:
@@ -7503,6 +7709,8 @@ if stock_input:
                     _hold_protect > 0 and _hold_price <= _hold_protect
                 ):
                     _hold_health = "防守"
+                elif _decision_now in {"獲利減碼", "部位減碼"}:
+                    _hold_health = "健康管理"
                 elif _hold_signal_score >= 4:
                     _hold_health = "健康"
                 elif _hold_signal_score >= 3:
