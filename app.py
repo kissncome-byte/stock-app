@@ -911,6 +911,120 @@ def analyze_peer_resonance(stock_id: str, industry_category: str):
         log_error("peer correlation", exc)
         return "⚪ 同業相關性計算失敗，暫不判斷。", None, len(returns)
 
+
+@st.cache_data(ttl=1800)
+def analyze_peer_strength_snapshot(stock_id: str, industry_category: str) -> dict:
+    """
+    v9.30 同族群相對強弱：
+    使用完成日線的 5 / 20 日報酬比較同產業股票。
+    不知道資料就回 available=False，不以產業名稱猜測強弱。
+    """
+    out = {
+        "available": False,
+        "peer_count": 0,
+        "stock_ret5": None,
+        "stock_ret20": None,
+        "peer_median5": None,
+        "peer_median20": None,
+        "excess5": None,
+        "excess20": None,
+        "percentile20": None,
+        "state": "資料不足",
+        "note": "同族群完成日線不足，未納入相對強弱評分。",
+    }
+    try:
+        candidates = get_industry_peer_candidates(
+            str(stock_id), str(industry_category), max_peers=8
+        )
+        if len(candidates) < 2:
+            return out
+
+        today = pd.Timestamp(datetime.now(TZ).strftime("%Y-%m-%d"))
+        before_close = datetime.now(TZ).time() < datetime.strptime("13:30", "%H:%M").time()
+        rows = []
+
+        for row in candidates:
+            pid = str(row.get("stock_id", ""))
+            market = str(
+                row.get("type")
+                or row.get("market_type")
+                or row.get("market")
+                or "TSE"
+            )
+            pdf = get_daily_df(pid, market_type=market, days=100)
+            if pdf is None or pdf.empty:
+                continue
+
+            d = pdf.copy()
+            d["date"] = pd.to_datetime(d["date"], errors="coerce")
+            d["close"] = pd.to_numeric(d["close"], errors="coerce")
+            d = d.dropna(subset=["date", "close"]).sort_values("date")
+            if before_close:
+                d = d[d["date"] < today]
+            else:
+                d = d[d["date"] <= today]
+
+            if len(d) < 22:
+                continue
+
+            c = d["close"]
+            ret5 = float((c.iloc[-1] / c.iloc[-6] - 1) * 100)
+            ret20 = float((c.iloc[-1] / c.iloc[-21] - 1) * 100)
+            rows.append({"stock_id": pid, "ret5": ret5, "ret20": ret20})
+
+        if len(rows) < 2:
+            return out
+
+        rdf = pd.DataFrame(rows)
+        mine = rdf[rdf["stock_id"] == str(stock_id)]
+        if mine.empty:
+            return out
+
+        stock_ret5 = float(mine.iloc[0]["ret5"])
+        stock_ret20 = float(mine.iloc[0]["ret20"])
+        peers = rdf[rdf["stock_id"] != str(stock_id)]
+        if peers.empty:
+            return out
+
+        med5 = float(peers["ret5"].median())
+        med20 = float(peers["ret20"].median())
+        excess5 = stock_ret5 - med5
+        excess20 = stock_ret20 - med20
+        percentile20 = float((rdf["ret20"] <= stock_ret20).mean() * 100)
+
+        if excess20 >= 5 and percentile20 >= 70:
+            state = "明顯領先族群"
+        elif excess20 >= 2:
+            state = "相對強勢"
+        elif excess20 <= -5 and percentile20 <= 30:
+            state = "明顯落後族群"
+        elif excess20 <= -2:
+            state = "相對弱勢"
+        else:
+            state = "與族群相近"
+
+        out.update({
+            "available": True,
+            "peer_count": int(len(rdf)),
+            "stock_ret5": stock_ret5,
+            "stock_ret20": stock_ret20,
+            "peer_median5": med5,
+            "peer_median20": med20,
+            "excess5": excess5,
+            "excess20": excess20,
+            "percentile20": percentile20,
+            "state": state,
+            "note": (
+                f"20日報酬 {stock_ret20:+.2f}%｜族群中位數 {med20:+.2f}%｜"
+                f"超額 {excess20:+.2f}%｜族群百分位 {percentile20:.0f}%"
+            ),
+        })
+        return out
+    except Exception as exc:
+        log_error(f"peer strength {stock_id}", exc)
+        return out
+
+
 # 免費公開分析師共識彙整：僅顯示 Yahoo 可取得的整體統計，並非逐家券商研究報告。
 @st.cache_data(ttl=1800)
 def get_broker_consensus_data(stock_id: str, current_price: float):
@@ -1308,6 +1422,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     is_rs_gold = (wtx_change <= -1.0) and (relative_strength >= 3.0)
 
     peer_resonance_text, peer_corr_val, peer_count = analyze_peer_resonance(stock_id, industry)
+    peer_strength_snapshot = analyze_peer_strength_snapshot(stock_id, industry)
     avg_daily_volume_shares = float(df["vol"].tail(20).mean())
     sitc_trend, margin_trend, sitc_3d_sum, margin_diff = get_taiwan_enhanced_chips(stock_id, avg_daily_volume_shares)
     large_holder_radar = get_large_holder_radar(stock_id, days=120)
@@ -1472,6 +1587,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     res_dict["peer_resonance_text"] = peer_resonance_text
     res_dict["peer_corr_val"] = peer_corr_val
     res_dict["peer_count"] = peer_count
+    res_dict["peer_strength_snapshot"] = peer_strength_snapshot
     res_dict["pb_ratio"] = pb_ratio
     res_dict["bvps"] = bvps
     res_dict["trend_analysis"] = trend_analysis
@@ -3051,12 +3167,18 @@ def build_decision_snapshot(res: dict, compass: dict, committee: dict, user_hold
     validation = build_historical_signal_validation(res)
     chip_engine = build_chip_engine(res)
     volume_engine = build_volume_engine(res)
+    market_context_engine = build_market_context_engine(
+        res, chip_engine=chip_engine, volume_engine=volume_engine
+    )
     snapshot = {
         "levels":levels, "market":market, "portfolio":portfolio, "regime":regime, "holding_value":holding_value,
         "agreement":agreement, "data_reliability":reliability, "stability":stability,
         "validation":validation, "headline":portfolio.get("headline"), "color":portfolio.get("color"),
         "compass":unified_compass, "bull_score":max(0,min(100,bull_score)),
-        "bear_score":max(0,min(100,bear_score)), "chip_engine":chip_engine, "volume_engine":volume_engine,
+        "bear_score":max(0,min(100,bear_score)),
+        "chip_engine":chip_engine,
+        "volume_engine":volume_engine,
+        "market_context_engine":market_context_engine,
     }
     snapshot["edge_engine"] = build_edge_engine(snapshot, user_holding)
     snapshot["audit"] = build_consistency_audit(snapshot)
@@ -3126,6 +3248,532 @@ def _institution_window_stats(df: pd.DataFrame, col: str, window: int) -> dict:
     buy_days=int((vals>0).sum()); sell_days=int((vals<0).sum())
     direction="偏買" if total>0 and buy_days>sell_days else "偏賣" if total<0 and sell_days>buy_days else "交錯"
     return {"sum":total,"buy_days":buy_days,"sell_days":sell_days,"days":len(vals),"streak":streak*last_sign,"direction":direction}
+
+
+
+def _completed_daily_for_context(res: dict, min_rows: int = 0) -> pd.DataFrame:
+    """
+    v9.30 股票主策略只使用「已完成日K」判讀 K棒/價量/突破品質。
+    盤中未完成K棒不准改寫共同主策略。
+    """
+    df = res.get("daily_df")
+    if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+        return pd.DataFrame()
+
+    d = df.copy()
+    d["date"] = pd.to_datetime(d["date"], errors="coerce")
+    for col in ["open", "high", "low", "close", "vol"]:
+        if col in d.columns:
+            d[col] = pd.to_numeric(d[col], errors="coerce")
+    d = d.dropna(subset=["date", "close"]).sort_values("date").reset_index(drop=True)
+
+    today = pd.Timestamp(datetime.now(TZ).strftime("%Y-%m-%d"))
+    now_t = datetime.now(TZ).time()
+    if now_t < datetime.strptime("13:30", "%H:%M").time():
+        d = d[d["date"] < today]
+    else:
+        d = d[d["date"] <= today]
+
+    if min_rows and len(d) < min_rows:
+        return pd.DataFrame()
+    return d.reset_index(drop=True)
+
+
+def build_candle_volume_context_engine(res: dict) -> dict:
+    """
+    K棒 × 價量情境。
+    看實體、上下影線、收盤位置、相對高低檔、量比與近5日量價。
+    """
+    d = _completed_daily_for_context(res, 25)
+    empty = {
+        "available": False, "score": 50, "state": "資料不足",
+        "position": "資料不足", "volume_ratio": None,
+        "upper_wick_ratio": None, "lower_wick_ratio": None,
+        "body_ratio": None, "close_location": None,
+        "positive": [], "negative": ["已完成日K資料不足。"],
+        "warning_points": 0, "veto": None,
+    }
+    if d.empty:
+        return empty
+
+    last = d.iloc[-1]
+    prev = d.iloc[-2]
+    o = safe_float(last.get("open"), 0)
+    h = safe_float(last.get("high"), 0)
+    l = safe_float(last.get("low"), 0)
+    c = safe_float(last.get("close"), 0)
+    pc = safe_float(prev.get("close"), c)
+
+    if min(o, h, l, c) <= 0 or h <= l:
+        return empty
+
+    rng = max(h - l, tick_size(c))
+    body = abs(c - o)
+    upper = max(h - max(o, c), 0)
+    lower = max(min(o, c) - l, 0)
+
+    body_ratio = body / rng
+    upper_ratio = upper / rng
+    lower_ratio = lower / rng
+    close_location = (c - l) / rng
+    ret1 = (c / pc - 1) * 100 if pc > 0 else 0
+
+    vol = pd.to_numeric(d["vol"], errors="coerce")
+    vma20 = float(vol.tail(20).mean()) if len(vol) >= 20 else 0
+    vr = float(vol.iloc[-1] / vma20) if vma20 > 0 else None
+    vol5_ratio = (
+        float(vol.tail(5).mean() / vma20)
+        if vma20 > 0 and len(vol) >= 5 else None
+    )
+
+    low20 = float(pd.to_numeric(d["low"], errors="coerce").tail(20).min())
+    high20 = float(pd.to_numeric(d["high"], errors="coerce").tail(20).max())
+    pos20 = (c - low20) / max(high20 - low20, tick_size(c))
+    position = "高檔" if pos20 >= 0.75 else "低檔" if pos20 <= 0.25 else "中段"
+
+    ret5 = (
+        float((d["close"].iloc[-1] / d["close"].iloc[-6] - 1) * 100)
+        if len(d) >= 6 and safe_float(d["close"].iloc[-6], 0) > 0 else 0
+    )
+
+    score = 50.0
+    positive, negative = [], []
+    warning = 0
+    veto = None
+    state = "K棒量價中性"
+
+    # 先看最有資訊量的組合情境。
+    if position == "高檔" and vr is not None and vr >= 1.6 and upper_ratio >= 0.35 and close_location <= 0.65:
+        state = "高檔爆量長上影"
+        score -= 24
+        warning += 4
+        negative.append(
+            f"高檔量比 {vr:.2f} 且上影占振幅 {upper_ratio*100:.0f}%，上方賣壓明顯。"
+        )
+    elif position == "低檔" and vr is not None and vr >= 1.4 and lower_ratio >= 0.35 and close_location >= 0.45:
+        state = "低檔爆量承接"
+        score += 20
+        positive.append(
+            f"低檔量比 {vr:.2f} 且下影占振幅 {lower_ratio*100:.0f}%，有恐慌後承接跡象。"
+        )
+    elif ret1 < 0 and vr is not None and vr <= 0.75:
+        state = "價跌量縮"
+        score += 10 if position != "高檔" else 4
+        positive.append(
+            f"下跌 {ret1:+.2f}% 但量比僅 {vr:.2f}，賣壓未同步放大。"
+        )
+    elif ret1 < 0 and vr is not None and vr >= 1.4:
+        state = "價跌量增"
+        score -= 18
+        warning += 3
+        negative.append(
+            f"下跌 {ret1:+.2f}% 且量比 {vr:.2f}，實際賣壓有放大。"
+        )
+    elif ret1 > 0 and vr is not None and vr >= 1.25 and close_location >= 0.70:
+        state = "價漲量增・收高"
+        score += 18
+        positive.append(
+            f"上漲 {ret1:+.2f}%、量比 {vr:.2f}，且收盤位於當日振幅上緣。"
+        )
+    elif ret1 > 0 and vr is not None and vr <= 0.75:
+        state = "價漲量縮"
+        score -= 8
+        warning += 1
+        negative.append(
+            f"上漲 {ret1:+.2f}% 但量比僅 {vr:.2f}，追價動能不足。"
+        )
+
+    # K棒本身的補充，不用單一形態一票否決。
+    if lower_ratio >= 0.40 and close_location >= 0.55:
+        score += 6
+        positive.append(f"下影線占振幅 {lower_ratio*100:.0f}%，收盤有拉回。")
+    if upper_ratio >= 0.40 and close_location <= 0.55:
+        score -= 8
+        warning += 1
+        negative.append(f"上影線占振幅 {upper_ratio*100:.0f}%，收盤未守在高位。")
+    if body_ratio >= 0.65 and c < o and vr is not None and vr >= 1.3:
+        score -= 10
+        warning += 2
+        negative.append("長黑實體搭配放量，賣方掌控度偏高。")
+    if body_ratio >= 0.65 and c > o and close_location >= 0.75 and vr is not None and vr >= 1.2:
+        score += 8
+        positive.append("長紅實體、收近高點且量能配合。")
+
+    # 5日情境：跌但量縮，不把價格下跌直接當趨勢惡化。
+    if ret5 < 0 and vol5_ratio is not None and vol5_ratio <= 0.80:
+        score += 7
+        positive.append(
+            f"近5日回檔 {ret5:+.2f}% 但平均量僅20日均量 {vol5_ratio:.2f} 倍，偏向量縮整理。"
+        )
+    elif ret5 < -4 and vol5_ratio is not None and vol5_ratio >= 1.25:
+        score -= 8
+        warning += 2
+        negative.append(
+            f"近5日跌 {ret5:+.2f}% 且量能放大到 {vol5_ratio:.2f} 倍，修正有成交量確認。"
+        )
+
+    # 只有組合式嚴重情境才 veto。
+    if state == "高檔爆量長上影" and ret5 > 5:
+        veto = "高檔急漲後出現爆量長上影，禁止把盤中再創高直接視為有效突破。"
+
+    score = int(round(max(0, min(100, score))))
+    return {
+        "available": True, "score": score, "state": state,
+        "position": position, "volume_ratio": vr,
+        "upper_wick_ratio": upper_ratio, "lower_wick_ratio": lower_ratio,
+        "body_ratio": body_ratio, "close_location": close_location,
+        "ret1": ret1, "ret5": ret5, "vol5_ratio": vol5_ratio,
+        "positive": positive[:5], "negative": negative[:5],
+        "warning_points": warning, "veto": veto,
+    }
+
+
+def build_relative_sector_engine(res: dict) -> dict:
+    """
+    個股相對大盤 + 同族群相對強弱。
+    只使用實際取得的指數/同業報酬；缺資料就降低權重，不猜。
+    """
+    peer = res.get("peer_strength_snapshot", {}) or {}
+    ctx = res.get("market_regime_context", {}) or {}
+    d = _completed_daily_for_context(res, 25)
+
+    available_parts = 0
+    score = 50.0
+    positive, negative = [], []
+    warning = 0
+
+    stock_ret5 = stock_ret20 = None
+    if not d.empty:
+        close = pd.to_numeric(d["close"], errors="coerce")
+        if len(close) >= 21 and close.iloc[-21] > 0:
+            stock_ret20 = float((close.iloc[-1] / close.iloc[-21] - 1) * 100)
+        if len(close) >= 6 and close.iloc[-6] > 0:
+            stock_ret5 = float((close.iloc[-1] / close.iloc[-6] - 1) * 100)
+
+    market_ret5 = ctx.get("ret5")
+    market_ret20 = ctx.get("ret20")
+    excess_market5 = excess_market20 = None
+    if stock_ret5 is not None and market_ret5 is not None:
+        excess_market5 = stock_ret5 - float(market_ret5)
+        score += max(-8, min(8, excess_market5 * 1.5))
+        available_parts += 1
+    if stock_ret20 is not None and market_ret20 is not None:
+        excess_market20 = stock_ret20 - float(market_ret20)
+        score += max(-12, min(12, excess_market20 * 1.2))
+        available_parts += 1
+
+    if excess_market20 is not None:
+        if excess_market20 >= 4:
+            positive.append(f"20日相對大盤超額 {excess_market20:+.2f}%。")
+        elif excess_market20 <= -4:
+            negative.append(f"20日相對大盤落後 {excess_market20:+.2f}%。")
+            warning += 2
+
+    if peer.get("available"):
+        ex20 = float(peer.get("excess20", 0) or 0)
+        pct = float(peer.get("percentile20", 50) or 50)
+        score += max(-15, min(15, ex20 * 1.5))
+        score += 5 if pct >= 75 else -5 if pct <= 25 else 0
+        available_parts += 1
+        if ex20 >= 3:
+            positive.append("同族群：" + str(peer.get("note", "")))
+        elif ex20 <= -3:
+            negative.append("同族群：" + str(peer.get("note", "")))
+            warning += 2
+
+    if available_parts == 0:
+        return {
+            "available": False, "score": 50, "state": "資料不足",
+            "positive": [], "negative": ["大盤/同族群相對報酬資料不足。"],
+            "warning_points": 0, "veto": None,
+        }
+
+    score = int(round(max(0, min(100, score))))
+    state = (
+        "明顯相對強勢" if score >= 68 else
+        "相對強勢" if score >= 57 else
+        "中性" if score >= 43 else
+        "相對弱勢" if score >= 32 else
+        "明顯相對弱勢"
+    )
+
+    veto = None
+    if (
+        excess_market20 is not None and excess_market20 <= -8
+        and peer.get("available")
+        and float(peer.get("excess20", 0) or 0) <= -6
+    ):
+        veto = "個股同時明顯落後大盤與同族群，新增部位需等待相對強弱改善。"
+
+    return {
+        "available": True, "score": score, "state": state,
+        "stock_ret5": stock_ret5, "stock_ret20": stock_ret20,
+        "market_excess5": excess_market5, "market_excess20": excess_market20,
+        "peer": peer, "positive": positive[:4], "negative": negative[:4],
+        "warning_points": warning, "veto": veto,
+    }
+
+
+def build_chip_alignment_engine(res: dict, chip_engine: dict | None = None) -> dict:
+    """
+    籌碼一致性：不只看法人買賣超，而是檢查「價格方向 vs 法人/大戶」是否背離。
+    """
+    chip = chip_engine if isinstance(chip_engine, dict) else build_chip_engine(res)
+    d = _completed_daily_for_context(res, 22)
+
+    if d.empty:
+        return {
+            "available": bool(chip), "score": int(chip.get("score", 50) or 50),
+            "state": "價格資料不足", "positive": [],
+            "negative": ["完成日線不足，無法判斷籌碼與價格是否一致。"],
+            "warning_points": int(chip.get("warning_points", 0) or 0),
+            "veto": chip.get("veto"),
+        }
+
+    close = pd.to_numeric(d["close"], errors="coerce")
+    ret5 = (
+        float((close.iloc[-1] / close.iloc[-6] - 1) * 100)
+        if len(close) >= 6 and close.iloc[-6] > 0 else 0
+    )
+    ret20 = (
+        float((close.iloc[-1] / close.iloc[-21] - 1) * 100)
+        if len(close) >= 21 and close.iloc[-21] > 0 else 0
+    )
+
+    chip_score = int(chip.get("score", 50) or 50)
+    score = float(chip_score)
+    positive = list(chip.get("positive", []) or [])[:3]
+    negative = list(chip.get("negative", []) or [])[:3]
+    warning = int(chip.get("warning_points", 0) or 0)
+    veto = chip.get("veto")
+    state = "籌碼與價格中性"
+
+    if ret20 > 5 and chip_score <= 40:
+        state = "價漲籌碼背離"
+        score -= 12
+        warning += 3
+        negative.append("20日股價明顯上漲，但法人/大戶籌碼偏弱，存在籌碼背離。")
+    elif ret20 < -5 and chip_score >= 60:
+        state = "價跌籌碼承接"
+        score += 10
+        positive.append("20日股價回落，但法人/大戶籌碼偏多，可能存在低檔承接。")
+    elif ret5 > 2 and chip_score >= 60:
+        state = "價漲籌碼同步"
+        score += 8
+        positive.append("近期價格上漲與法人/大戶偏多同步。")
+    elif ret5 < -2 and chip_score <= 40:
+        state = "價跌籌碼同步偏空"
+        score -= 10
+        warning += 2
+        negative.append("近期價格下跌且法人/大戶籌碼同步偏空。")
+    else:
+        state = "籌碼與價格大致同步"
+
+    if state == "價漲籌碼背離" and chip_score <= 30:
+        veto = veto or "股價上漲但籌碼明顯轉弱，禁止只因價格創高追價。"
+
+    score = int(round(max(0, min(100, score))))
+    return {
+        "available": True, "score": score, "state": state,
+        "chip_score": chip_score, "ret5": ret5, "ret20": ret20,
+        "positive": positive[:5], "negative": negative[:5],
+        "warning_points": warning, "veto": veto,
+    }
+
+
+def build_breakout_quality_engine(res: dict, candle_engine: dict | None = None) -> dict:
+    """
+    突破/跌破品質：
+    用完成日K判斷收盤是否真的站穩、是否有量、是否留下長影線。
+    盤中刺穿不算主策略的有效突破。
+    """
+    d = _completed_daily_for_context(res, 30)
+    if d.empty:
+        return {
+            "available": False, "score": 50, "state": "資料不足",
+            "positive": [], "negative": ["完成日線不足，無法評估突破品質。"],
+            "warning_points": 0, "veto": None,
+        }
+
+    ceng = candle_engine if isinstance(candle_engine, dict) else build_candle_volume_context_engine(res)
+    close = pd.to_numeric(d["close"], errors="coerce")
+    high = pd.to_numeric(d["high"], errors="coerce")
+    low = pd.to_numeric(d["low"], errors="coerce")
+    vol = pd.to_numeric(d["vol"], errors="coerce")
+
+    last_close = float(close.iloc[-1])
+    prev_res = float(high.iloc[-21:-1].max())
+    prev_sup = float(low.iloc[-21:-1].min())
+    vma20_prev = float(vol.iloc[-21:-1].mean()) if len(vol) >= 21 else 0
+    vr = float(vol.iloc[-1] / vma20_prev) if vma20_prev > 0 else None
+    upper = float(ceng.get("upper_wick_ratio", 0) or 0)
+    lower = float(ceng.get("lower_wick_ratio", 0) or 0)
+    close_loc = float(ceng.get("close_location", 0.5) or 0.5)
+
+    broke_up = last_close > prev_res
+    broke_down = last_close < prev_sup
+    intraday_above = float(high.iloc[-1]) > prev_res
+    intraday_below = float(low.iloc[-1]) < prev_sup
+
+    score = 50.0
+    positive, negative = [], []
+    warning = 0
+    veto = None
+    state = "無關鍵突破／跌破"
+
+    if broke_up:
+        if vr is not None and vr >= 1.2 and close_loc >= 0.70 and upper <= 0.30:
+            state = "放量有效突破"
+            score += 25
+            positive.append(
+                f"收盤站上前20日壓力 {prev_res:.2f}，量比 {vr:.2f}，且收近高點。"
+            )
+        elif vr is not None and vr < 0.85:
+            state = "無量突破"
+            score -= 8
+            warning += 2
+            negative.append(
+                f"雖收盤突破 {prev_res:.2f}，但量比僅 {vr:.2f}，突破可信度不足。"
+            )
+        else:
+            state = "突破待確認"
+            score += 5
+            positive.append("收盤已越過前20日壓力，但量能/收盤位置仍需確認。")
+    elif intraday_above and not broke_up:
+        state = "假突破／沖高回落"
+        score -= 18
+        warning += 3
+        negative.append(
+            f"盤中突破前壓 {prev_res:.2f}，但收盤未站穩；不能把盤中刺穿當正式突破。"
+        )
+        if upper >= 0.35 and vr is not None and vr >= 1.3:
+            veto = "爆量沖高後收回壓力下方，正式進場需等待重新收盤站穩。"
+    elif broke_down:
+        if vr is not None and vr >= 1.25 and close_loc <= 0.35:
+            state = "放量跌破確認"
+            score -= 30
+            warning += 5
+            negative.append(
+                f"收盤跌破前20日支撐 {prev_sup:.2f} 且量比 {vr:.2f}，跌破有成交量確認。"
+            )
+            veto = "放量收盤跌破20日支撐，新增部位停止，既有部位優先風控。"
+        elif vr is not None and vr <= 0.75:
+            state = "無量跌破／待確認"
+            score -= 6
+            warning += 1
+            negative.append(
+                f"收盤略破支撐但量比僅 {vr:.2f}，先視為弱勢測試，不直接判定恐慌賣壓。"
+            )
+        else:
+            state = "跌破待確認"
+            score -= 12
+            warning += 2
+            negative.append("收盤跌破近期支撐，仍需觀察量能與隔日是否收回。")
+    elif intraday_below and not broke_down and lower >= 0.30:
+        state = "假跌破／收回支撐"
+        score += 12
+        positive.append(
+            f"盤中跌破 {prev_sup:.2f} 後收回，且留下明顯下影，支撐仍有承接。"
+        )
+
+    score = int(round(max(0, min(100, score))))
+    return {
+        "available": True, "score": score, "state": state,
+        "resistance20": prev_res, "support20": prev_sup,
+        "volume_ratio": vr, "positive": positive[:4], "negative": negative[:4],
+        "warning_points": warning, "veto": veto,
+    }
+
+
+def build_market_context_engine(
+    res: dict,
+    chip_engine: dict | None = None,
+    volume_engine: dict | None = None,
+) -> dict:
+    """
+    v9.30 市場情境判讀層：
+    1) K棒×價量  2) 相對強弱×族群  3) 籌碼一致性  4) 突破/跌破品質
+    只負責確認/限制股票共同主策略，不因盤中即時價自行升級方向。
+    """
+    candle = build_candle_volume_context_engine(res)
+    relative = build_relative_sector_engine(res)
+    chip_align = build_chip_alignment_engine(res, chip_engine)
+    breakout = build_breakout_quality_engine(res, candle)
+
+    components = {
+        "K棒×價量": candle,
+        "相對強弱×族群": relative,
+        "籌碼一致性": chip_align,
+        "突破／跌破品質": breakout,
+    }
+    weights = {
+        "K棒×價量": 0.30,
+        "相對強弱×族群": 0.20,
+        "籌碼一致性": 0.25,
+        "突破／跌破品質": 0.25,
+    }
+
+    valid = [(k, v) for k, v in components.items() if v.get("available")]
+    if not valid:
+        return {
+            "available": False, "score": 50, "state": "資料不足",
+            "components": components, "warning_points": 0,
+            "veto": None, "restriction": None,
+            "positive": [], "negative": ["市場情境資料不足，不納入主策略。"],
+        }
+
+    total_w = sum(weights[k] for k, _ in valid)
+    score = sum(float(v.get("score", 50)) * weights[k] for k, v in valid) / max(total_w, 1e-9)
+
+    warning = sum(int(v.get("warning_points", 0) or 0) for _, v in valid)
+    positives, negatives = [], []
+    vetoes = []
+    for k, v in valid:
+        positives += [f"{k}：{x}" for x in (v.get("positive", []) or [])[:2]]
+        negatives += [f"{k}：{x}" for x in (v.get("negative", []) or [])[:2]]
+        if v.get("veto"):
+            vetoes.append(f"{k}：{v.get('veto')}")
+
+    # 硬風控只接受完成日K的放量跌破，或多個引擎同步惡化。
+    breakout_state = str(breakout.get("state", ""))
+    candle_state = str(candle.get("state", ""))
+    chip_state = str(chip_align.get("state", ""))
+    severe_combo = (
+        candle_state in {"高檔爆量長上影", "價跌量增"}
+        and chip_state in {"價漲籌碼背離", "價跌籌碼同步偏空"}
+        and score < 38
+    )
+
+    restriction = None
+    hard_veto = None
+    if breakout_state == "放量跌破確認":
+        restriction = "RISK_OFF"
+        hard_veto = breakout.get("veto")
+    elif severe_combo:
+        restriction = "NO_NEW_BUY"
+        hard_veto = "價量K棒與籌碼同步惡化，新增部位暫停。"
+    elif score < 35 or len(vetoes) >= 2:
+        restriction = "NO_NEW_BUY"
+    elif score < 45:
+        restriction = "CAUTION"
+
+    score = int(round(max(0, min(100, score))))
+    state = (
+        "情境明顯有利" if score >= 70 else
+        "情境偏多" if score >= 58 else
+        "情境中性" if score >= 43 else
+        "情境偏空" if score >= 30 else
+        "情境高風險"
+    )
+
+    return {
+        "available": True, "score": score, "state": state,
+        "components": components, "warning_points": warning,
+        "veto": hard_veto, "restriction": restriction,
+        "positive": positives[:6], "negative": negatives[:6],
+        "raw_vetoes": vetoes,
+        "note": "使用已完成日K與可取得的真實籌碼/同業資料；盤中未完成K棒不改寫共同主策略。",
+    }
 
 
 def build_chip_engine(res: dict) -> dict:
@@ -3321,6 +3969,7 @@ def build_strategy_state_machine(res: dict, decision_snapshot: dict, user_holdin
     holding_value = decision_snapshot.get("holding_value", {}) or {}
     chip_engine = decision_snapshot.get("chip_engine", {}) or {}
     volume_engine = decision_snapshot.get("volume_engine", {}) or {}
+    market_context_engine = decision_snapshot.get("market_context_engine", {}) or {}
     edge_engine = decision_snapshot.get("edge_engine", {}) or {}
     ta = res.get("trend_analysis", {}) or {}
     inst = res.get("institutional_summary", {}) or {}
@@ -3351,22 +4000,36 @@ def build_strategy_state_machine(res: dict, decision_snapshot: dict, user_holdin
     for item in volume_engine.get("negative", []): negative.append(item)
     if volume_engine.get("veto"): negative.append("量價否決：" + str(volume_engine.get("veto")))
 
+    for item in market_context_engine.get("positive", [])[:3]:
+        positive.append(item)
+    for item in market_context_engine.get("negative", [])[:3]:
+        negative.append(item)
+    if market_context_engine.get("veto"):
+        negative.append("市場情境否決：" + str(market_context_engine.get("veto")))
+
     warning_points = 0
     warning_points += 2 if safe_float(ta.get("slope20"), 0) <= 0 else 0
     warning_points += int(chip_engine.get("warning_points", 0) or 0)
     warning_points += int(volume_engine.get("warning_points", 0) or 0)
+    warning_points += min(5, int(market_context_engine.get("warning_points", 0) or 0))
     warning_points += 4 if gate in ["RISK_OFF","PANIC"] else 2 if gate == "NO_NEW_BUY" else 0
     warning_points += 2 if edge_engine.get("state") == "缺乏優勢" else 0
     warning_threshold = 6
     warnings = warning_points
 
-    # 決策優先順序：結構風險 > 大盤閘門 > 正式趨勢 > 籌碼量能 > 價格位置。
+    # 決策優先順序：
+    # 結構風險 > 大盤閘門 > 完成日K市場情境 > 正式趨勢 > 籌碼量能 > 價格位置。
+    _ctx_restriction_v930 = str(market_context_engine.get("restriction", "") or "")
     if structure_stop > 0 and current <= structure_stop:
         action_code, action, color = "EXIT", "退出", "#DC2626"
     elif protective > 0 and current <= protective and user_holding:
         action_code, action, color = "REDUCE", "部分減碼", "#F97316"
     elif gate in ["PANIC","RISK_OFF"]:
         action_code, action, color = ("REDUCE","部分減碼","#F97316") if user_holding else ("WAIT","等待","#64748B")
+    elif _ctx_restriction_v930 == "RISK_OFF":
+        action_code, action, color = ("REDUCE","部分減碼","#F97316") if user_holding else ("WAIT","等待","#64748B")
+    elif _ctx_restriction_v930 == "NO_NEW_BUY" and not user_holding:
+        action_code, action, color = "WAIT", "等待", "#64748B"
     elif current_state == "BEAR":
         action_code, action, color = ("EXIT","退出","#DC2626") if user_holding else ("WAIT","等待","#64748B")
     elif current_state == "BEAR_RALLY":
@@ -4068,6 +4731,19 @@ def build_historical_replay(stock_id: str, market_type: str, trading_days_back: 
         }
         chip_engine = build_chip_engine(chip_res)
         volume_engine = build_volume_engine({"daily_df": hist_raw})
+        _hist_context_res_v930 = {
+            "daily_df": hist_raw,
+            "institutional_df": inst_hist,
+            "large_holder_radar": large_holder,
+            # 歷史同族群相對報酬若沒有 as-of 快照，不以今天 peer 資料倒灌。
+            "peer_strength_snapshot": {"available": False},
+            "market_regime_context": {},
+        }
+        hist_market_context = build_market_context_engine(
+            _hist_context_res_v930,
+            chip_engine=chip_engine,
+            volume_engine=volume_engine,
+        )
 
         margin = get_margin_radar_asof(
             str(stock_id), cutoff_date.strftime("%Y-%m-%d"), days=120
@@ -4075,7 +4751,12 @@ def build_historical_replay(stock_id: str, market_type: str, trading_days_back: 
 
         # v9.26：歷史資料不只給狀態，也重算成和今日主畫面一致的「主策略語言」。
         # 這是歷史重算，不冒充當時真的有被資料庫保存的策略快照。
-        hard_veto = bool(chip_engine.get("veto") or volume_engine.get("veto"))
+        hard_veto = bool(
+            chip_engine.get("veto")
+            or volume_engine.get("veto")
+            or hist_market_context.get("veto")
+            or hist_market_context.get("restriction") == "RISK_OFF"
+        )
         chip_score_hist = int(chip_engine.get("score", 50) or 50)
         volume_score_hist = int(volume_engine.get("score", 50) or 50)
 
@@ -4181,6 +4862,8 @@ def build_historical_replay(stock_id: str, market_type: str, trading_days_back: 
             "chip_state": chip_engine.get("state", "資料不足"),
             "chip_score": chip_engine.get("score", 50),
             "chip_veto": chip_engine.get("veto"),
+            "market_context_score": hist_market_context.get("score", 50),
+            "market_context_state": hist_market_context.get("state", "資料不足"),
             "institutional_available": not inst_hist.empty,
             "institutional_summary": summarize_institutional_flow(inst_hist, hist_raw),
             "margin": margin,
@@ -4345,7 +5028,7 @@ def resolve_daily_strategy_lock(
     sid = str(stock_id)
     # v9.27：同一股票同一天只允許一個股票主策略，不再因 HELD/UNHELD 分裂。
     mode = "COMMON"
-    lock_version = "v929"
+    lock_version = "v930"
     session_key = f"_daily_strategy_lock_{lock_version}_{sid}_{today}"
     db_mode = f"COMMON_{lock_version.upper()}"
 
@@ -4635,7 +5318,7 @@ with st.sidebar:
 
     st.caption("自選清單會寫入目前網址；建議把這個網址加入瀏覽器書籤。")
 
-st.markdown("## 🧭 StockPilot Beta v9.28｜個股操作決策")
+st.markdown("## 🧭 StockPilot Beta v9.30｜個股操作決策")
 st.caption("主決策優先；盤中即時價格只更新執行狀態。")
 
 # v9.23：操作輸入壓縮成一排，避免上半段先被表單吃掉大量高度。
@@ -5998,7 +6681,23 @@ if stock_input:
                     and _s183_governed in {"REDUCE", "EXIT"}
                 )
 
-                if _s183_governed == "EXIT":
+                # v9.30：四大市場情境引擎只可限制/確認，不可因盤中價自行升級。
+                _s930_context = (
+                    _common_decision_snapshot_v928.get("market_context_engine", {}) or {}
+                )
+                _s930_context_score = int(_s930_context.get("score", 50) or 50)
+                _s930_context_restriction = str(
+                    _s930_context.get("restriction", "") or ""
+                )
+
+                if _s930_context_restriction == "RISK_OFF":
+                    _s925_stock_stance = "RISK_OFF"
+                    _s925_stock_stance_zh = "風險退出"
+                    _s925_stock_stance_reason = (
+                        "完成日K市場情境已出現放量跌破等高風險訊號；"
+                        "股票共同方向優先風控。"
+                    )
+                elif _s183_governed == "EXIT":
                     _s925_stock_stance = "RISK_OFF"
                     _s925_stock_stance_zh = "風險退出"
                     _s925_stock_stance_reason = "個股治理層已進入退出條件。"
@@ -6009,13 +6708,47 @@ if stock_input:
                         "個股治理層已轉弱；既有部位應降低曝險，未持股者不得同時建立新部位。"
                     )
                 elif _s19_early_state == "FORMAL_ENTRY":
-                    _s925_stock_stance = "ENTRY_OK"
-                    _s925_stock_stance_zh = "可建立部位"
-                    _s925_stock_stance_reason = "趨勢、結構與進場條件已達正式建立部位標準。"
+                    if (
+                        _s930_context_restriction == "NO_NEW_BUY"
+                        or _s930_context_score < 43
+                    ):
+                        _s925_stock_stance = "WAIT"
+                        _s925_stock_stance_zh = "等待確認"
+                        _s925_stock_stance_reason = (
+                            f"原始進場條件雖成熟，但完成日K市場情境僅 "
+                            f"{_s930_context_score}/100；K棒/價量/籌碼/相對強弱尚未通過。"
+                        )
+                    elif _s930_context_score < 55:
+                        _s925_stock_stance = "PROBE_OK"
+                        _s925_stock_stance_zh = "可小部位試單"
+                        _s925_stock_stance_reason = (
+                            f"原始進場條件成熟，但市場情境只有 {_s930_context_score}/100；"
+                            "先降級為小部位試單，不直接正式進場。"
+                        )
+                    else:
+                        _s925_stock_stance = "ENTRY_OK"
+                        _s925_stock_stance_zh = "可建立部位"
+                        _s925_stock_stance_reason = (
+                            f"趨勢、結構與進場條件成熟，且完成日K市場情境 "
+                            f"{_s930_context_score}/100 通過確認。"
+                        )
                 elif _s19_early_state in {"TURN_PROBE", "LOW_PROBE"}:
-                    _s925_stock_stance = "PROBE_OK"
-                    _s925_stock_stance_zh = "可小部位試單"
-                    _s925_stock_stance_reason = "轉強/低位承接條件已達試單標準，但尚未完成正式進場確認。"
+                    if (
+                        _s930_context_restriction == "NO_NEW_BUY"
+                        or _s930_context_score < 40
+                    ):
+                        _s925_stock_stance = "WAIT"
+                        _s925_stock_stance_zh = "等待確認"
+                        _s925_stock_stance_reason = (
+                            "早期試單訊號存在，但市場情境尚未允許新增部位。"
+                        )
+                    else:
+                        _s925_stock_stance = "PROBE_OK"
+                        _s925_stock_stance_zh = "可小部位試單"
+                        _s925_stock_stance_reason = (
+                            f"轉強/低位承接條件達試單標準，市場情境 "
+                            f"{_s930_context_score}/100；尚未完成正式進場確認。"
+                        )
                 elif _s19_early_state == "WAIT_PULLBACK":
                     _s925_stock_stance = "WAIT_PULLBACK"
                     _s925_stock_stance_zh = "等待拉回"
@@ -6852,6 +7585,53 @@ if stock_input:
                     f"股票共同主策略今日鎖定為「{_decision_now}」；"
                     f"目前身分執行動作為「{_execution_action_v927}」。"
                 )
+
+            # v9.30：市場情境判讀，主畫面只放四個摘要，不讓版面再次膨脹。
+            _ctx_ui_v930 = (
+                _common_decision_snapshot_v928.get("market_context_engine", {}) or {}
+            )
+            if _ctx_ui_v930.get("available"):
+                st.markdown("### 市場情境判讀")
+                _ctx_components_v930 = _ctx_ui_v930.get("components", {}) or {}
+                _cx1, _cx2, _cx3, _cx4 = st.columns(4)
+                _candle_ui = _ctx_components_v930.get("K棒×價量", {}) or {}
+                _relative_ui = _ctx_components_v930.get("相對強弱×族群", {}) or {}
+                _chip_ui = _ctx_components_v930.get("籌碼一致性", {}) or {}
+                _break_ui = _ctx_components_v930.get("突破／跌破品質", {}) or {}
+                _cx1.metric("K棒 × 價量", f"{int(_candle_ui.get('score',50))}/100", str(_candle_ui.get("state","資料不足")))
+                _cx2.metric("相對強弱 × 族群", f"{int(_relative_ui.get('score',50))}/100", str(_relative_ui.get("state","資料不足")))
+                _cx3.metric("籌碼一致性", f"{int(_chip_ui.get('score',50))}/100", str(_chip_ui.get("state","資料不足")))
+                _cx4.metric("突破／跌破品質", f"{int(_break_ui.get('score',50))}/100", str(_break_ui.get("state","資料不足")))
+
+                if _ctx_ui_v930.get("restriction") == "RISK_OFF":
+                    st.error(
+                        f"情境總分 {int(_ctx_ui_v930.get('score',50))}/100｜"
+                        "已觸發完成日K風控限制。"
+                    )
+                elif _ctx_ui_v930.get("restriction") == "NO_NEW_BUY":
+                    st.warning(
+                        f"情境總分 {int(_ctx_ui_v930.get('score',50))}/100｜"
+                        "目前不允許新增部位。"
+                    )
+                else:
+                    st.caption(
+                        f"情境總分：{int(_ctx_ui_v930.get('score',50))}/100｜"
+                        f"{_ctx_ui_v930.get('state','資料不足')}。"
+                        "股票主策略使用已完成日K；盤中未完成K棒只影響執行。"
+                    )
+
+                with st.expander("查看 K棒／價量／族群／籌碼／突破完整判讀", expanded=False):
+                    for _ctx_name, _ctx_item in _ctx_components_v930.items():
+                        st.markdown(f"**{_ctx_name}｜{_ctx_item.get('state','資料不足')}｜{int(_ctx_item.get('score',50))}/100**")
+                        for _msg in (_ctx_item.get("positive", []) or []):
+                            st.write("✅ " + str(_msg))
+                        for _msg in (_ctx_item.get("negative", []) or []):
+                            st.write("⚠️ " + str(_msg))
+                        if _ctx_item.get("veto"):
+                            st.error(str(_ctx_item.get("veto")))
+                    st.caption(
+                        "沒有可靠資料的項目不加分也不扣分；不使用新聞文字或法人目標價冒充量價/籌碼證據。"
+                    )
 
             # v9.26：歷史比較放在今日主策略之後，直接比較「那天 vs 今天」。
             render_historical_replay_panel(
