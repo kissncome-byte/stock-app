@@ -5028,7 +5028,7 @@ def resolve_daily_strategy_lock(
     sid = str(stock_id)
     # v9.27：同一股票同一天只允許一個股票主策略，不再因 HELD/UNHELD 分裂。
     mode = "COMMON"
-    lock_version = "v930"
+    lock_version = "v931"
     session_key = f"_daily_strategy_lock_{lock_version}_{sid}_{today}"
     db_mode = f"COMMON_{lock_version.upper()}"
 
@@ -5318,7 +5318,7 @@ with st.sidebar:
 
     st.caption("自選清單會寫入目前網址；建議把這個網址加入瀏覽器書籤。")
 
-st.markdown("## 🧭 StockPilot Beta v9.30｜個股操作決策")
+st.markdown("## 🧭 StockPilot Beta v9.31｜個股操作決策")
 st.caption("主決策優先；盤中即時價格只更新執行狀態。")
 
 # v9.23：操作輸入壓縮成一排，避免上半段先被表單吃掉大量高度。
@@ -7632,6 +7632,76 @@ if stock_input:
                     st.caption(
                         "沒有可靠資料的項目不加分也不扣分；不使用新聞文字或法人目標價冒充量價/籌碼證據。"
                     )
+
+            # v9.31：主畫面法人預估價摘要。
+            # 僅使用 Yahoo Finance 公開 financialData；沒有可靠資料就明確顯示未取得。
+            _bc_main_v931 = res.get("broker_consensus", {}) or {}
+            st.markdown("### 法人預估／公開分析師共識")
+            if _bc_main_v931.get("is_real") and float(_bc_main_v931.get("mean", 0) or 0) > 0:
+                _bc_mean_v931 = float(_bc_main_v931.get("mean", 0) or 0)
+                _bc_high_v931 = float(_bc_main_v931.get("high", 0) or 0)
+                _bc_low_v931 = float(_bc_main_v931.get("low", 0) or 0)
+                _bc_price_v931 = float(res.get("current_price", 0) or 0)
+                _bc_upside_v931 = (
+                    ((_bc_mean_v931 / _bc_price_v931) - 1) * 100
+                    if _bc_price_v931 > 0 else None
+                )
+                _bc_coverage_v931 = _bc_main_v931.get("coverage_count")
+                _bc_rating_v931 = str(_bc_main_v931.get("rating") or "未提供")
+
+                _bc1, _bc2, _bc3, _bc4, _bc5 = st.columns(5)
+                _bc1.metric("平均目標價", f"{_bc_mean_v931:,.2f} 元")
+                _bc2.metric(
+                    "最高目標價",
+                    f"{_bc_high_v931:,.2f} 元" if _bc_high_v931 > 0 else "未取得",
+                )
+                _bc3.metric(
+                    "最低目標價",
+                    f"{_bc_low_v931:,.2f} 元" if _bc_low_v931 > 0 else "未取得",
+                )
+                _bc4.metric("目前價格", f"{_bc_price_v931:,.2f} 元" if _bc_price_v931 > 0 else "未取得")
+                _bc5.metric(
+                    "距平均目標價",
+                    f"{_bc_upside_v931:+.2f}%" if _bc_upside_v931 is not None else "未取得",
+                )
+
+                _bc_meta_v931 = (
+                    f"公開彙整評等：{_bc_rating_v931}"
+                    + (
+                        f"｜涵蓋分析師數：{int(float(_bc_coverage_v931))}"
+                        if _bc_coverage_v931 not in (None, "", 0) else ""
+                    )
+                )
+                st.caption(
+                    _bc_meta_v931
+                    + f"｜來源：{_bc_main_v931.get('source', 'Yahoo Finance 公開彙整')}。"
+                )
+
+                if _bc_upside_v931 is not None:
+                    if _bc_upside_v931 >= 10:
+                        st.info(
+                            f"法人共識距現價仍有約 {_bc_upside_v931:.1f}% 空間；"
+                            "此欄只作估值／市場預期參考，不直接升級股票主策略。"
+                        )
+                    elif _bc_upside_v931 <= -5:
+                        st.warning(
+                            f"現價已高於公開平均目標價約 {abs(_bc_upside_v931):.1f}%；"
+                            "代表估值預期空間偏緊，但不單獨作為賣出依據。"
+                        )
+                    else:
+                        st.caption(
+                            "現價接近公開平均目標價；法人共識僅作估值參考，不直接改寫股票主策略。"
+                        )
+
+                st.caption(
+                    "這是 Yahoo Finance 公開彙整，不是逐家券商研究報告；"
+                    "若沒有券商名稱、報告日期與完整論點，系統不自行補寫。"
+                )
+            else:
+                st.info(
+                    "法人預估：未取得可靠公開分析師目標價共識。"
+                    "系統不推估、不杜撰目標價。"
+                )
 
             # v9.26：歷史比較放在今日主策略之後，直接比較「那天 vs 今天」。
             render_historical_replay_panel(
