@@ -1065,16 +1065,17 @@ def get_broker_consensus_data(stock_id: str, current_price: float):
 @st.cache_data(ttl=1800)
 def get_public_broker_targets(stock_id: str, stock_name: str, current_price: float, max_age_days: int = 90) -> dict:
     """
-    v9.32 公開新聞法人目標價：
-    - 來源：Google News RSS 公開新聞索引
-    - 只接受新聞標題中同時出現「可辨識研究機構/券商」+「明確目標價數字」
-    - 同一家機構只保留最新一筆
-    - 最多回溯 max_age_days，找不到就回 available=False
-    - 不從模糊文字猜價格、不把新聞媒體名稱當券商、不使用 Yahoo financialData 補值
+    v9.33 公開新聞法人目標價：
+    解析順序：
+      1. Google News RSS 標題
+      2. Google News RSS description / 摘要
+      3. 可直接存取的原始新聞頁內文
+    僅收錄可同時辨識「研究機構 + 明確目標價」的公開資料。
+    同一家機構只保留最新一筆；抓不到就留白，不用 Yahoo financialData 補值。
     """
     empty = {
         "available": False,
-        "source": "Google News RSS 公開新聞",
+        "source": "Google News RSS＋可公開讀取新聞內文",
         "items": [],
         "mean": None,
         "median": None,
@@ -1082,13 +1083,20 @@ def get_public_broker_targets(stock_id: str, stock_name: str, current_price: flo
         "low": None,
         "count": 0,
         "upside_to_median": None,
-        "note": "近90日公開新聞未找到可驗證的券商/研究機構目標價。",
+        "note": f"近{max_age_days}日公開新聞未找到可驗證的券商/研究機構目標價。",
+        "diagnostics": {
+            "rss_items": 0,
+            "title_hits": 0,
+            "summary_hits": 0,
+            "article_hits": 0,
+            "article_fetch_ok": 0,
+        },
     }
 
     institution_aliases = [
         ("摩根士丹利", ["摩根士丹利", "大摩", "Morgan Stanley"]),
         ("摩根大通", ["摩根大通", "小摩", "JPMorgan", "JP Morgan"]),
-        ("高盛", ["高盛", "Goldman Sachs"]),
+        ("高盛", ["高盛", "Goldman Sachs", "Goldman"]),
         ("美銀", ["美銀", "美銀證券", "Bank of America", "BofA"]),
         ("花旗", ["花旗", "Citigroup", "Citi"]),
         ("瑞銀", ["瑞銀", "UBS"]),
@@ -1097,73 +1105,207 @@ def get_public_broker_targets(stock_id: str, stock_name: str, current_price: flo
         ("野村", ["野村", "Nomura"]),
         ("匯豐", ["匯豐", "HSBC"]),
         ("里昂", ["里昂", "CLSA"]),
-        ("元大投顧", ["元大投顧", "元大證券", "元大"]),
-        ("凱基投顧", ["凱基投顧", "凱基證券", "凱基"]),
-        ("富邦投顧", ["富邦投顧", "富邦證券", "富邦"]),
-        ("國泰證券", ["國泰證券", "國泰"]),
-        ("群益投顧", ["群益投顧", "群益證券", "群益"]),
-        ("永豐投顧", ["永豐投顧", "永豐金證券", "永豐"]),
+        ("元大投顧", ["元大投顧", "元大證券"]),
+        ("凱基投顧", ["凱基投顧", "凱基證券"]),
+        ("富邦投顧", ["富邦投顧", "富邦證券"]),
+        ("國泰證券", ["國泰證券"]),
+        ("群益投顧", ["群益投顧", "群益證券"]),
+        ("永豐投顧", ["永豐投顧", "永豐金證券"]),
         ("統一投顧", ["統一投顧", "統一證券"]),
         ("第一金投顧", ["第一金投顧", "第一金證券"]),
-        ("兆豐證券", ["兆豐證券", "兆豐"]),
+        ("兆豐證券", ["兆豐證券"]),
         ("玉山投顧", ["玉山投顧", "玉山證券"]),
         ("中信投顧", ["中信投顧", "中國信託投顧", "中信證券"]),
         ("元富投顧", ["元富投顧", "元富證券"]),
         ("台新投顧", ["台新投顧", "台新證券"]),
     ]
 
-    def _find_institution(title: str):
-        t = str(title or "")
-        for canonical, aliases in institution_aliases:
-            for alias in aliases:
-                if alias.lower() in t.lower():
-                    return canonical
-        # 不認得研究機構時不硬猜。
-        return None
+    media_names = {
+        "經濟日報", "工商時報", "鉅亨網", "MoneyDJ", "Yahoo奇摩股市",
+        "自由財經", "聯合新聞網", "ETtoday", "今周刊", "財訊", "中央社",
+        "CMoney", "旺得富", "Smart智富", "鏡週刊", "風傳媒"
+    }
 
-    def _extract_target(title: str):
-        t = str(title or "").replace(",", "")
-        # 僅抓「目標價」附近的數字，避免把股價、EPS、年份誤當目標價。
+    def _normalize_html_text(raw_html: str) -> str:
+        if not raw_html:
+            return ""
+        s = re.sub(r"(?is)<script.*?>.*?</script>", " ", raw_html)
+        s = re.sub(r"(?is)<style.*?>.*?</style>", " ", s)
+        s = re.sub(r"(?is)<[^>]+>", " ", s)
+        s = (
+            s.replace("&nbsp;", " ")
+             .replace("&amp;", "&")
+             .replace("&quot;", '"')
+             .replace("&#39;", "'")
+             .replace("&lt;", "<")
+             .replace("&gt;", ">")
+        )
+        return re.sub(r"\s+", " ", s).strip()
+
+    def _institutions_in_text(content: str):
+        found = []
+        s = str(content or "")
+        lower = s.lower()
+        for canonical, aliases in institution_aliases:
+            if any(alias.lower() in lower for alias in aliases):
+                found.append(canonical)
+        return found
+
+    def _target_candidates(content: str):
+        """
+        只抓「目標價」附近的數字。
+        回傳 [(price, start_index, matched_text), ...]
+        """
+        s = str(content or "").replace(",", "")
         patterns = [
-            r"目標價(?:上看|喊到|調升至|調高至|升至|提高至|調降至|降至|下修至|維持)?\s*(?:新台幣|NT\$|\$)?\s*([0-9]+(?:\.[0-9]+)?)\s*元?",
-            r"(?:目標|目標價)\s*(?:由\s*[0-9.]+\s*元?\s*)?(?:升|降|調升|調降|上修|下修|調高|調低)?\s*(?:至|到)?\s*(?:新台幣|NT\$|\$)?\s*([0-9]+(?:\.[0-9]+)?)\s*元",
+            r"目標價.{0,12}?(?:上看|喊到|調升至|調高至|升至|提高至|調降至|降至|下修至|維持|上修至|下調至)?\s*(?:新台幣|NT\$|\$)?\s*([0-9]+(?:\.[0-9]+)?)\s*元?",
+            r"目標價.{0,10}?(?:由\s*[0-9.]+\s*元?\s*)?(?:升|降|調升|調降|上修|下修|調高|調低)?\s*(?:至|到)?\s*(?:新台幣|NT\$|\$)?\s*([0-9]+(?:\.[0-9]+)?)\s*元",
+            r"(?:給予|維持|重申).{0,20}?目標價.{0,8}?([0-9]+(?:\.[0-9]+)?)\s*元",
         ]
+        out = []
         for pat in patterns:
-            m = re.search(pat, t, flags=re.I)
-            if m:
+            for m in re.finditer(pat, s, flags=re.I):
                 try:
                     v = float(m.group(1))
                     if v > 0:
-                        return v
+                        out.append((v, m.start(), m.group(0)))
                 except Exception:
                     pass
-        return None
+        return out
+
+    def _pair_targets_with_institutions(content: str):
+        """
+        一篇文章可能同時寫：
+        「高盛目標價1280元、花旗目標價1450元」。
+        用目標價前後約120字的最近機構做配對。
+        """
+        s = str(content or "")
+        targets = _target_candidates(s)
+        if not targets:
+            return []
+
+        pairs = []
+        for price, pos, matched in targets:
+            lo = max(0, pos - 140)
+            hi = min(len(s), pos + 140)
+            window = s[lo:hi]
+            institutions = _institutions_in_text(window)
+            if not institutions:
+                # 再擴大一次，但仍不允許完全沒有機構就收錄。
+                lo2 = max(0, pos - 300)
+                hi2 = min(len(s), pos + 300)
+                institutions = _institutions_in_text(s[lo2:hi2])
+
+            if not institutions:
+                continue
+
+            # 找距離目標價最近的機構文字
+            best_inst = None
+            best_dist = 10**9
+            full_lower = s.lower()
+            for canonical, aliases in institution_aliases:
+                if canonical not in institutions:
+                    continue
+                for alias in aliases:
+                    for mm in re.finditer(re.escape(alias.lower()), full_lower):
+                        dist = abs(mm.start() - pos)
+                        if dist < best_dist:
+                            best_dist = dist
+                            best_inst = canonical
+            if best_inst:
+                pairs.append((best_inst, price, matched))
+        return pairs
+
+    def _get_rss_description(item):
+        node = item.find("description")
+        return node.text if node is not None and node.text else ""
+
+    def _extract_candidate_urls(description_html: str):
+        urls = []
+        for m in re.finditer(r'href=["\']([^"\']+)["\']', str(description_html or ""), flags=re.I):
+            u = m.group(1)
+            if u.startswith("http"):
+                urls.append(u)
+        return urls
+
+    def _fetch_public_article_text(url: str, session):
+        """
+        只讀公開可直接取得的 HTML。
+        付費牆、403、Cloudflare 或無法解析者直接放棄。
+        """
+        if not url:
+            return "", None
+        try:
+            r = session.get(
+                url,
+                timeout=7,
+                allow_redirects=True,
+                headers={
+                    "User-Agent": (
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/151.0 Safari/537.36"
+                    )
+                },
+            )
+            if r.status_code != 200:
+                return "", None
+            ctype = str(r.headers.get("content-type", "")).lower()
+            if "html" not in ctype:
+                return "", None
+            final_url = str(r.url)
+            html = r.text
+            # 避免把整個網站導覽列、相關新聞全吃進來；最多保留合理長度。
+            plain = _normalize_html_text(html)
+            if len(plain) < 150:
+                return "", final_url
+            return plain[:120000], final_url
+        except Exception:
+            return "", None
 
     try:
         queries = [
             f'"{stock_name}" 目標價 外資 when:{max_age_days}d',
             f'"{stock_name}" 目標價 券商 when:{max_age_days}d',
-            f'"{stock_name}" 目標價 法人 when:{max_age_days}d',
+            f'"{stock_name}" 目標價 高盛 花旗 大摩 when:{max_age_days}d',
             f'"{stock_name}" {stock_id} 目標價 when:{max_age_days}d',
         ]
 
-        collected = []
         session = get_requests_session()
         cutoff = pd.Timestamp.now(tz="Asia/Taipei") - pd.Timedelta(days=max_age_days)
+        collected = []
+        seen_news = set()
+        diagnostics = dict(empty["diagnostics"])
 
         for qraw in queries:
             try:
                 q = urllib.parse.quote(qraw)
-                url = f"https://news.google.com/rss/search?q={q}&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
-                r = session.get(url, timeout=6)
+                rss_url = (
+                    f"https://news.google.com/rss/search?q={q}"
+                    "&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
+                )
+                r = session.get(rss_url, timeout=7)
                 if r.status_code != 200:
                     continue
+
                 root = ET.fromstring(r.content)
                 for item in root.findall(".//item"):
-                    full_title = (item.find("title").text or "") if item.find("title") is not None else ""
-                    news_source = item.find("source").text if item.find("source") is not None else "公開新聞"
-                    link = (item.find("link").text or "") if item.find("link") is not None else ""
-                    pub_raw = (item.find("pubDate").text or "") if item.find("pubDate") is not None else ""
+                    full_title = (
+                        item.find("title").text or ""
+                        if item.find("title") is not None else ""
+                    )
+                    news_source = (
+                        item.find("source").text
+                        if item.find("source") is not None else "公開新聞"
+                    )
+                    google_link = (
+                        item.find("link").text or ""
+                        if item.find("link") is not None else ""
+                    )
+                    pub_raw = (
+                        item.find("pubDate").text or ""
+                        if item.find("pubDate") is not None else ""
+                    )
                     pub = pd.to_datetime(pub_raw, errors="coerce", utc=True)
                     if pd.isna(pub):
                         continue
@@ -1171,44 +1313,114 @@ def get_public_broker_targets(stock_id: str, stock_name: str, current_price: flo
                     if pub_tw < cutoff:
                         continue
 
-                    # 移除 Google News 常見尾端媒體名稱，但保留原始媒體欄位。
-                    title = full_title.rsplit(" - ", 1)[0] if " - " in full_title else full_title
+                    title = (
+                        full_title.rsplit(" - ", 1)[0]
+                        if " - " in full_title else full_title
+                    )
                     if str(stock_name) not in title and str(stock_id) not in title:
                         continue
 
-                    institution = _find_institution(title)
-                    target = _extract_target(title)
-                    if not institution or target is None:
+                    news_key = (title, pub_tw.strftime("%Y-%m-%d"), news_source)
+                    if news_key in seen_news:
+                        continue
+                    seen_news.add(news_key)
+                    diagnostics["rss_items"] += 1
+
+                    description_html = _get_rss_description(item)
+                    summary_text = _normalize_html_text(description_html)
+
+                    # Layer 1: 標題
+                    pairs = _pair_targets_with_institutions(title)
+                    evidence_layer = "新聞標題"
+                    evidence_text = title
+
+                    # Layer 2: RSS description / 摘要
+                    if not pairs and summary_text:
+                        pairs = _pair_targets_with_institutions(summary_text)
+                        if pairs:
+                            evidence_layer = "RSS摘要"
+                            evidence_text = summary_text
+
+                    # Layer 3: 公開文章內文
+                    final_article_url = None
+                    article_text = ""
+                    if not pairs:
+                        urls = _extract_candidate_urls(description_html)
+                        # RSS description 有原始網址就先用；沒有才嘗試 Google News link。
+                        candidate_urls = urls[:3] + ([google_link] if google_link else [])
+                        for candidate_url in candidate_urls:
+                            article_text, final_article_url = _fetch_public_article_text(
+                                candidate_url, session
+                            )
+                            if article_text:
+                                diagnostics["article_fetch_ok"] += 1
+                                # 必須仍與標的有關
+                                if (
+                                    str(stock_name) not in article_text
+                                    and str(stock_id) not in article_text
+                                ):
+                                    continue
+                                pairs = _pair_targets_with_institutions(article_text)
+                                if pairs:
+                                    evidence_layer = "公開新聞內文"
+                                    evidence_text = article_text
+                                    break
+
+                    if not pairs:
                         continue
 
-                    # 基本合理性防呆：目標價若與現價差距極端，仍保留但標記；不直接刪掉真實新聞。
-                    upside = ((target / current_price) - 1) * 100 if current_price > 0 else None
-                    collected.append({
-                        "institution": institution,
-                        "target": target,
-                        "date": pub_tw.strftime("%Y-%m-%d"),
-                        "published_at": pub_tw,
-                        "news_source": news_source,
-                        "title": title,
-                        "link": link,
-                        "upside_pct": upside,
-                    })
+                    if evidence_layer == "新聞標題":
+                        diagnostics["title_hits"] += 1
+                    elif evidence_layer == "RSS摘要":
+                        diagnostics["summary_hits"] += 1
+                    else:
+                        diagnostics["article_hits"] += 1
+
+                    for institution, target, matched in pairs:
+                        # 新聞媒體名稱不能被當作研究機構
+                        if institution in media_names:
+                            continue
+
+                        upside = (
+                            ((target / current_price) - 1) * 100
+                            if current_price > 0 else None
+                        )
+                        collected.append({
+                            "institution": institution,
+                            "target": float(target),
+                            "date": pub_tw.strftime("%Y-%m-%d"),
+                            "published_at": pub_tw,
+                            "news_source": str(news_source),
+                            "title": title,
+                            "link": final_article_url or google_link,
+                            "upside_pct": upside,
+                            "evidence_layer": evidence_layer,
+                            "matched_text": matched,
+                        })
             except Exception as exc:
                 log_error(f"public broker news query {stock_id}", exc)
 
         if not collected:
+            empty["diagnostics"] = diagnostics
+            empty["note"] = (
+                f"近{max_age_days}日掃描 {diagnostics['rss_items']} 則相關公開新聞，"
+                "未解析到可同時驗證的研究機構與目標價。"
+            )
             return empty
 
         df = pd.DataFrame(collected)
         df = df.sort_values("published_at", ascending=False)
 
-        # 同一家研究機構只保留最新一筆。
+        # 同一機構同一篇可能被多 query 命中，先去重
+        df = df.drop_duplicates(
+            subset=["institution", "target", "date", "title"], keep="first"
+        )
+        # 同一家研究機構只保留最新一筆
         df = df.drop_duplicates(subset=["institution"], keep="first").reset_index(drop=True)
-        if df.empty:
-            return empty
 
         vals = pd.to_numeric(df["target"], errors="coerce").dropna()
         if vals.empty:
+            empty["diagnostics"] = diagnostics
             return empty
 
         items = []
@@ -1224,17 +1436,22 @@ def get_public_broker_targets(stock_id: str, stock_name: str, current_price: flo
                     float(row["upside_pct"])
                     if pd.notna(row.get("upside_pct")) else None
                 ),
+                "evidence_layer": str(row.get("evidence_layer", "")),
+                "matched_text": str(row.get("matched_text", "")),
             })
 
         median = float(vals.median())
         mean = float(vals.mean())
         high = float(vals.max())
         low = float(vals.min())
-        upside_med = ((median / current_price) - 1) * 100 if current_price > 0 else None
+        upside_med = (
+            ((median / current_price) - 1) * 100
+            if current_price > 0 else None
+        )
 
         return {
             "available": True,
-            "source": "Google News RSS 公開新聞",
+            "source": "Google News RSS＋可公開讀取新聞內文",
             "items": items,
             "mean": mean,
             "median": median,
@@ -1242,14 +1459,17 @@ def get_public_broker_targets(stock_id: str, stock_name: str, current_price: flo
             "low": low,
             "count": int(len(vals)),
             "upside_to_median": upside_med,
+            "diagnostics": diagnostics,
             "note": (
-                f"近{max_age_days}日找到 {len(vals)} 家研究機構的公開新聞目標價；"
-                "同一家機構只保留最新一筆。"
+                f"近{max_age_days}日找到 {len(vals)} 家研究機構的可驗證公開目標價；"
+                f"標題 {diagnostics['title_hits']}、RSS摘要 {diagnostics['summary_hits']}、"
+                f"公開內文 {diagnostics['article_hits']}。同一家只保留最新一筆。"
             ),
         }
     except Exception as exc:
         log_error(f"public broker targets {stock_id}", exc)
         return empty
+
 
 
 def calculate_dynamic_pb(current_price: float, fin_df: pd.DataFrame):
@@ -5227,7 +5447,7 @@ def resolve_daily_strategy_lock(
     sid = str(stock_id)
     # v9.27：同一股票同一天只允許一個股票主策略，不再因 HELD/UNHELD 分裂。
     mode = "COMMON"
-    lock_version = "v932"
+    lock_version = "v933"
     session_key = f"_daily_strategy_lock_{lock_version}_{sid}_{today}"
     db_mode = f"COMMON_{lock_version.upper()}"
 
@@ -5517,7 +5737,7 @@ with st.sidebar:
 
     st.caption("自選清單會寫入目前網址；建議把這個網址加入瀏覽器書籤。")
 
-st.markdown("## 🧭 StockPilot Beta v9.32｜個股操作決策")
+st.markdown("## 🧭 StockPilot Beta v9.33｜個股操作決策")
 st.caption("主決策優先；盤中即時價格只更新執行狀態。")
 
 # v9.23：操作輸入壓縮成一排，避免上半段先被表單吃掉大量高度。
@@ -7869,6 +8089,7 @@ if stock_input:
                                 if _it.get("upside_pct") is not None else "未取得"
                             ),
                             "新聞來源": _it.get("news_source"),
+                            "證據位置": _it.get("evidence_layer"),
                             "新聞標題": _it.get("title"),
                             "連結": _it.get("link"),
                         })
@@ -9559,6 +9780,7 @@ if stock_input:
                             "目標價(元)": _it.get("target"),
                             "發布日期": _it.get("date"),
                             "新聞媒體": _it.get("news_source"),
+                            "證據位置": _it.get("evidence_layer"),
                             "標題": _it.get("title"),
                             "連結": _it.get("link"),
                         })
