@@ -1061,6 +1061,197 @@ def get_broker_consensus_data(stock_id: str, current_price: float):
     except Exception: pass
     return res_not_found
 
+
+@st.cache_data(ttl=1800)
+def get_public_broker_targets(stock_id: str, stock_name: str, current_price: float, max_age_days: int = 90) -> dict:
+    """
+    v9.32 公開新聞法人目標價：
+    - 來源：Google News RSS 公開新聞索引
+    - 只接受新聞標題中同時出現「可辨識研究機構/券商」+「明確目標價數字」
+    - 同一家機構只保留最新一筆
+    - 最多回溯 max_age_days，找不到就回 available=False
+    - 不從模糊文字猜價格、不把新聞媒體名稱當券商、不使用 Yahoo financialData 補值
+    """
+    empty = {
+        "available": False,
+        "source": "Google News RSS 公開新聞",
+        "items": [],
+        "mean": None,
+        "median": None,
+        "high": None,
+        "low": None,
+        "count": 0,
+        "upside_to_median": None,
+        "note": "近90日公開新聞未找到可驗證的券商/研究機構目標價。",
+    }
+
+    institution_aliases = [
+        ("摩根士丹利", ["摩根士丹利", "大摩", "Morgan Stanley"]),
+        ("摩根大通", ["摩根大通", "小摩", "JPMorgan", "JP Morgan"]),
+        ("高盛", ["高盛", "Goldman Sachs"]),
+        ("美銀", ["美銀", "美銀證券", "Bank of America", "BofA"]),
+        ("花旗", ["花旗", "Citigroup", "Citi"]),
+        ("瑞銀", ["瑞銀", "UBS"]),
+        ("麥格理", ["麥格理", "Macquarie"]),
+        ("大和", ["大和", "Daiwa"]),
+        ("野村", ["野村", "Nomura"]),
+        ("匯豐", ["匯豐", "HSBC"]),
+        ("里昂", ["里昂", "CLSA"]),
+        ("元大投顧", ["元大投顧", "元大證券", "元大"]),
+        ("凱基投顧", ["凱基投顧", "凱基證券", "凱基"]),
+        ("富邦投顧", ["富邦投顧", "富邦證券", "富邦"]),
+        ("國泰證券", ["國泰證券", "國泰"]),
+        ("群益投顧", ["群益投顧", "群益證券", "群益"]),
+        ("永豐投顧", ["永豐投顧", "永豐金證券", "永豐"]),
+        ("統一投顧", ["統一投顧", "統一證券"]),
+        ("第一金投顧", ["第一金投顧", "第一金證券"]),
+        ("兆豐證券", ["兆豐證券", "兆豐"]),
+        ("玉山投顧", ["玉山投顧", "玉山證券"]),
+        ("中信投顧", ["中信投顧", "中國信託投顧", "中信證券"]),
+        ("元富投顧", ["元富投顧", "元富證券"]),
+        ("台新投顧", ["台新投顧", "台新證券"]),
+    ]
+
+    def _find_institution(title: str):
+        t = str(title or "")
+        for canonical, aliases in institution_aliases:
+            for alias in aliases:
+                if alias.lower() in t.lower():
+                    return canonical
+        # 不認得研究機構時不硬猜。
+        return None
+
+    def _extract_target(title: str):
+        t = str(title or "").replace(",", "")
+        # 僅抓「目標價」附近的數字，避免把股價、EPS、年份誤當目標價。
+        patterns = [
+            r"目標價(?:上看|喊到|調升至|調高至|升至|提高至|調降至|降至|下修至|維持)?\s*(?:新台幣|NT\$|\$)?\s*([0-9]+(?:\.[0-9]+)?)\s*元?",
+            r"(?:目標|目標價)\s*(?:由\s*[0-9.]+\s*元?\s*)?(?:升|降|調升|調降|上修|下修|調高|調低)?\s*(?:至|到)?\s*(?:新台幣|NT\$|\$)?\s*([0-9]+(?:\.[0-9]+)?)\s*元",
+        ]
+        for pat in patterns:
+            m = re.search(pat, t, flags=re.I)
+            if m:
+                try:
+                    v = float(m.group(1))
+                    if v > 0:
+                        return v
+                except Exception:
+                    pass
+        return None
+
+    try:
+        queries = [
+            f'"{stock_name}" 目標價 外資 when:{max_age_days}d',
+            f'"{stock_name}" 目標價 券商 when:{max_age_days}d',
+            f'"{stock_name}" 目標價 法人 when:{max_age_days}d',
+            f'"{stock_name}" {stock_id} 目標價 when:{max_age_days}d',
+        ]
+
+        collected = []
+        session = get_requests_session()
+        cutoff = pd.Timestamp.now(tz="Asia/Taipei") - pd.Timedelta(days=max_age_days)
+
+        for qraw in queries:
+            try:
+                q = urllib.parse.quote(qraw)
+                url = f"https://news.google.com/rss/search?q={q}&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
+                r = session.get(url, timeout=6)
+                if r.status_code != 200:
+                    continue
+                root = ET.fromstring(r.content)
+                for item in root.findall(".//item"):
+                    full_title = (item.find("title").text or "") if item.find("title") is not None else ""
+                    news_source = item.find("source").text if item.find("source") is not None else "公開新聞"
+                    link = (item.find("link").text or "") if item.find("link") is not None else ""
+                    pub_raw = (item.find("pubDate").text or "") if item.find("pubDate") is not None else ""
+                    pub = pd.to_datetime(pub_raw, errors="coerce", utc=True)
+                    if pd.isna(pub):
+                        continue
+                    pub_tw = pub.tz_convert("Asia/Taipei")
+                    if pub_tw < cutoff:
+                        continue
+
+                    # 移除 Google News 常見尾端媒體名稱，但保留原始媒體欄位。
+                    title = full_title.rsplit(" - ", 1)[0] if " - " in full_title else full_title
+                    if str(stock_name) not in title and str(stock_id) not in title:
+                        continue
+
+                    institution = _find_institution(title)
+                    target = _extract_target(title)
+                    if not institution or target is None:
+                        continue
+
+                    # 基本合理性防呆：目標價若與現價差距極端，仍保留但標記；不直接刪掉真實新聞。
+                    upside = ((target / current_price) - 1) * 100 if current_price > 0 else None
+                    collected.append({
+                        "institution": institution,
+                        "target": target,
+                        "date": pub_tw.strftime("%Y-%m-%d"),
+                        "published_at": pub_tw,
+                        "news_source": news_source,
+                        "title": title,
+                        "link": link,
+                        "upside_pct": upside,
+                    })
+            except Exception as exc:
+                log_error(f"public broker news query {stock_id}", exc)
+
+        if not collected:
+            return empty
+
+        df = pd.DataFrame(collected)
+        df = df.sort_values("published_at", ascending=False)
+
+        # 同一家研究機構只保留最新一筆。
+        df = df.drop_duplicates(subset=["institution"], keep="first").reset_index(drop=True)
+        if df.empty:
+            return empty
+
+        vals = pd.to_numeric(df["target"], errors="coerce").dropna()
+        if vals.empty:
+            return empty
+
+        items = []
+        for _, row in df.head(12).iterrows():
+            items.append({
+                "institution": str(row["institution"]),
+                "target": float(row["target"]),
+                "date": str(row["date"]),
+                "news_source": str(row["news_source"]),
+                "title": str(row["title"]),
+                "link": str(row["link"]),
+                "upside_pct": (
+                    float(row["upside_pct"])
+                    if pd.notna(row.get("upside_pct")) else None
+                ),
+            })
+
+        median = float(vals.median())
+        mean = float(vals.mean())
+        high = float(vals.max())
+        low = float(vals.min())
+        upside_med = ((median / current_price) - 1) * 100 if current_price > 0 else None
+
+        return {
+            "available": True,
+            "source": "Google News RSS 公開新聞",
+            "items": items,
+            "mean": mean,
+            "median": median,
+            "high": high,
+            "low": low,
+            "count": int(len(vals)),
+            "upside_to_median": upside_med,
+            "note": (
+                f"近{max_age_days}日找到 {len(vals)} 家研究機構的公開新聞目標價；"
+                "同一家機構只保留最新一筆。"
+            ),
+        }
+    except Exception as exc:
+        log_error(f"public broker targets {stock_id}", exc)
+        return empty
+
+
 def calculate_dynamic_pb(current_price: float, fin_df: pd.DataFrame):
     if fin_df.empty or "Equity" not in fin_df.columns or "ShareCapital" not in fin_df.columns:
         return None, None
@@ -1431,10 +1622,18 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     except Exception: pass
     institutional_summary = summarize_institutional_flow(institutional_df, df)
     try:
-        broker_consensus = get_broker_consensus_data(stock_id, current_price)
+        public_broker_targets = get_public_broker_targets(
+            stock_id, stock_name, current_price, max_age_days=90
+        )
     except Exception as exc:
-        broker_consensus["error"] = str(exc)
-        log_error("broker consensus", exc)
+        public_broker_targets = {
+            "available": False, "items": [], "mean": None, "median": None,
+            "high": None, "low": None, "count": 0,
+            "upside_to_median": None,
+            "source": "Google News RSS 公開新聞",
+            "note": "公開新聞法人目標價搜尋失敗。",
+        }
+        log_error("public broker targets", exc)
 
     vol_spike = (current_vol * 1000.0) > (vol_ma20_val * 1.5)
     attempted_breakout = current_price >= real_resistance
@@ -1573,7 +1772,7 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     res_dict["bb_stage"] = bb_stage
     res_dict["volume_verdict"] = volume_verdict
     res_dict["institutional_df"] = institutional_df
-    res_dict["broker_consensus"] = broker_consensus
+    res_dict["public_broker_targets"] = public_broker_targets
     res_dict["margin_trend"] = margin_trend
     res_dict["large_holder_radar"] = large_holder_radar
     res_dict["box_width_pct"] = box_width_pct
@@ -5028,7 +5227,7 @@ def resolve_daily_strategy_lock(
     sid = str(stock_id)
     # v9.27：同一股票同一天只允許一個股票主策略，不再因 HELD/UNHELD 分裂。
     mode = "COMMON"
-    lock_version = "v931"
+    lock_version = "v932"
     session_key = f"_daily_strategy_lock_{lock_version}_{sid}_{today}"
     db_mode = f"COMMON_{lock_version.upper()}"
 
@@ -5318,7 +5517,7 @@ with st.sidebar:
 
     st.caption("自選清單會寫入目前網址；建議把這個網址加入瀏覽器書籤。")
 
-st.markdown("## 🧭 StockPilot Beta v9.31｜個股操作決策")
+st.markdown("## 🧭 StockPilot Beta v9.32｜個股操作決策")
 st.caption("主決策優先；盤中即時價格只更新執行狀態。")
 
 # v9.23：操作輸入壓縮成一排，避免上半段先被表單吃掉大量高度。
@@ -7633,74 +7832,55 @@ if stock_input:
                         "沒有可靠資料的項目不加分也不扣分；不使用新聞文字或法人目標價冒充量價/籌碼證據。"
                     )
 
-            # v9.31：主畫面法人預估價摘要。
-            # 僅使用 Yahoo Finance 公開 financialData；沒有可靠資料就明確顯示未取得。
-            _bc_main_v931 = res.get("broker_consensus", {}) or {}
-            st.markdown("### 法人預估／公開分析師共識")
-            if _bc_main_v931.get("is_real") and float(_bc_main_v931.get("mean", 0) or 0) > 0:
-                _bc_mean_v931 = float(_bc_main_v931.get("mean", 0) or 0)
-                _bc_high_v931 = float(_bc_main_v931.get("high", 0) or 0)
-                _bc_low_v931 = float(_bc_main_v931.get("low", 0) or 0)
-                _bc_price_v931 = float(res.get("current_price", 0) or 0)
-                _bc_upside_v931 = (
-                    ((_bc_mean_v931 / _bc_price_v931) - 1) * 100
-                    if _bc_price_v931 > 0 else None
-                )
-                _bc_coverage_v931 = _bc_main_v931.get("coverage_count")
-                _bc_rating_v931 = str(_bc_main_v931.get("rating") or "未提供")
+            # v9.32：法人目標價改為「公開新聞」；Yahoo financialData 不再作主來源。
+            _bt_v932 = res.get("public_broker_targets", {}) or {}
+            st.markdown("### 最新公開法人目標價")
+            if _bt_v932.get("available") and _bt_v932.get("items"):
+                _bt_median = float(_bt_v932.get("median", 0) or 0)
+                _bt_high = float(_bt_v932.get("high", 0) or 0)
+                _bt_low = float(_bt_v932.get("low", 0) or 0)
+                _bt_price = float(res.get("current_price", 0) or 0)
+                _bt_upside = _bt_v932.get("upside_to_median")
 
-                _bc1, _bc2, _bc3, _bc4, _bc5 = st.columns(5)
-                _bc1.metric("平均目標價", f"{_bc_mean_v931:,.2f} 元")
-                _bc2.metric(
-                    "最高目標價",
-                    f"{_bc_high_v931:,.2f} 元" if _bc_high_v931 > 0 else "未取得",
-                )
-                _bc3.metric(
-                    "最低目標價",
-                    f"{_bc_low_v931:,.2f} 元" if _bc_low_v931 > 0 else "未取得",
-                )
-                _bc4.metric("目前價格", f"{_bc_price_v931:,.2f} 元" if _bc_price_v931 > 0 else "未取得")
-                _bc5.metric(
-                    "距平均目標價",
-                    f"{_bc_upside_v931:+.2f}%" if _bc_upside_v931 is not None else "未取得",
+                _bt1, _bt2, _bt3, _bt4, _bt5 = st.columns(5)
+                _bt1.metric("目標價中位數", f"{_bt_median:,.2f} 元")
+                _bt2.metric("最高目標價", f"{_bt_high:,.2f} 元")
+                _bt3.metric("最低目標價", f"{_bt_low:,.2f} 元")
+                _bt4.metric("目前價格", f"{_bt_price:,.2f} 元")
+                _bt5.metric(
+                    "距中位目標價",
+                    f"{float(_bt_upside):+.2f}%" if _bt_upside is not None else "未取得",
                 )
 
-                _bc_meta_v931 = (
-                    f"公開彙整評等：{_bc_rating_v931}"
-                    + (
-                        f"｜涵蓋分析師數：{int(float(_bc_coverage_v931))}"
-                        if _bc_coverage_v931 not in (None, "", 0) else ""
+                st.caption(
+                    f"{_bt_v932.get('note','')}｜來源：{_bt_v932.get('source','Google News RSS 公開新聞')}。"
+                    "法人目標價只作估值／市場預期參考，不直接升級或改寫股票主策略。"
+                )
+
+                with st.expander("查看各家法人／券商最新公開目標價", expanded=False):
+                    _rows_v932 = []
+                    for _it in _bt_v932.get("items", []):
+                        _rows_v932.append({
+                            "機構": _it.get("institution"),
+                            "目標價": _it.get("target"),
+                            "日期": _it.get("date"),
+                            "相對現價": (
+                                f"{float(_it.get('upside_pct')):+.2f}%"
+                                if _it.get("upside_pct") is not None else "未取得"
+                            ),
+                            "新聞來源": _it.get("news_source"),
+                            "新聞標題": _it.get("title"),
+                            "連結": _it.get("link"),
+                        })
+                    st.dataframe(pd.DataFrame(_rows_v932), use_container_width=True, hide_index=True)
+                    st.caption(
+                        "僅納入標題中可同時辨識研究機構名稱與明確目標價的公開新聞；"
+                        "同一家機構只保留最新一筆。"
                     )
-                )
-                st.caption(
-                    _bc_meta_v931
-                    + f"｜來源：{_bc_main_v931.get('source', 'Yahoo Finance 公開彙整')}。"
-                )
-
-                if _bc_upside_v931 is not None:
-                    if _bc_upside_v931 >= 10:
-                        st.info(
-                            f"法人共識距現價仍有約 {_bc_upside_v931:.1f}% 空間；"
-                            "此欄只作估值／市場預期參考，不直接升級股票主策略。"
-                        )
-                    elif _bc_upside_v931 <= -5:
-                        st.warning(
-                            f"現價已高於公開平均目標價約 {abs(_bc_upside_v931):.1f}%；"
-                            "代表估值預期空間偏緊，但不單獨作為賣出依據。"
-                        )
-                    else:
-                        st.caption(
-                            "現價接近公開平均目標價；法人共識僅作估值參考，不直接改寫股票主策略。"
-                        )
-
-                st.caption(
-                    "這是 Yahoo Finance 公開彙整，不是逐家券商研究報告；"
-                    "若沒有券商名稱、報告日期與完整論點，系統不自行補寫。"
-                )
             else:
                 st.info(
-                    "法人預估：未取得可靠公開分析師目標價共識。"
-                    "系統不推估、不杜撰目標價。"
+                    "近90日公開新聞未找到可驗證的法人／券商目標價。"
+                    "系統不推估、不用 Yahoo financialData 補值，也不杜撰研究報告。"
                 )
 
             # v9.26：歷史比較放在今日主策略之後，直接比較「那天 vs 今天」。
@@ -9364,14 +9544,29 @@ if stock_input:
                     else:
                         st.caption("目前無法取得三大法人日報資料。")
 
-                # 區塊 C：免費公開分析師共識（有資料才顯示）
-                bc = res["broker_consensus"]
-                if bc.get("is_real", False):
-                    st.markdown("### 🎯 免費公開分析師目標價共識")
-                    coverage = f"｜涵蓋分析師數：{int(bc['coverage_count'])}" if bc.get("coverage_count") else ""
-                    st.markdown(f"""<div style="background-color:#F5F3FF; padding:12px; border-left:4px solid #7C3AED; border-radius:4px; margin-bottom:12px; font-size:14px; color:#5B21B6; font-weight:700;">平均目標價：{bc['mean']:.2f} 元｜最高：{bc['high']:.2f} 元｜最低：{bc['low']:.2f} 元｜公開彙整評等：{bc.get('rating') or '未提供'}{coverage}<br><small style='color:#6D28D9; font-weight:600;'>資料來源：{bc.get('source')}。這不是逐家外資或本土投顧報告，無法驗證各券商名稱、報告日期與完整論點，因此只作市場共識參考。</small></div>""", unsafe_allow_html=True)
+                # 區塊 C：公開新聞法人目標價
+                _bt_detail_v932 = res.get("public_broker_targets", {}) or {}
+                st.markdown("### 🎯 公開新聞法人目標價")
+                if _bt_detail_v932.get("available") and _bt_detail_v932.get("items"):
+                    st.caption(
+                        _bt_detail_v932.get("note", "")
+                        + "｜只採公開新聞可驗證資料，不使用 Yahoo financialData 補值。"
+                    )
+                    _bt_detail_rows = []
+                    for _it in _bt_detail_v932.get("items", []):
+                        _bt_detail_rows.append({
+                            "機構": _it.get("institution"),
+                            "目標價(元)": _it.get("target"),
+                            "發布日期": _it.get("date"),
+                            "新聞媒體": _it.get("news_source"),
+                            "標題": _it.get("title"),
+                            "連結": _it.get("link"),
+                        })
+                    st.dataframe(pd.DataFrame(_bt_detail_rows), use_container_width=True, hide_index=True)
                 else:
-                    st.caption("🎯 免費公開來源查無可靠分析師目標價共識，本區自動隱藏；系統不推估、不杜撰逐家券商報告。")
+                    st.caption(
+                        "近90日公開新聞查無可驗證法人／券商目標價；系統不推估、不杜撰。"
+                    )
 
                 # 區塊 D：財務基本面季度結構矩陣大表
                 st.markdown("### 📊 財務基本面季度結構矩陣大表")
