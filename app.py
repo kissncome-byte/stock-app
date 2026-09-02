@@ -4989,7 +4989,7 @@ def resolve_daily_strategy_lock(
     sid = str(stock_id)
     # v9.27：同一股票同一天只允許一個股票主策略，不再因 HELD/UNHELD 分裂。
     mode = "COMMON"
-    lock_version = "v935"
+    lock_version = "v936"
     session_key = f"_daily_strategy_lock_{lock_version}_{sid}_{today}"
     db_mode = f"COMMON_{lock_version.upper()}"
 
@@ -5162,6 +5162,87 @@ def derive_intraday_execution_state(
 
 
 
+
+def build_intraday_snapshot(res: dict, current_price: float) -> dict:
+    """
+    v9.36 盤中即時層：
+    - 只描述「今天截至目前」的價格/K棒/量能位置，不改寫已完成日K主策略。
+    - 只使用真實可取得欄位；沒有今日 OHLC/量就明確標示資料不足，不自行補值。
+    """
+    price = float(current_price or 0)
+    daily = res.get("daily_df", pd.DataFrame())
+    prev_close = 0.0
+    if daily is not None and not daily.empty and "close" in daily.columns:
+        vals = pd.to_numeric(daily["close"], errors="coerce").dropna()
+        if len(vals):
+            prev_close = float(vals.iloc[-1])
+
+    # Fugle/即時行情欄位名稱可能因版本不同；只讀已存在的真實欄位。
+    candidates = []
+    for key in ("intraday_quote", "quote", "realtime_quote", "realtime", "snapshot"):
+        obj = res.get(key)
+        if isinstance(obj, dict):
+            candidates.append(obj)
+
+    def pick(names):
+        for obj in candidates:
+            for name in names:
+                if name in obj and obj.get(name) not in (None, ""):
+                    try:
+                        return float(obj.get(name))
+                    except Exception:
+                        pass
+        for name in names:
+            if name in res and res.get(name) not in (None, ""):
+                try:
+                    return float(res.get(name))
+                except Exception:
+                    pass
+        return 0.0
+
+    op = pick(("open", "openPrice", "day_open", "today_open"))
+    hi = pick(("high", "highPrice", "day_high", "today_high"))
+    lo = pick(("low", "lowPrice", "day_low", "today_low"))
+    vol = pick(("volume", "total_volume", "totalVolume", "day_volume", "today_volume"))
+
+    change_pct = ((price / prev_close) - 1) * 100 if price > 0 and prev_close > 0 else None
+
+    candle = "資料不足"
+    if price > 0 and op > 0 and hi > 0 and lo > 0 and hi >= lo:
+        body = abs(price-op)
+        rng = max(hi-lo, 1e-9)
+        upper = max(hi-max(price,op), 0)
+        lower = max(min(price,op)-lo, 0)
+        if body/rng < 0.18:
+            candle = "盤中十字／小實體"
+        elif price >= op:
+            candle = "盤中紅K"
+        else:
+            candle = "盤中黑K"
+        if upper/rng >= 0.35:
+            candle += "・上影偏長"
+        if lower/rng >= 0.35:
+            candle += "・下影偏長"
+
+    volume_text = "今日盤中量資料不足"
+    if vol > 0:
+        volume_text = f"今日盤中量 {vol:,.0f}"
+        if daily is not None and not daily.empty and "vol" in daily.columns:
+            av = pd.to_numeric(daily["vol"], errors="coerce").dropna().tail(20)
+            if len(av):
+                avg = float(av.mean())
+                # 單位一致才顯示量比；若即時量與日線量尺度差太大則不硬算。
+                if avg > 0 and 0.02 <= vol/avg <= 20:
+                    volume_text += f"｜約為20日均量 {vol/avg:.2f} 倍（未校正交易時間）"
+
+    return {
+        "price": price, "prev_close": prev_close, "change_pct": change_pct,
+        "open": op, "high": hi, "low": lo, "volume": vol,
+        "candle": candle, "volume_text": volume_text,
+        "has_ohlc": all(x > 0 for x in (op,hi,lo,price)),
+    }
+
+
 def _normalize_stock_code(value):
     value = str(value or "").strip().upper()
     value = value.replace(".TW", "").replace(".TWO", "")
@@ -5279,7 +5360,7 @@ with st.sidebar:
 
     st.caption("自選清單會寫入目前網址；建議把這個網址加入瀏覽器書籤。")
 
-st.markdown("## 🧭 StockPilot Beta v9.35｜個股操作決策")
+st.markdown("## 🧭 StockPilot Beta v9.36｜個股操作決策")
 st.caption("主決策優先；盤中即時價格只更新執行狀態。")
 
 # v9.23：操作輸入壓縮成一排，避免上半段先被表單吃掉大量高度。
@@ -7547,19 +7628,37 @@ if stock_input:
                     f"目前身分執行動作為「{_execution_action_v927}」。"
                 )
 
+            # v9.36：把「今日盤中」與「已完成日K」完全拆開。
+            _intra_v936 = build_intraday_snapshot(res, _current_price_beta)
+            st.markdown("### 今日盤中執行")
+            _i1, _i2, _i3, _i4 = st.columns(4)
+            _i1.metric("即時現價", f"{_intra_v936['price']:,.2f} 元" if _intra_v936["price"] > 0 else "資料不足")
+            _chg_v936 = _intra_v936.get("change_pct")
+            _i2.metric(
+                "較昨收",
+                f"{_chg_v936:+.2f}%" if _chg_v936 is not None else "資料不足",
+                f"昨收 {_intra_v936['prev_close']:,.2f}" if _intra_v936["prev_close"] > 0 else None,
+            )
+            _i3.metric("今日盤中K", _intra_v936.get("candle","資料不足"))
+            _i4.metric("盤中執行", _execution_action_v927)
+            st.caption(_intra_v936.get("volume_text","今日盤中量資料不足"))
+            if not _intra_v936.get("has_ohlc"):
+                st.caption("今日即時 OHLC 未完整取得，因此不假裝判讀上／下影線；主策略仍使用已完成日K。")
+            st.caption("此區會隨盤中報價更新；只決定『現在怎麼執行』，不因15秒價格跳動改寫今日主策略。")
+
             # v9.30：市場情境判讀，主畫面只放四個摘要，不讓版面再次膨脹。
             _ctx_ui_v930 = (
                 _common_decision_snapshot_v928.get("market_context_engine", {}) or {}
             )
             if _ctx_ui_v930.get("available"):
-                st.markdown("### 市場情境判讀")
+                st.markdown("### 已完成日K／趨勢情境")
                 _ctx_components_v930 = _ctx_ui_v930.get("components", {}) or {}
                 _cx1, _cx2, _cx3, _cx4 = st.columns(4)
                 _candle_ui = _ctx_components_v930.get("K棒×價量", {}) or {}
                 _relative_ui = _ctx_components_v930.get("相對強弱×族群", {}) or {}
                 _chip_ui = _ctx_components_v930.get("籌碼一致性", {}) or {}
                 _break_ui = _ctx_components_v930.get("突破／跌破品質", {}) or {}
-                _cx1.metric("K棒 × 價量", f"{int(_candle_ui.get('score',50))}/100", str(_candle_ui.get("state","資料不足")))
+                _cx1.metric("昨日完成K × 價量", f"{int(_candle_ui.get('score',50))}/100", str(_candle_ui.get("state","資料不足")))
                 _cx2.metric("相對強弱 × 族群", f"{int(_relative_ui.get('score',50))}/100", str(_relative_ui.get("state","資料不足")))
                 _cx3.metric("籌碼一致性", f"{int(_chip_ui.get('score',50))}/100", str(_chip_ui.get("state","資料不足")))
                 _cx4.metric("突破／跌破品質", f"{int(_break_ui.get('score',50))}/100", str(_break_ui.get("state","資料不足")))
@@ -7578,7 +7677,7 @@ if stock_input:
                     st.caption(
                         f"情境總分：{int(_ctx_ui_v930.get('score',50))}/100｜"
                         f"{_ctx_ui_v930.get('state','資料不足')}。"
-                        "股票主策略使用已完成日K；盤中未完成K棒只影響執行。"
+                        "此區只使用已完成日K與趨勢資料；今日盤中K另列於上方，不混用。"
                     )
 
                 with st.expander("查看 K棒／價量／族群／籌碼／突破完整判讀", expanded=False):
