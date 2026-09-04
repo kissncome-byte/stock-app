@@ -1543,6 +1543,8 @@ def evaluate_stock(stock_id: str, total_capital: float, risk_per_trade: float, s
     res_dict["attempted_breakout"] = attempted_breakout
     res_dict["confirmed_breakout"] = confirmed_breakout
     res_dict["trailing_stop_value"] = trailing_stop_value
+    # v9.38：持股獲利保護使用近期已完成日K高點；不使用盤中未完成高點改寫主策略。
+    res_dict["peak_price_20d"] = peak_price_20d
     
     res_dict["institutional_summary"] = institutional_summary
     res_dict["peer_resonance_text"] = peer_resonance_text
@@ -4989,7 +4991,7 @@ def resolve_daily_strategy_lock(
     sid = str(stock_id)
     # v9.27：同一股票同一天只允許一個股票主策略，不再因 HELD/UNHELD 分裂。
     mode = "COMMON"
-    lock_version = "v937"
+    lock_version = "v938"
     session_key = f"_daily_strategy_lock_{lock_version}_{sid}_{today}"
     db_mode = f"COMMON_{lock_version.upper()}"
 
@@ -5280,7 +5282,7 @@ with st.sidebar:
 
     st.caption("自選清單會寫入目前網址；建議把這個網址加入瀏覽器書籤。")
 
-st.markdown("## 🧭 StockPilot Beta v9.37｜個股操作決策")
+st.markdown("## 🧭 StockPilot Beta v9.38｜個股操作決策")
 st.caption("主決策優先；盤中即時價格只更新執行狀態。")
 
 # v9.23：操作輸入壓縮成一排，避免上半段先被表單吃掉大量高度。
@@ -6848,12 +6850,157 @@ if stock_input:
                 _s927_holding_management_action = ""
                 _s927_holding_management_reason = ""
 
+                # v9.38：獲利保護機制
+                # 核心：已持股若「已有浮盈 + 接近前高/壓力區」，即使主趨勢仍多，
+                # 也要啟動獲利保護；之後若從近期高點回撤或突破失敗，可先減碼，
+                # 不必等到大波段保護價才處理。
+                _s938_cost = float(user_cost or 0)
+                _s938_current = float(_s12_price or 0)
+                _s938_peak20 = float(res.get("peak_price_20d", 0) or 0)
+                _s938_resistance = float(res.get("real_resistance", 0) or 0)
+                _s938_target1 = float(_s12_levels.get("target1", 0) or 0)
+
+                _s938_current_pnl_pct = (
+                    ((_s938_current / _s938_cost) - 1.0) * 100.0
+                    if _s938_cost > 0 and _s938_current > 0 else None
+                )
+                _s938_peak_gain_pct = (
+                    ((_s938_peak20 / _s938_cost) - 1.0) * 100.0
+                    if _s938_cost > 0 and _s938_peak20 > 0 else None
+                )
+                _s938_drawdown_pct = (
+                    max(0.0, (1.0 - (_s938_current / _s938_peak20)) * 100.0)
+                    if _s938_peak20 > 0 and _s938_current > 0 else 0.0
+                )
+
+                # 前高/壓力優先使用真實20日壓力；若無資料才退回第一目標價。
+                _s938_pressure = (
+                    _s938_resistance
+                    if _s938_resistance > 0
+                    else _s938_target1
+                )
+                _s938_pressure_distance_pct = (
+                    ((_s938_pressure / _s938_current) - 1.0) * 100.0
+                    if _s938_pressure > 0 and _s938_current > 0 else None
+                )
+                _s938_near_pressure_now = bool(
+                    _s938_pressure > 0
+                    and _s938_current > 0
+                    and abs(_s938_current / _s938_pressure - 1.0) <= 0.025
+                )
+                _s938_peak_near_pressure = bool(
+                    _s938_pressure > 0
+                    and _s938_peak20 > 0
+                    and abs(_s938_peak20 / _s938_pressure - 1.0) <= 0.03
+                )
+
+                _s938_ctx = (
+                    _common_decision_snapshot_v928.get("market_context_engine", {}) or {}
+                )
+                _s938_break = (
+                    _s938_ctx.get("components", {}).get("突破／跌破品質", {}) or {}
+                    if isinstance(_s938_ctx.get("components", {}), dict)
+                    else {}
+                )
+                _s938_candle = (
+                    _s938_ctx.get("components", {}).get("K棒×價量", {}) or {}
+                    if isinstance(_s938_ctx.get("components", {}), dict)
+                    else {}
+                )
+                _s938_break_state = str(_s938_break.get("state", "") or "")
+                _s938_candle_state = str(_s938_candle.get("state", "") or "")
+
+                # 啟動條件：
+                # A. 現在已有 >=5% 浮盈且靠近前高/壓力；
+                # B. 或近期高點曾達 >=8% 浮盈（趨勢強時也開始保護）。
+                _s938_profit_protection_armed = bool(
+                    user_holding
+                    and _s18_current_shares > 0
+                    and _s938_cost > 0
+                    and (
+                        (
+                            _s938_current_pnl_pct is not None
+                            and _s938_current_pnl_pct >= 5.0
+                            and _s938_near_pressure_now
+                        )
+                        or (
+                            _s938_peak_gain_pct is not None
+                            and _s938_peak_gain_pct >= 8.0
+                        )
+                        or (
+                            _s938_peak_gain_pct is not None
+                            and _s938_peak_gain_pct >= 5.0
+                            and _s938_peak_near_pressure
+                        )
+                    )
+                )
+
+                # 減碼觸發：已啟動獲利保護後，
+                # 1) 從近期高點回撤 >=4%；或
+                # 2) 完成日K出現假突破/高檔爆量長上影。
+                _s938_failed_pressure = bool(
+                    _s938_break_state in {"假突破／沖高回落", "無量突破"}
+                    or _s938_candle_state == "高檔爆量長上影"
+                )
+                _s938_profit_protection_reduce = bool(
+                    _s938_profit_protection_armed
+                    and (
+                        _s938_drawdown_pct >= 4.0
+                        or _s938_failed_pressure
+                    )
+                )
+                _s938_profit_protection_strong = bool(
+                    _s938_profit_protection_armed
+                    and (
+                        _s938_drawdown_pct >= 7.0
+                        or (
+                            _s938_failed_pressure
+                            and _s938_drawdown_pct >= 4.0
+                        )
+                    )
+                )
+
+                _s938_profit_protection_state = "未啟動"
+                if _s938_profit_protection_armed:
+                    _s938_profit_protection_state = "已啟動・保護獲利"
+                if _s938_profit_protection_reduce:
+                    _s938_profit_protection_state = "觸發減碼"
+                if _s938_profit_protection_strong:
+                    _s938_profit_protection_state = "強化減碼"
+
                 if _s925_stock_stance in {"ENTRY_OK", "PROBE_OK", "WAIT_PULLBACK", "WAIT"}:
-                    if _s925_profit_take:
+                    if _s938_profit_protection_reduce:
+                        _s927_holding_management_action = "獲利保護減碼"
+                        _s938_reduce_fraction = "1/2" if _s938_profit_protection_strong else "1/3"
+                        _s927_holding_management_reason = (
+                            f"獲利保護已啟動：近期高點 {_s938_peak20:,.2f} 元，"
+                            f"目前回撤 {_s938_drawdown_pct:.1f}%；"
+                            + (
+                                f"前高／壓力約 {_s938_pressure:,.2f} 元。"
+                                if _s938_pressure > 0 else ""
+                            )
+                            + f" 建議先減碼約 {_s938_reduce_fraction} 保護既有獲利，"
+                            "主趨勢未必轉空，但不再讓獲利一路回吐到大波段停損。"
+                        )
+                        # 這是持股執行層，允許覆寫「持有」；不改股票共同主策略。
+                        _s183_trade_decision = "獲利保護減碼"
+                        _s183_trade_reason = _s927_holding_management_reason
+                    elif _s925_profit_take:
                         _s927_holding_management_action = "獲利減碼"
                         _s927_holding_management_reason = (
                             f"現價已達第一獲利目標 {_s925_target1:,.2f} 元；"
                             "可分批落袋，但這不代表股票方向轉弱。"
+                        )
+                    elif _s938_profit_protection_armed:
+                        _s927_holding_management_action = "獲利保護觀察"
+                        _s927_holding_management_reason = (
+                            f"目前已進入獲利保護模式。"
+                            + (
+                                f" 前高／壓力約 {_s938_pressure:,.2f} 元，"
+                                if _s938_pressure > 0 else " "
+                            )
+                            + f"近期高點回撤 {_s938_drawdown_pct:.1f}%；"
+                            "若回撤達4%或完成日K出現突破失敗，將升級為減碼。"
                         )
                     elif _s925_position_reduce:
                         _s927_holding_management_action = "部位減碼"
@@ -7087,6 +7234,8 @@ if stock_input:
                     and _s18_current_shares > 0
                     and _s925_stock_stance in {"ENTRY_OK", "PROBE_OK"}
                     and _s183_trade_decision in {"減碼", "部位減碼", "獲利減碼"}
+                    # 「獲利保護減碼」刻意不在此集合：它是持股專屬風險管理，
+                    # 不代表股票共同方向轉弱，因此可以和偏多主策略並存。
                 ):
                     _s183_trade_decision = (
                         "加碼"
@@ -7149,6 +7298,15 @@ if stock_input:
                     "holding_position_reduce": _s925_position_reduce,
                     "holding_management_action": _s927_holding_management_action,
                     "holding_management_reason": _s927_holding_management_reason,
+                    "profit_protection_state": _s938_profit_protection_state,
+                    "profit_protection_armed": _s938_profit_protection_armed,
+                    "profit_protection_reduce": _s938_profit_protection_reduce,
+                    "profit_protection_strong": _s938_profit_protection_strong,
+                    "profit_protection_pressure": _s938_pressure,
+                    "profit_protection_pressure_distance_pct": _s938_pressure_distance_pct,
+                    "profit_protection_recent_peak": _s938_peak20,
+                    "profit_protection_drawdown_pct": _s938_drawdown_pct,
+                    "profit_protection_peak_gain_pct": _s938_peak_gain_pct,
                     "early_entry_state": _s19_early_state,
                     "early_entry_state_zh": _s19_early_state_zh,
                     "early_entry_score": _s19_early_score,
@@ -7460,6 +7618,12 @@ if stock_input:
             def _execution_from_common_strategy_v929(common_strategy, raw_action, holding):
                 s = str(common_strategy or "").strip()
                 raw = str(raw_action or "").strip()
+
+                # v9.38：持股專屬獲利/部位管理可以和偏多股票主策略並存。
+                if holding and raw in {
+                    "獲利保護減碼", "獲利減碼", "部位減碼"
+                }:
+                    return raw
 
                 if s == "可建立部位":
                     if holding:
@@ -8552,6 +8716,8 @@ if stock_input:
                     _hold_protect > 0 and _hold_price <= _hold_protect
                 ):
                     _hold_health = "防守"
+                elif _execution_action_v927 == "獲利保護減碼":
+                    _hold_health = "獲利保護"
                 elif _execution_action_v927 in {"獲利減碼", "部位減碼"}:
                     _hold_health = "健康管理"
                 elif _hold_signal_score >= 4:
@@ -8592,12 +8758,42 @@ if stock_input:
                     _health_parts.append(f"{'✅' if _ok else '⚠️'} {_name}")
                 st.caption("持股健康度依據：" + "｜".join(_health_parts))
 
+                # v9.38：獲利保護／前高壓力
+                _pp_state_v938 = str(_p18.get("profit_protection_state", "未啟動") or "未啟動")
+                _pp_pressure_v938 = float(_p18.get("profit_protection_pressure", 0) or 0)
+                _pp_peak_v938 = float(_p18.get("profit_protection_recent_peak", 0) or 0)
+                _pp_dd_v938 = float(_p18.get("profit_protection_drawdown_pct", 0) or 0)
+
+                st.markdown("### 獲利保護／前高壓力")
+                _pp1, _pp2, _pp3, _pp4 = st.columns(4)
+                _pp1.metric("獲利保護狀態", _pp_state_v938)
+                _pp2.metric(
+                    "前高／壓力",
+                    f"{_pp_pressure_v938:,.2f} 元" if _pp_pressure_v938 > 0 else "待建立"
+                )
+                _pp3.metric(
+                    "近期高點",
+                    f"{_pp_peak_v938:,.2f} 元" if _pp_peak_v938 > 0 else "資料不足"
+                )
+                _pp4.metric("自近期高點回撤", f"{_pp_dd_v938:.2f}%")
+
+                st.caption(
+                    "規則：已有至少5%浮盈且接近前高／壓力，或近期高點獲利達8%，"
+                    "即啟動獲利保護；之後從近期高點回撤達4%或完成日K突破失敗，"
+                    "會提早給出獲利保護減碼，不必等到大波段防守價。"
+                )
+
                 _holding_mgmt_action_v927 = str(_p18.get("holding_management_action", "") or "")
                 _holding_mgmt_reason_v927 = str(_p18.get("holding_management_reason", "") or "")
                 if _holding_mgmt_action_v927:
-                    st.info(
-                        f"部位管理建議：{_holding_mgmt_action_v927}｜{_holding_mgmt_reason_v927}"
-                    )
+                    if _holding_mgmt_action_v927 == "獲利保護減碼":
+                        st.warning(
+                            f"部位管理建議：{_holding_mgmt_action_v927}｜{_holding_mgmt_reason_v927}"
+                        )
+                    else:
+                        st.info(
+                            f"部位管理建議：{_holding_mgmt_action_v927}｜{_holding_mgmt_reason_v927}"
+                        )
                     st.caption("此為持股專屬的部位／獲利管理，不代表股票主策略轉弱。")
 
                 # v9.1：已持股改為「出場價格」導向
