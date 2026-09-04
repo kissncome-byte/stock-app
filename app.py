@@ -4991,7 +4991,7 @@ def resolve_daily_strategy_lock(
     sid = str(stock_id)
     # v9.27：同一股票同一天只允許一個股票主策略，不再因 HELD/UNHELD 分裂。
     mode = "COMMON"
-    lock_version = "v938"
+    lock_version = "v939"
     session_key = f"_daily_strategy_lock_{lock_version}_{sid}_{today}"
     db_mode = f"COMMON_{lock_version.upper()}"
 
@@ -5282,7 +5282,7 @@ with st.sidebar:
 
     st.caption("自選清單會寫入目前網址；建議把這個網址加入瀏覽器書籤。")
 
-st.markdown("## 🧭 StockPilot Beta v9.38｜個股操作決策")
+st.markdown("## 🧭 StockPilot Beta v9.39｜個股操作決策")
 st.caption("主決策優先；盤中即時價格只更新執行狀態。")
 
 # v9.23：操作輸入壓縮成一排，避免上半段先被表單吃掉大量高度。
@@ -6917,10 +6917,13 @@ if stock_input:
                     user_holding
                     and _s18_current_shares > 0
                     and _s938_cost > 0
+                    # v9.39：獲利保護只能在「目前仍有浮盈」時存在。
+                    # 一旦現價跌回成本以下，自動退出獲利保護，回歸趨勢/防守判斷。
+                    and _s938_current_pnl_pct is not None
+                    and _s938_current_pnl_pct > 0
                     and (
                         (
-                            _s938_current_pnl_pct is not None
-                            and _s938_current_pnl_pct >= 5.0
+                            _s938_current_pnl_pct >= 5.0
                             and _s938_near_pressure_now
                         )
                         or (
@@ -6961,7 +6964,14 @@ if stock_input:
                 )
 
                 _s938_profit_protection_state = "未啟動"
-                if _s938_profit_protection_armed:
+                if (
+                    user_holding
+                    and _s18_current_shares > 0
+                    and _s938_current_pnl_pct is not None
+                    and _s938_current_pnl_pct <= 0
+                ):
+                    _s938_profit_protection_state = "未啟動・目前無浮盈"
+                elif _s938_profit_protection_armed:
                     _s938_profit_protection_state = "已啟動・保護獲利"
                 if _s938_profit_protection_reduce:
                     _s938_profit_protection_state = "觸發減碼"
@@ -7307,6 +7317,12 @@ if stock_input:
                     "profit_protection_recent_peak": _s938_peak20,
                     "profit_protection_drawdown_pct": _s938_drawdown_pct,
                     "profit_protection_peak_gain_pct": _s938_peak_gain_pct,
+                    "profit_protection_line": (
+                        floor_to_tick(_s938_peak20 * 0.96, tick_size(_s938_peak20))
+                        if _s938_peak20 > 0 and _s938_cost > 0
+                        and _s938_peak20 * 0.96 > _s938_cost
+                        else 0.0
+                    ),
                     "early_entry_state": _s19_early_state,
                     "early_entry_state_zh": _s19_early_state_zh,
                     "early_entry_score": _s19_early_score,
@@ -8120,10 +8136,10 @@ if stock_input:
 
                     x1,x2,x3 = st.columns(3)
                     x1.metric(
-                        "第一出場價",
+                        "第一獲利目標",
                         f"{_exit1_v915:,.2f} 元" if _exit1_v915 > 0 else "待建立"
                     )
-                    x2.metric("第二出場價", f"{_exit2_v915:,.2f} 元" if _exit2_v915 > _exit1_v915 > 0 else "待建立")
+                    x2.metric("第二獲利目標", f"{_exit2_v915:,.2f} 元" if _exit2_v915 > _exit1_v915 > 0 else "待建立")
                     x3.metric("交易防守價", f"{_defense_v915:,.2f} 元" if _defense_v915 > 0 else "待建立")
 
                     if _force_exit_v915 > 0:
@@ -8598,7 +8614,7 @@ if stock_input:
                 elif _state_now == "正式進場":
                     st.write(
                         "**下一步：**依上方正式進場交易計畫的建議進場區建立第一筆部位；"
-                        "若已超過追價上限則不追價。進場後依第一／第二出場價分批獲利，"
+                        "若已超過追價上限則不追價。進場後依第一／第二獲利目標分批獲利，"
                         "跌破防守／失效價則執行風控。"
                     )
                 elif _entry_display_state_v98 == "等待轉強確認・暫不進場":
@@ -8777,11 +8793,17 @@ if stock_input:
                 )
                 _pp4.metric("自近期高點回撤", f"{_pp_dd_v938:.2f}%")
 
-                st.caption(
-                    "規則：已有至少5%浮盈且接近前高／壓力，或近期高點獲利達8%，"
-                    "即啟動獲利保護；之後從近期高點回撤達4%或完成日K突破失敗，"
-                    "會提早給出獲利保護減碼，不必等到大波段防守價。"
-                )
+                if _hold_pnl_pct is not None and _hold_pnl_pct <= 0:
+                    st.caption(
+                        "目前股價已低於持股成本，因此獲利保護自動停用；"
+                        "後續完全回歸趨勢、籌碼、支撐與風控價格判斷。"
+                    )
+                else:
+                    st.caption(
+                        "規則：目前仍有浮盈，且已有至少5%浮盈並接近前高／壓力，"
+                        "或近期高點獲利達8%，才啟動獲利保護；"
+                        "高點回撤達4%或完成日K突破失敗時提早減碼。"
+                    )
 
                 _holding_mgmt_action_v927 = str(_p18.get("holding_management_action", "") or "")
                 _holding_mgmt_reason_v927 = str(_p18.get("holding_management_reason", "") or "")
@@ -8797,12 +8819,12 @@ if stock_input:
                     st.caption("此為持股專屬的部位／獲利管理，不代表股票主策略轉弱。")
 
                 # v9.1：已持股改為「出場價格」導向
-                # 第一/第二出場價屬獲利了結路徑；防守/強制出場價屬風控路徑。
+                # 第一/第二獲利目標屬獲利了結路徑；防守/強制出場價屬風控路徑。
                 _hold_exit1 = _hold_target1 if _hold_target1 > 0 else 0.0
                 _hold_exit2 = _hold_target2 if _hold_target2 > _hold_exit1 else 0.0
 
-                # v9.2：加碼價與第一出場價互斥。
-                # 加碼後若到第一出場價的剩餘空間不足 5%，不提供加碼訊號，
+                # v9.2：加碼價與第一獲利目標互斥。
+                # 加碼後若到第一獲利目標的剩餘空間不足 5%，不提供加碼訊號，
                 # 避免「剛加碼就準備出場」的矛盾。
                 _hold_add_raw = _hold_add
                 _hold_add_room_pct = (
@@ -8824,30 +8846,61 @@ if stock_input:
                     if _hold_protect > 0 else "待建立"
                 )
 
-                st.markdown("### 出場價格")
-                k1, k2, k3, k4, k5 = st.columns(5)
-                k1.metric(
-                    "第一出場價",
-                    f"{_hold_exit1:,.2f} 元" if _hold_exit1 > 0 else "待建立"
+                # v9.39：獲利目標與風控價格不再混稱「出場價格」。
+                # 上方目標回答「若重新走強，哪裡考慮落袋」；
+                # 下方風控回答「若走弱，哪裡必須減碼/退出」。
+                st.markdown("### 獲利目標（僅趨勢延續／重新轉強時參考）")
+                _pt1, _pt2, _pt3 = st.columns(3)
+                _pt1.metric(
+                    "第一獲利目標",
+                    f"{_hold_exit1:,.2f} 元" if _hold_exit1 > _hold_price > 0 else "待重新建立"
                 )
-                k2.metric(
-                    "第二出場價",
-                    f"{_hold_exit2:,.2f} 元" if _hold_exit2 > 0 else "待建立"
+                _pt2.metric(
+                    "第二獲利目標",
+                    f"{_hold_exit2:,.2f} 元" if _hold_exit2 > _hold_exit1 > 0 else "待重新建立"
                 )
-                k3.metric("最終出場", _hold_final_exit_label)
-                k4.metric(
+                _pt3.metric("趨勢延續", _hold_final_exit_label)
+
+                if _hold_pnl_pct is not None and _hold_pnl_pct <= 0:
+                    st.caption(
+                        "目前股價低於成本，以上是未來重新轉強後的獲利目標，"
+                        "不是現在叫你等到該價位才處理風險。現階段應優先看下方風控價格。"
+                    )
+                else:
+                    st.caption(
+                        "獲利目標只處理上漲後的落袋節奏；若價格轉弱，優先依下方風控價格處理。"
+                    )
+
+                st.markdown("### 風控／減碼價格")
+                _risk1, _risk2, _risk3 = st.columns(3)
+                _pp_line_v939 = float(_p18.get("profit_protection_line", 0) or 0)
+                _risk1.metric(
+                    "獲利保護減碼線",
+                    (
+                        f"{_pp_line_v939:,.2f} 元"
+                        if _pp_line_v939 > 0 and _hold_pnl_pct is not None and _hold_pnl_pct > 0
+                        else "目前不適用"
+                    )
+                )
+                _risk2.metric(
                     "防守出場價",
                     f"{_hold_protect:,.2f} 元" if _hold_protect > 0 else "待建立"
                 )
-                k5.metric(
+                _risk3.metric(
                     "強制出場價",
                     f"{_hold_structural:,.2f} 元" if _hold_structural > 0 else "待建立"
                 )
 
+                if _hold_pnl_pct is not None and _hold_pnl_pct <= 0:
+                    st.info(
+                        "目前已無浮盈，因此不使用『獲利保護減碼線』；"
+                        "持股操作只看主趨勢是否轉弱、籌碼/量價是否惡化，以及防守/強制出場價。"
+                    )
+
                 # 額外保留加碼資訊，但與出場價格做互斥檢查。
                 if _hold_add_blocked:
                     st.caption(
-                        f"加碼：目前不適用｜原確認價 {_hold_add_raw:,.2f} 元距第一出場價"
+                        f"加碼：目前不適用｜原確認價 {_hold_add_raw:,.2f} 元距第一獲利目標"
                         f"僅剩 {_hold_add_room_pct:.2f}% 空間，風險報酬不足。"
                     )
                 elif _hold_add > 0:
@@ -8869,7 +8922,7 @@ if stock_input:
                     )
                 if _hold_target1 > _hold_price > 0:
                     _position_notes.append(
-                        f"距第一出場價 {((_hold_target1 / _hold_price) - 1) * 100:+.2f}%"
+                        f"距第一獲利目標 {((_hold_target1 / _hold_price) - 1) * 100:+.2f}%"
                     )
                 if _position_notes:
                     st.info("目前位置：" + "｜".join(_position_notes))
@@ -8877,9 +8930,9 @@ if stock_input:
                 # 操作狀態提示
                 if _hold_exit1 > 0:
                     st.info(
-                        f"出場重點：目前 {_decision_now}｜第一出場價 {_hold_exit1:,.2f} 元"
+                        f"出場重點：目前 {_decision_now}｜第一獲利目標 {_hold_exit1:,.2f} 元"
                         + (
-                            f"｜第二出場價 {_hold_exit2:,.2f} 元"
+                            f"｜第二獲利目標 {_hold_exit2:,.2f} 元"
                             if _hold_exit2 > 0 else ""
                         )
                         + (
@@ -8898,7 +8951,7 @@ if stock_input:
                 elif _decision_now == "退場":
                     st.error("目前已進入退場條件，持股理由已失效或已觸發核心風控。")
                 else:
-                    st.success("目前沒有減碼或退場訊號，持股條件仍可維持。")
+                    st.success("目前未觸發防守或強制退出條件；是否減碼仍以目前執行動作與部位管理建議為準。")
 
                 # v9.3：出場比例不再固定 30%，改由持股健康度與訊號一致度動態決定。
                 # 健康且一致度高：讓獲利奔跑；轉弱或一致度下降：提早收回較多部位。
@@ -8938,7 +8991,7 @@ if stock_input:
                 elif _decision_now == "加碼":
                     _script_parts.append("目前：可評估加碼，但仍以出場價與風控價管理。")
                 else:
-                    _script_parts.append("目前：維持持有，等待第一出場價或風控條件觸發。")
+                    _script_parts.append("目前：維持持有，等待第一獲利目標或風控條件觸發。")
 
                 if _hold_exit1 > 0:
                     _script_parts.append(
@@ -8959,7 +9012,7 @@ if stock_input:
                     )
                 if _hold_add_blocked:
                     _script_parts.append(
-                        f"加碼：目前不適用。原加碼確認價 {_hold_add_raw:,.2f} 元距第一出場價"
+                        f"加碼：目前不適用。原加碼確認價 {_hold_add_raw:,.2f} 元距第一獲利目標"
                         f" {_hold_exit1:,.2f} 元僅 {_hold_add_room_pct:.2f}% 空間，不為了追價而硬加碼。"
                     )
                 elif _hold_add > 0:
