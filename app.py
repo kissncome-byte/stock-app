@@ -4991,7 +4991,7 @@ def resolve_daily_strategy_lock(
     sid = str(stock_id)
     # v9.27：同一股票同一天只允許一個股票主策略，不再因 HELD/UNHELD 分裂。
     mode = "COMMON"
-    lock_version = "v939"
+    lock_version = "v940"
     session_key = f"_daily_strategy_lock_{lock_version}_{sid}_{today}"
     db_mode = f"COMMON_{lock_version.upper()}"
 
@@ -5282,7 +5282,7 @@ with st.sidebar:
 
     st.caption("自選清單會寫入目前網址；建議把這個網址加入瀏覽器書籤。")
 
-st.markdown("## 🧭 StockPilot Beta v9.39｜個股操作決策")
+st.markdown("## 🧭 StockPilot Beta v9.40｜個股操作決策")
 st.caption("主決策優先；盤中即時價格只更新執行狀態。")
 
 # v9.23：操作輸入壓縮成一排，避免上半段先被表單吃掉大量高度。
@@ -8846,6 +8846,55 @@ if stock_input:
                     if _hold_protect > 0 else "待建立"
                 )
 
+                # v9.40：已持股先看「賣出計畫」，再看細部價格來源。
+                _sell_plan_parts_v940 = []
+
+                if _hold_exit1 > _hold_price > 0:
+                    _sell_plan_parts_v940.append(
+                        f"漲到 {_hold_exit1:,.2f} 元附近：先賣約 1/3"
+                    )
+
+                if _hold_exit2 > _hold_exit1 > 0:
+                    _sell_plan_parts_v940.append(
+                        f"漲到 {_hold_exit2:,.2f} 元附近：再賣約 1/3～1/2"
+                    )
+
+                _pp_line_plan_v940 = float(_p18.get("profit_protection_line", 0) or 0)
+                if (
+                    _pp_line_plan_v940 > 0
+                    and _hold_pnl_pct is not None
+                    and _hold_pnl_pct > 0
+                ):
+                    _sell_plan_parts_v940.append(
+                        f"跌破 {_pp_line_plan_v940:,.2f} 元：先減碼保護獲利"
+                    )
+
+                if _hold_protect > 0:
+                    _sell_plan_parts_v940.append(
+                        f"跌破 {_hold_protect:,.2f} 元：明確防守減碼"
+                    )
+
+                if _hold_structural > 0:
+                    _sell_plan_parts_v940.append(
+                        f"跌破 {_hold_structural:,.2f} 元：偏向全部退出"
+                    )
+
+                st.markdown("### 你的賣出計畫")
+                if _sell_plan_parts_v940:
+                    st.info(" ｜ ".join(_sell_plan_parts_v940))
+                else:
+                    st.info("目前尚未建立足夠可靠的賣出價位，先依主策略與風控條件管理。")
+
+                if _hold_pnl_pct is not None:
+                    if _hold_pnl_pct > 0:
+                        st.caption(
+                            "目前仍有浮盈：上漲看獲利目標；下跌優先看獲利保護與防守價。"
+                        )
+                    else:
+                        st.caption(
+                            "目前無浮盈：獲利保護線不適用，優先看防守出場價與強制出場價。"
+                        )
+
                 # v9.39：獲利目標與風控價格不再混稱「出場價格」。
                 # 上方目標回答「若重新走強，哪裡考慮落袋」；
                 # 下方風控回答「若走弱，哪裡必須減碼/退出」。
@@ -8869,6 +8918,31 @@ if stock_input:
                 else:
                     st.caption(
                         "獲利目標只處理上漲後的落袋節奏；若價格轉弱，優先依下方風控價格處理。"
+                    )
+
+                # v9.40：當下最重要的賣出觸發價，只給一個最接近現在的有效條件。
+                _next_sell_trigger_v940 = None
+                _next_sell_reason_v940 = ""
+
+                if (
+                    _pp_line_plan_v940 > 0
+                    and _hold_pnl_pct is not None
+                    and _hold_pnl_pct > 0
+                    and _hold_price > _pp_line_plan_v940
+                ):
+                    _next_sell_trigger_v940 = _pp_line_plan_v940
+                    _next_sell_reason_v940 = "獲利保護減碼"
+                elif _hold_protect > 0 and _hold_price > _hold_protect:
+                    _next_sell_trigger_v940 = _hold_protect
+                    _next_sell_reason_v940 = "防守減碼"
+                elif _hold_structural > 0 and _hold_price > _hold_structural:
+                    _next_sell_trigger_v940 = _hold_structural
+                    _next_sell_reason_v940 = "強制退出"
+
+                if _next_sell_trigger_v940 is not None:
+                    st.warning(
+                        f"目前最近的下方賣出觸發：{_next_sell_trigger_v940:,.2f} 元｜"
+                        f"{_next_sell_reason_v940}"
                     )
 
                 st.markdown("### 風控／減碼價格")
