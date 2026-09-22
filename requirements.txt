@@ -8,3 +8,4 @@ FinMind
 tqdm
 fastapi
 uvicorn
+mcp>=1.26.0
