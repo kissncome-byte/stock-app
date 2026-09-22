@@ -8,13 +8,13 @@ import pytz
 import requests
 from fastapi import FastAPI, HTTPException, Query
 from FinMind.data import DataLoader
-from mcp.server.fastmcp import FastMCP
+from mcp.server import MCPServer
 
 TZ = pytz.timezone("Asia/Taipei")
 FUGLE_TOKEN = os.getenv("FUGLE_TOKEN", "")
 FINMIND_TOKEN = os.getenv("FINMIND_TOKEN", "")
 
-app = FastAPI(title="Project Compass Market API", version="1.1.0")
+app = FastAPI(title="Project Compass Market API", version="1.1.1")
 
 
 def safe_float(x, default=0.0):
@@ -185,7 +185,7 @@ def portfolio_snapshot(stock_ids: list[str], otc_ids: list[str] | None = None) -
 
 @app.get("/")
 async def root():
-    return {"ok": True, "service": "Project Compass Market API", "version": "1.1.0", "mcp": "/mcp"}
+    return {"ok": True, "service": "Project Compass Market API", "version": "1.1.1", "mcp": "/mcp"}
 
 
 @app.get("/health")
@@ -206,7 +206,9 @@ async def portfolio(stocks: str = Query(...), otc: str = Query("")):
     )
 
 
-mcp = FastMCP(
+# MCP SDK v2 renamed FastMCP to MCPServer. Keep the MCP server focused on
+# read-only market data; it never executes trades or mutates user data.
+mcp = MCPServer(
     "Taiwan Stock Live Market",
     instructions=(
         "Read-only Taiwan stock market data for portfolio analysis. "
@@ -215,7 +217,6 @@ mcp = FastMCP(
         "Technical indicators are based on completed daily history; intraday OHLC and volume come from the live quote source. "
         "Do not execute trades."
     ),
-    stateless_http=True,
 )
 
 
@@ -231,7 +232,7 @@ def get_portfolio_quotes(stock_ids: list[str], otc_ids: list[str] | None = None)
     return portfolio_snapshot(stock_ids, otc_ids)
 
 
-# Mount the official MCP SDK's Streamable HTTP ASGI app at /mcp.
-# With FastAPI/Starlette mounting, the MCP transport is reachable at /mcp.
-mcp_app = mcp.streamable_http_app()
+# MCP SDK v2 transport options moved from the constructor to the ASGI builder.
+# Mounting the ASGI app is the supported way to serve MCP under a URL prefix.
+mcp_app = mcp.streamable_http_app(stateless_http=True)
 app.mount("/mcp", mcp_app)
