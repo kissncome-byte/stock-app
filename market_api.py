@@ -14,7 +14,7 @@ TZ = pytz.timezone("Asia/Taipei")
 FUGLE_TOKEN = os.getenv("FUGLE_TOKEN", "")
 FINMIND_TOKEN = os.getenv("FINMIND_TOKEN", "")
 
-app = FastAPI(title="Project Compass Market API", version="1.1.1")
+app = FastAPI(title="Project Compass Market API", version="1.1.2")
 
 
 def safe_float(x, default=0.0):
@@ -185,7 +185,7 @@ def portfolio_snapshot(stock_ids: list[str], otc_ids: list[str] | None = None) -
 
 @app.get("/")
 async def root():
-    return {"ok": True, "service": "Project Compass Market API", "version": "1.1.1", "mcp": "/mcp"}
+    return {"ok": True, "service": "Project Compass Market API", "version": "1.1.2", "mcp": "/mcp"}
 
 
 @app.get("/health")
@@ -206,8 +206,6 @@ async def portfolio(stocks: str = Query(...), otc: str = Query("")):
     )
 
 
-# MCP SDK v2 renamed FastMCP to MCPServer. Keep the MCP server focused on
-# read-only market data; it never executes trades or mutates user data.
 mcp = MCPServer(
     "Taiwan Stock Live Market",
     instructions=(
@@ -232,7 +230,7 @@ def get_portfolio_quotes(stock_ids: list[str], otc_ids: list[str] | None = None)
     return portfolio_snapshot(stock_ids, otc_ids)
 
 
-# MCP SDK v2 transport options moved from the constructor to the ASGI builder.
-# Mounting the ASGI app is the supported way to serve MCP under a URL prefix.
+# MCP's Streamable HTTP ASGI app already owns its `/mcp` route. Mount it at
+# the site root so the public endpoint is exactly /mcp (not /mcp/mcp).
 mcp_app = mcp.streamable_http_app(stateless_http=True)
-app.mount("/mcp", mcp_app)
+app.mount("/", mcp_app)
