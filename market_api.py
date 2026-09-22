@@ -8,12 +8,13 @@ import pytz
 import requests
 from fastapi import FastAPI, HTTPException, Query
 from FinMind.data import DataLoader
+from mcp.server.fastmcp import FastMCP
 
 TZ = pytz.timezone("Asia/Taipei")
 FUGLE_TOKEN = os.getenv("FUGLE_TOKEN", "")
 FINMIND_TOKEN = os.getenv("FINMIND_TOKEN", "")
 
-app = FastAPI(title="Project Compass Market API", version="1.0.1")
+app = FastAPI(title="Project Compass Market API", version="1.1.0")
 
 
 def safe_float(x, default=0.0):
@@ -158,11 +159,33 @@ def indicators(df: pd.DataFrame):
     return out
 
 
-# Async endpoints intentionally avoid Starlette/AnyIO's sync threadpool path.
-# This works around the Python 3.14 weakref/thread-limiter failure seen on Render.
+def stock_snapshot(stock_id: str, market: str = "TSE") -> dict:
+    sid = str(stock_id).strip()
+    if not sid or len(sid) > 10:
+        raise ValueError("Invalid stock id")
+    q = live_quote(sid, market)
+    q["indicators"] = indicators(history(sid))
+    q["server_time"] = datetime.now(TZ).isoformat()
+    return q
+
+
+def portfolio_snapshot(stock_ids: list[str], otc_ids: list[str] | None = None) -> dict:
+    ids = [str(x).strip() for x in stock_ids if str(x).strip()]
+    if not ids or len(ids) > 30:
+        raise ValueError("stock_ids must contain 1-30 ids")
+    otc_set = {str(x).strip() for x in (otc_ids or []) if str(x).strip()}
+    result = []
+    for sid in ids:
+        try:
+            result.append(stock_snapshot(sid, "OTC" if sid in otc_set else "TSE"))
+        except Exception as exc:
+            result.append({"stock_id": sid, "error": str(exc)})
+    return {"server_time": datetime.now(TZ).isoformat(), "count": len(result), "data": result}
+
+
 @app.get("/")
 async def root():
-    return {"ok": True, "service": "Project Compass Market API", "version": "1.0.1"}
+    return {"ok": True, "service": "Project Compass Market API", "version": "1.1.0", "mcp": "/mcp"}
 
 
 @app.get("/health")
@@ -172,28 +195,43 @@ async def health():
 
 @app.get("/quote/{stock_id}")
 async def quote(stock_id: str, market: str = Query("TSE")):
-    q = live_quote(stock_id, market)
-    df = history(stock_id)
-    q["indicators"] = indicators(df)
-    q["server_time"] = datetime.now(TZ).isoformat()
-    return q
+    return stock_snapshot(stock_id, market)
 
 
 @app.get("/portfolio")
-async def portfolio(
-    stocks: str = Query(..., description="Comma-separated stock ids"),
-    otc: str = Query("", description="Comma-separated OTC stock ids"),
-):
-    ids = [x.strip() for x in stocks.split(",") if x.strip()]
-    otc_ids = {x.strip() for x in otc.split(",") if x.strip()}
-    if not ids or len(ids) > 30:
-        raise HTTPException(status_code=400, detail="stocks must contain 1-30 ids")
-    result = []
-    for sid in ids:
-        try:
-            q = live_quote(sid, "OTC" if sid in otc_ids else "TSE")
-            q["indicators"] = indicators(history(sid))
-            result.append(q)
-        except Exception as exc:
-            result.append({"stock_id": sid, "error": str(exc)})
-    return {"server_time": datetime.now(TZ).isoformat(), "count": len(result), "data": result}
+async def portfolio(stocks: str = Query(...), otc: str = Query("")):
+    return portfolio_snapshot(
+        [x.strip() for x in stocks.split(",") if x.strip()],
+        [x.strip() for x in otc.split(",") if x.strip()],
+    )
+
+
+mcp = FastMCP(
+    "Taiwan Stock Live Market",
+    instructions=(
+        "Read-only Taiwan stock market data for portfolio analysis. "
+        "Use get_stock_quote for one security and get_portfolio_quotes for multiple securities. "
+        "Always inspect quote_time, source, and volume_valid before describing data as live. "
+        "Technical indicators are based on completed daily history; intraday OHLC and volume come from the live quote source. "
+        "Do not execute trades."
+    ),
+    stateless_http=True,
+)
+
+
+@mcp.tool()
+def get_stock_quote(stock_id: str, market: str = "TSE") -> dict:
+    """Get a read-only Taiwan stock snapshot with intraday price/OHLC/volume and completed-daily technical indicators. market may be TSE or OTC."""
+    return stock_snapshot(stock_id, market)
+
+
+@mcp.tool()
+def get_portfolio_quotes(stock_ids: list[str], otc_ids: list[str] | None = None) -> dict:
+    """Get read-only live snapshots and technical indicators for 1-30 Taiwan stock IDs in one call. Put OTC stock IDs in otc_ids."""
+    return portfolio_snapshot(stock_ids, otc_ids)
+
+
+# Mount the official MCP SDK's Streamable HTTP ASGI app at /mcp.
+# With FastAPI/Starlette mounting, the MCP transport is reachable at /mcp.
+mcp_app = mcp.streamable_http_app()
+app.mount("/mcp", mcp_app)
