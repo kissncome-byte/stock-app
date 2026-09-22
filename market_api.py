@@ -10,6 +10,7 @@ import requests
 from fastapi import FastAPI, HTTPException, Query
 from FinMind.data import DataLoader
 from mcp.server import MCPServer
+from mcp.server.transport_security import TransportSecuritySettings
 
 TZ = pytz.timezone("Asia/Taipei")
 FUGLE_TOKEN = os.getenv("FUGLE_TOKEN", "")
@@ -131,19 +132,24 @@ def get_portfolio_quotes(stock_ids:list[str],otc_ids:list[str]|None=None)->dict:
     """Get read-only live snapshots and technical indicators for 1-30 Taiwan stock IDs in one call. Put OTC stock IDs in otc_ids."""
     return portfolio_snapshot(stock_ids,otc_ids)
 
-mcp_app=mcp.streamable_http_app(stateless_http=True)
+security = TransportSecuritySettings(
+    enable_dns_rebinding_protection=True,
+    allowed_hosts=["stock-app-k17f.onrender.com", "stock-app-k17f.onrender.com:*"],
+    allowed_origins=["https://chatgpt.com", "https://chat.openai.com"],
+)
+mcp_app=mcp.streamable_http_app(stateless_http=True, transport_security=security)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # The MCP SDK requires its Streamable HTTP session manager to be running
-    # before it accepts initialize/tool requests.
-    async with mcp_app.lifespan(app):
+    # Mounted ASGI sub-app lifespans do not run automatically. The host app
+    # must explicitly run the MCP session manager for the full app lifetime.
+    async with mcp.session_manager.run():
         yield
 
-app=FastAPI(title="Project Compass Market API",version="1.1.3",lifespan=lifespan)
+app=FastAPI(title="Project Compass Market API",version="1.1.4",lifespan=lifespan)
 
 @app.get("/")
-async def root(): return {"ok":True,"service":"Project Compass Market API","version":"1.1.3","mcp":"/mcp"}
+async def root(): return {"ok":True,"service":"Project Compass Market API","version":"1.1.4","mcp":"/mcp"}
 
 @app.get("/health")
 async def health(): return {"ok":True,"time":datetime.now(TZ).isoformat()}
