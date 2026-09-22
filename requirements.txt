@@ -6,3 +6,5 @@ certifi
 pytz
 FinMind
 tqdm
+fastapi
+uvicorn
