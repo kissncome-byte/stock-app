@@ -13,7 +13,7 @@ TZ = pytz.timezone("Asia/Taipei")
 FUGLE_TOKEN = os.getenv("FUGLE_TOKEN", "")
 FINMIND_TOKEN = os.getenv("FINMIND_TOKEN", "")
 
-app = FastAPI(title="Project Compass Market API", version="1.0.0")
+app = FastAPI(title="Project Compass Market API", version="1.0.1")
 
 
 def safe_float(x, default=0.0):
@@ -117,7 +117,6 @@ def indicators(df: pd.DataFrame):
     high = df["high"].astype(float)
     low = df["low"].astype(float)
     vol = df["volume"].astype(float) if "volume" in df.columns else pd.Series(index=df.index, dtype=float)
-
     out = {}
     for n in (5, 10, 20, 60):
         if len(close) >= n:
@@ -125,14 +124,12 @@ def indicators(df: pd.DataFrame):
     for n in (5, 20, 60):
         if len(vol.dropna()) >= n:
             out[f"vol_ma{n}"] = round(float(vol.rolling(n).mean().iloc[-1] / 1000.0), 2)
-
     delta = close.diff()
     gain = delta.clip(lower=0).rolling(14).mean()
     loss = (-delta.clip(upper=0)).rolling(14).mean()
     rs = gain / loss.replace(0, np.nan)
     rsi = 100 - (100 / (1 + rs))
     out["rsi14"] = round(float(rsi.iloc[-1]), 2) if pd.notna(rsi.iloc[-1]) else None
-
     ema12 = close.ewm(span=12, adjust=False).mean()
     ema26 = close.ewm(span=26, adjust=False).mean()
     dif = ema12 - ema26
@@ -140,7 +137,6 @@ def indicators(df: pd.DataFrame):
     out["macd_dif"] = round(float(dif.iloc[-1]), 4)
     out["macd_signal"] = round(float(dea.iloc[-1]), 4)
     out["macd_hist"] = round(float((dif - dea).iloc[-1]), 4)
-
     ll9 = low.rolling(9).min()
     hh9 = high.rolling(9).max()
     rsv = (close - ll9) / (hh9 - ll9).replace(0, np.nan) * 100
@@ -148,12 +144,10 @@ def indicators(df: pd.DataFrame):
     d = k.ewm(alpha=1/3, adjust=False).mean()
     out["kd_k"] = round(float(k.iloc[-1]), 2) if pd.notna(k.iloc[-1]) else None
     out["kd_d"] = round(float(d.iloc[-1]), 2) if pd.notna(d.iloc[-1]) else None
-
     prev_close = close.shift(1)
     tr = pd.concat([(high-low).abs(), (high-prev_close).abs(), (low-prev_close).abs()], axis=1).max(axis=1)
     atr = tr.rolling(14).mean()
     out["atr14"] = round(float(atr.iloc[-1]), 4) if pd.notna(atr.iloc[-1]) else None
-
     out["res20"] = round(float(high.tail(20).max()), 4)
     out["sup20"] = round(float(low.tail(20).min()), 4)
     if len(df) >= 60:
@@ -164,13 +158,20 @@ def indicators(df: pd.DataFrame):
     return out
 
 
+# Async endpoints intentionally avoid Starlette/AnyIO's sync threadpool path.
+# This works around the Python 3.14 weakref/thread-limiter failure seen on Render.
+@app.get("/")
+async def root():
+    return {"ok": True, "service": "Project Compass Market API", "version": "1.0.1"}
+
+
 @app.get("/health")
-def health():
+async def health():
     return {"ok": True, "time": datetime.now(TZ).isoformat()}
 
 
 @app.get("/quote/{stock_id}")
-def quote(stock_id: str, market: str = Query("TSE")):
+async def quote(stock_id: str, market: str = Query("TSE")):
     q = live_quote(stock_id, market)
     df = history(stock_id)
     q["indicators"] = indicators(df)
@@ -179,7 +180,7 @@ def quote(stock_id: str, market: str = Query("TSE")):
 
 
 @app.get("/portfolio")
-def portfolio(
+async def portfolio(
     stocks: str = Query(..., description="Comma-separated stock ids"),
     otc: str = Query("", description="Comma-separated OTC stock ids"),
 ):
