@@ -37,14 +37,17 @@ class IntradayCandlesTests(unittest.TestCase):
         self.assertTrue(result["resistance_review"]["latest_confirmed_close_above"])
 
     def test_yahoo_fallback_converts_shares_to_lots(self):
-        ts = int((datetime.now(market_api.TZ) - timedelta(minutes=15)).timestamp())
+        start = datetime.now(market_api.TZ) - timedelta(minutes=15)
+        ts = int(start.replace(minute=start.minute - start.minute % 5, second=0, microsecond=0).timestamp())
         yahoo = {"chart": {"result": [{"meta": {"symbol": "2327.TW"},
-            "timestamp": [ts], "indicators": {"quote": [{"open": [100], "high": [102],
-                "low": [99], "close": [101], "volume": [3500]}]}}]}}
+            "timestamp": [ts, ts + 98], "indicators": {"quote": [{"open": [100, 101], "high": [102, 101],
+                "low": [99, 101], "close": [101, 101], "volume": [3500, 0]}]}}]}}
         with patch.object(market_api, "FUGLE_TOKEN", ""), patch.object(market_api.requests.Session, "get", return_value=Response(yahoo)):
             result = market_api.intraday_candles("2327")
         self.assertEqual(result["source"], "Yahoo Finance 2327.TW")
+        self.assertEqual(result["bar_count"], 1)
         self.assertEqual(result["bars"][0]["volume_lots"], 3.5)
+        self.assertIn("is_recent_for_intraday_decisions", result)
 
     def test_invalid_interval_and_no_data(self):
         with self.assertRaises(ValueError):

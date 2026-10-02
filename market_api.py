@@ -211,6 +211,8 @@ def intraday_candles(stock_id: str, market: str = "TSE", interval: str = "5",
     for raw in payload["data"]:
         try:
             bar_time = datetime.fromisoformat(raw["date"].replace("Z", "+00:00")).astimezone(TZ)
+            if source.startswith("Yahoo") and (bar_time.minute % int(interval) or bar_time.second or bar_time.microsecond):
+                continue  # Yahoo can append a non-aligned, zero-volume quote as a partial bar.
             prices = [float(raw[k]) for k in ("open", "high", "low", "close")]
             volume = float(raw["volume"])
             if not all(np.isfinite(x) and x > 0 for x in prices) or not np.isfinite(volume) or volume < 0:
@@ -230,11 +232,14 @@ def intraday_candles(stock_id: str, market: str = "TSE", interval: str = "5",
     selected = bars[-limit:]
     confirmed = [bar for bar in selected if datetime.fromisoformat(bar["time"]) + timedelta(minutes=int(interval)) <= now]
     last_bar_age_minutes = round((now - datetime.fromisoformat(selected[-1]["time"])).total_seconds() / 60, 1)
+    delay_minutes = round(max(0.0, last_bar_age_minutes - int(interval)), 1)
+    is_current_session = session_date == now.date().isoformat()
     output = {"stock_id": sid, "market_requested": market, "interval_minutes": int(interval),
-              "source": source, "session_date": session_date, "is_current_session": session_date == now.date().isoformat(),
+              "source": source, "session_date": session_date, "is_current_session": is_current_session,
               "server_time": now.isoformat(), "volume_unit": "lots", "bars": selected,
               "bar_count": len(selected), "confirmed_bar_count": len(confirmed),
-              "last_bar_age_minutes": last_bar_age_minutes,
+              "last_bar_age_minutes": last_bar_age_minutes, "estimated_data_delay_minutes": delay_minutes,
+              "is_recent_for_intraday_decisions": is_current_session and delay_minutes <= 10,
               "last_bar_complete": selected[-1] in confirmed}
     if resistance is not None:
         events = []
@@ -259,7 +264,7 @@ def intraday_candles(stock_id: str, market: str = "TSE", interval: str = "5",
 
 mcp = MCPServer(
     "Taiwan Stock Live Market",
-    instructions="Read-only Taiwan stock market data for portfolio analysis. Use get_stock_quote for one security, get_portfolio_quotes for multiple securities, and get_intraday_candles to inspect actual 1/5-minute OHLCV and resistance tests. Always inspect quote_time, source, is_current_session, and volume validity before describing data as live. The latest intraday bar may be incomplete; resistance_review counts touching bars, not independent attempts. Technical indicators are based on completed daily history. Do not execute trades.",
+    instructions="Read-only Taiwan stock market data for portfolio analysis. Use get_stock_quote for one security, get_portfolio_quotes for multiple securities, and get_intraday_candles to inspect actual 1/5-minute OHLCV and resistance tests. Always inspect quote_time, source, is_current_session, is_recent_for_intraday_decisions, estimated_data_delay_minutes, and volume validity before describing data as live. Never give current intraday signals from delayed bars. The latest intraday bar may be incomplete; resistance_review counts touching bars, not independent attempts. Technical indicators are based on completed daily history. Do not execute trades.",
 )
 
 
@@ -278,13 +283,13 @@ def get_portfolio_quotes(stock_ids: list[str], otc_ids: list[str] | None = None)
 @mcp.tool()
 def get_intraday_candles(stock_id: str, market: str = "TSE", interval: str = "5",
                          limit: int = 60, resistance: float | None = None) -> dict:
-    """Get today's 1/5-minute OHLCV (lots) and optional resistance touches and reclaim checks. Check is_current_session and last_bar_complete."""
+    """Get today's 1/5-minute OHLCV (lots) and optional resistance touches and reclaim checks. Check session date, delay, recency, and last_bar_complete."""
     return intraday_candles(stock_id, market, interval, limit, resistance)
 
 
 @mcp.custom_route("/", methods=["GET"])
 async def root(request: Request):
-    return JSONResponse({"ok": True, "service": "Project Compass Market API", "version": "1.2.0", "mcp": "/mcp"})
+    return JSONResponse({"ok": True, "service": "Project Compass Market API", "version": "1.2.1", "mcp": "/mcp"})
 
 
 @mcp.custom_route("/health", methods=["GET"])
