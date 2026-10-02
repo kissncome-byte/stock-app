@@ -145,9 +145,121 @@ def portfolio_snapshot(stock_ids: list[str], otc_ids: list[str] | None = None) -
     return {"server_time": datetime.now(TZ).isoformat(), "count": len(result), "data": result}
 
 
+def intraday_candles(stock_id: str, market: str = "TSE", interval: str = "5",
+                     limit: int = 60, resistance: float | None = None) -> dict:
+    """Return actual exchange-session bars, without inferring a pattern from a quote snapshot."""
+    sid = str(stock_id).strip()
+    if not sid.isdigit() or len(sid) > 10:
+        raise ValueError("Invalid stock id")
+    if interval not in ("1", "5"):
+        raise ValueError("interval must be 1 or 5 minutes")
+    if not 1 <= limit <= 390:
+        raise ValueError("limit must be between 1 and 390")
+    if resistance is not None and (not np.isfinite(resistance) or resistance <= 0):
+        raise ValueError("resistance must be a positive finite price")
+
+    suffixes = (".TWO", ".TW") if str(market).upper() in ("OTC", "TWO") else (".TW", ".TWO")
+    session = requests.Session()
+    session.headers.update({"User-Agent": "Mozilla/5.0"})
+    payload, source = None, None
+    if FUGLE_TOKEN:
+        try:
+            response = session.get(
+                f"https://api.fugle.tw/marketdata/v1.0/stock/intraday/candles/{sid}",
+                headers={"X-API-KEY": FUGLE_TOKEN}, params={"timeframe": interval}, timeout=6,
+            )
+            if response.ok:
+                candidate = response.json()
+                if candidate.get("data"):
+                    payload, source = candidate, "Fugle"
+        except (requests.RequestException, ValueError, TypeError):
+            pass
+
+    # The existing app already uses Yahoo chart data as a fallback. Only accept
+    # a symbol that exactly matches the requested market suffix and has bars.
+    if payload is None:
+        for suffix in suffixes:
+            try:
+                response = session.get(
+                    f"https://query2.finance.yahoo.com/v8/finance/chart/{sid}{suffix}",
+                    params={"interval": f"{interval}m", "range": "1d"}, timeout=6,
+                )
+                results = (response.json().get("chart", {}).get("result") or []) if response.ok else []
+                if not results:
+                    continue
+                result = results[0]
+                if result.get("meta", {}).get("symbol", "").upper() != f"{sid}{suffix}":
+                    continue
+                quote = (result.get("indicators", {}).get("quote") or [{}])[0]
+                timestamps = result.get("timestamp") or []
+                data = [
+                    {"date": datetime.fromtimestamp(ts, TZ).isoformat(),
+                     "open": quote["open"][i], "high": quote["high"][i],
+                     "low": quote["low"][i], "close": quote["close"][i],
+                     "volume": quote["volume"][i] / 1000 if quote["volume"][i] is not None else None}
+                    for i, ts in enumerate(timestamps)
+                ]
+                if data:
+                    payload, source = {"data": data}, f"Yahoo Finance {sid}{suffix}"
+                    break
+            except (requests.RequestException, ValueError, TypeError, KeyError, IndexError, ZeroDivisionError):
+                continue
+    if payload is None:
+        raise HTTPException(status_code=503, detail=f"No intraday candles available for {sid}")
+
+    bars = []
+    for raw in payload["data"]:
+        try:
+            bar_time = datetime.fromisoformat(raw["date"].replace("Z", "+00:00")).astimezone(TZ)
+            prices = [float(raw[k]) for k in ("open", "high", "low", "close")]
+            volume = float(raw["volume"])
+            if not all(np.isfinite(x) and x > 0 for x in prices) or not np.isfinite(volume) or volume < 0:
+                continue
+            bars.append({"time": bar_time.isoformat(), "open": prices[0], "high": prices[1],
+                         "low": prices[2], "close": prices[3], "volume_lots": volume})
+        except (KeyError, TypeError, ValueError, OverflowError):
+            continue
+    if not bars:
+        raise HTTPException(status_code=503, detail=f"No valid intraday candles available for {sid}")
+    bars.sort(key=lambda bar: bar["time"])
+    session_date = bars[-1]["time"][:10]
+    bars = [bar for bar in bars if bar["time"].startswith(session_date)]
+    # A bar beginning within the current interval may still change. Never
+    # count it as a confirmed breakout or failure.
+    now = datetime.now(TZ)
+    selected = bars[-limit:]
+    confirmed = [bar for bar in selected if datetime.fromisoformat(bar["time"]) + timedelta(minutes=int(interval)) <= now]
+    last_bar_age_minutes = round((now - datetime.fromisoformat(selected[-1]["time"])).total_seconds() / 60, 1)
+    output = {"stock_id": sid, "market_requested": market, "interval_minutes": int(interval),
+              "source": source, "session_date": session_date, "is_current_session": session_date == now.date().isoformat(),
+              "server_time": now.isoformat(), "volume_unit": "lots", "bars": selected,
+              "bar_count": len(selected), "confirmed_bar_count": len(confirmed),
+              "last_bar_age_minutes": last_bar_age_minutes,
+              "last_bar_complete": selected[-1] in confirmed}
+    if resistance is not None:
+        events = []
+        for bar in confirmed:
+            if bar["high"] >= resistance:
+                events.append({"time": bar["time"], "high": bar["high"], "close": bar["close"],
+                               "volume_lots": bar["volume_lots"],
+                               "closed_above": bar["close"] >= resistance})
+        output["resistance_review"] = {
+            "level": resistance, "touch_bars": events, "touch_bar_count": len(events),
+            "closes_above_count": sum(event["closed_above"] for event in events),
+            "closed_back_below_after_breakout": any(
+                confirmed[i]["close"] < resistance and
+                any(previous["close"] >= resistance for previous in confirmed[:i])
+                for i in range(len(confirmed))
+            ),
+            "latest_confirmed_close_above": confirmed[-1]["close"] >= resistance if confirmed else None,
+            "note": "觸及根數不等於獨立挑戰次數；請依 K 線間隔、收盤與成交量判讀。",
+        }
+    return output
+
+
 mcp = MCPServer(
     "Taiwan Stock Live Market",
-    instructions="Read-only Taiwan stock market data for portfolio analysis. Use get_stock_quote for one security and get_portfolio_quotes for multiple securities. Always inspect quote_time, source, and volume_valid before describing data as live. Technical indicators are based on completed daily history; intraday OHLC and volume come from the live quote source. Do not execute trades.",
+    instructions="Read-only Taiwan stock market data for portfolio analysis. Use get_stock_quote for one security, get_portfolio_quotes for multiple securities, and get_intraday_candles to inspect actual 1/5-minute OHLCV and resistance tests. Always inspect quote_time, source, is_current_session, and volume validity before describing data as live. The latest intraday bar may be incomplete; resistance_review counts touching bars, not independent attempts. Technical indicators are based on completed daily history. Do not execute trades.",
 )
 
 
@@ -163,9 +275,16 @@ def get_portfolio_quotes(stock_ids: list[str], otc_ids: list[str] | None = None)
     return portfolio_snapshot(stock_ids, otc_ids)
 
 
+@mcp.tool()
+def get_intraday_candles(stock_id: str, market: str = "TSE", interval: str = "5",
+                         limit: int = 60, resistance: float | None = None) -> dict:
+    """Get today's 1/5-minute OHLCV (lots) and optional resistance touches and reclaim checks. Check is_current_session and last_bar_complete."""
+    return intraday_candles(stock_id, market, interval, limit, resistance)
+
+
 @mcp.custom_route("/", methods=["GET"])
 async def root(request: Request):
-    return JSONResponse({"ok": True, "service": "Project Compass Market API", "version": "1.1.5", "mcp": "/mcp"})
+    return JSONResponse({"ok": True, "service": "Project Compass Market API", "version": "1.2.0", "mcp": "/mcp"})
 
 
 @mcp.custom_route("/health", methods=["GET"])
