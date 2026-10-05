@@ -1,5 +1,7 @@
 import os
 import time
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 
 import numpy as np
@@ -16,6 +18,8 @@ from starlette.responses import JSONResponse
 TZ = pytz.timezone("Asia/Taipei")
 FUGLE_TOKEN = os.getenv("FUGLE_TOKEN", "")
 FINMIND_TOKEN = os.getenv("FINMIND_TOKEN", "")
+_SCAN_CACHE: dict[tuple[str, int], tuple[float, dict]] = {}
+_SCAN_CACHE_LOCK = threading.Lock()
 
 
 def safe_float(x, default=0.0):
@@ -262,9 +266,216 @@ def intraday_candles(stock_id: str, market: str = "TSE", interval: str = "5",
     return output
 
 
+def _yahoo_screener(screen_id: str, count: int = 100) -> list[dict]:
+    """Use Yahoo Finance's free Taiwan predefined screens to seed a candidate pool."""
+    response = requests.get(
+        "https://query1.finance.yahoo.com/v1/finance/screener/predefined/saved",
+        params={"count": count, "offset": 0, "scrIds": screen_id, "region": "TW",
+                "lang": "zh-TW", "formatted": "false"},
+        headers={"User-Agent": "Mozilla/5.0"}, timeout=8,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    result = (payload.get("finance", {}).get("result") or [{}])[0]
+    return result.get("quotes") or []
+
+
+def _yahoo_daily_history(symbol: str, days: int = 100) -> list[dict]:
+    """Fetch completed daily bars for a Taiwan Yahoo symbol, using no paid API."""
+    now = datetime.now(TZ)
+    start = int((now - timedelta(days=days)).timestamp())
+    response = requests.get(
+        f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}",
+        params={"period1": start, "period2": int(now.timestamp()), "interval": "1d",
+                "events": "history"},
+        headers={"User-Agent": "Mozilla/5.0"}, timeout=8,
+    )
+    response.raise_for_status()
+    results = (response.json().get("chart", {}).get("result") or [])
+    if not results:
+        return []
+    result = results[0]
+    quote = (result.get("indicators", {}).get("quote") or [{}])[0]
+    bars = []
+    for i, ts in enumerate(result.get("timestamp") or []):
+        try:
+            day = datetime.fromtimestamp(ts, TZ).date().isoformat()
+            values = {key: (quote.get(key) or [])[i] for key in ("open", "high", "low", "close", "volume")}
+            if day >= now.date().isoformat():
+                continue  # never treat today's still-forming daily bar as completed history
+            if any(value is None for value in values.values()):
+                continue
+            bars.append({"date": day, **{key: float(value) for key, value in values.items()}})
+        except (IndexError, TypeError, ValueError, OverflowError):
+            continue
+    return bars
+
+
+def _tick_size(price: float) -> float:
+    if price >= 1000:
+        return 5.0
+    if price >= 500:
+        return 1.0
+    if price >= 100:
+        return 0.5
+    if price >= 50:
+        return 0.1
+    if price >= 10:
+        return 0.05
+    return 0.01
+
+
+def _analyze_scan_quote(quote: dict, active_rank: int) -> dict | None:
+    symbol = str(quote.get("symbol", "")).upper()
+    if not (symbol.endswith(".TW") or symbol.endswith(".TWO")):
+        return None
+    stock_id = symbol.rsplit(".", 1)[0]
+    if not stock_id.isdigit() or quote.get("quoteType", "EQUITY") != "EQUITY":
+        return None
+    price = safe_float(quote.get("regularMarketPrice"))
+    change_pct = safe_float(quote.get("regularMarketChangePercent"), float("nan"))
+    if price <= 0 or not np.isfinite(change_pct) or not -1.5 <= change_pct <= 4.0:
+        return None  # look for early setups; skip sharp open gaps and already-running names
+    try:
+        bars = _yahoo_daily_history(symbol)
+    except (requests.RequestException, ValueError, TypeError, KeyError):
+        return None
+    if len(bars) < 40:
+        return None
+
+    closes = np.asarray([bar["close"] for bar in bars], dtype=float)
+    highs = np.asarray([bar["high"] for bar in bars], dtype=float)
+    lows = np.asarray([bar["low"] for bar in bars], dtype=float)
+    volumes = np.asarray([bar["volume"] for bar in bars], dtype=float)
+    ma5 = float(np.mean(closes[-5:]))
+    ma20 = float(np.mean(closes[-20:]))
+    prior_ma20 = float(np.mean(closes[-40:-20]))
+    resistance = float(np.max(highs[-20:]))
+    support = float(np.min(lows[-20:]))
+    distance_to_resistance_pct = (resistance / price - 1) * 100
+    five_day_return_pct = (closes[-1] / closes[-6] - 1) * 100
+    average_volume_lots = float(np.mean(volumes[-20:]) / 1000)
+    range_pct = (resistance / support - 1) * 100 if support > 0 else float("inf")
+    ma20_rising = ma20 > prior_ma20 * 1.002
+
+    # This is a deliberately conservative watchlist filter, not an auto-buy signal.
+    if not ma20_rising or price < ma20 * 0.98 or price > ma20 * 1.12:
+        return None
+    if not 0 <= distance_to_resistance_pct <= 5.0 or not -4 <= five_day_return_pct <= 8:
+        return None
+    if range_pct > 20 or average_volume_lots < 100:
+        return None
+
+    trend_score = 30 if ma5 >= ma20 else 20
+    distance_score = max(0, 25 - int(distance_to_resistance_pct * 5))
+    range_score = max(0, 15 - int(range_pct * 0.5))
+    change_score = max(0, 15 - int(abs(change_pct - 1.0) * 3))
+    volume_score = max(0, 15 - min(14, active_rank // 5))
+    score = trend_score + distance_score + range_score + change_score + volume_score
+    tick = _tick_size(resistance)
+    entry_trigger = round(round((resistance + tick) / tick) * tick, 2)
+    return {
+        "stock_id": stock_id,
+        "symbol": symbol,
+        "name": quote.get("shortName") or quote.get("longName") or stock_id,
+        "market": "OTC" if symbol.endswith(".TWO") else "TSE",
+        "price": price,
+        "change_percent": round(change_pct, 2),
+        "volume_lots_so_far": round(safe_float(quote.get("regularMarketVolume")) / 1000, 1),
+        "active_rank": active_rank,
+        "last_completed_daily_date": bars[-1]["date"],
+        "ma5": round(ma5, 2),
+        "ma20": round(ma20, 2),
+        "ma20_rising": ma20_rising,
+        "five_day_return_percent": round(five_day_return_pct, 2),
+        "range_20d_percent": round(range_pct, 2),
+        "resistance_20d": round(resistance, 2),
+        "support_20d": round(support, 2),
+        "distance_to_resistance_percent": round(distance_to_resistance_pct, 2),
+        "average_volume_20d_lots": round(average_volume_lots, 1),
+        "breakout_trigger_to_watch": entry_trigger,
+        "score": score,
+        "reason": "日線整理且月線方向改善，現價接近近20日壓力；須再用即時1/5分K確認量價，不是買進訊號。",
+    }
+
+
+def _scan_prebreakout_candidates(market: str = "ALL", limit: int = 10) -> dict:
+    """Screen a free Yahoo Taiwan activity pool for early-stage technical setups."""
+    market = str(market).upper()
+    if market not in ("ALL", "TSE", "OTC"):
+        raise ValueError("market must be ALL, TSE, or OTC")
+    if not 1 <= int(limit) <= 20:
+        raise ValueError("limit must be between 1 and 20")
+    cache_key = (market, int(limit))
+    now_epoch = time.time()
+    with _SCAN_CACHE_LOCK:
+        cached = _SCAN_CACHE.get(cache_key)
+        if cached and now_epoch - cached[0] < 180:
+            result = dict(cached[1])
+            result["cache_age_seconds"] = round(now_epoch - cached[0], 1)
+            return result
+
+    screen_rows: list[tuple[dict, int]] = []
+    screen_errors = []
+    for screen_id in ("most_actives", "day_gainers"):
+        try:
+            rows = _yahoo_screener(screen_id, count=100)
+            screen_rows.extend((row, rank) for rank, row in enumerate(rows, start=1))
+        except (requests.RequestException, ValueError, TypeError, KeyError) as exc:
+            screen_errors.append(f"{screen_id}: {type(exc).__name__}")
+    if not screen_rows:
+        raise HTTPException(status_code=503, detail="免費市場排行目前無法取得，稍後再試")
+
+    # Keep the best (smallest) rank for duplicates and exclude unrelated instruments.
+    unique: dict[str, tuple[dict, int]] = {}
+    for quote, rank in screen_rows:
+        symbol = str(quote.get("symbol", "")).upper()
+        if market == "TSE" and not symbol.endswith(".TW"):
+            continue
+        if market == "OTC" and not symbol.endswith(".TWO"):
+            continue
+        if symbol not in unique or rank < unique[symbol][1]:
+            unique[symbol] = (quote, rank)
+
+    # Histories are fetched only for active, moderately moving stocks, in parallel,
+    # so a free scan does not issue requests for every Taiwan-listed security.
+    pool = sorted(unique.values(), key=lambda item: (item[1], -safe_float(item[0].get("regularMarketVolume"))))[:80]
+    candidates = []
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        futures = {executor.submit(_analyze_scan_quote, quote, rank): quote for quote, rank in pool}
+        for future in as_completed(futures):
+            try:
+                candidate = future.result()
+                if candidate:
+                    candidates.append(candidate)
+            except Exception:
+                continue
+    candidates.sort(key=lambda row: (-row["score"], row["active_rank"], row["distance_to_resistance_percent"]))
+    result = {
+        "server_time": datetime.now(TZ).isoformat(),
+        "source": "Yahoo Finance free predefined screeners + completed daily candles",
+        "market": market,
+        "screeners": ["most_actives", "day_gainers"],
+        "candidate_pool_count": len(unique),
+        "history_checked_count": len(pool),
+        "candidate_count": min(int(limit), len(candidates)),
+        "data_limitations": [
+            "免費排行只涵蓋成交活躍與漲幅排行的候選池，不等於全市場逐檔掃描，仍可能漏掉尚未進入排行的整理股。",
+            "日線使用最近一根已完成交易日；排行與盤中報價可能延遲，進場前須用台股查詢核對即時報價及1/5分K。",
+            "此 action 只產生觀察候選，不構成買進訊號。",
+        ],
+        "screen_errors": screen_errors,
+        "candidates": candidates[:int(limit)],
+    }
+    with _SCAN_CACHE_LOCK:
+        _SCAN_CACHE[cache_key] = (now_epoch, result)
+    return result
+
+
+
 mcp = MCPServer(
     "Taiwan Stock Live Market",
-    instructions="Read-only Taiwan stock market data for portfolio analysis. Use get_stock_quote for one security, get_portfolio_quotes for multiple securities, and get_intraday_candles to inspect actual 1/5-minute OHLCV and resistance tests. Always inspect quote_time, source, is_current_session, is_recent_for_intraday_decisions, estimated_data_delay_minutes, and volume validity before describing data as live. Never give current intraday signals from delayed bars. The latest intraday bar may be incomplete; resistance_review counts touching bars, not independent attempts. Technical indicators are based on completed daily history. Do not execute trades.",
+    instructions="Read-only Taiwan stock market data for portfolio analysis. Use scan_prebreakout_candidates for a free initial watchlist, then verify finalists with get_stock_quote, get_portfolio_quotes, and get_intraday_candles. The scan uses Yahoo Finance free most-actives and day-gainers pools and is not exhaustive; it may miss quiet basing stocks. Scan results are watchlist candidates, never buy signals. Use get_stock_quote for one security, get_portfolio_quotes for multiple securities, and get_intraday_candles to inspect actual 1/5-minute OHLCV and resistance tests. Always inspect quote_time, source, is_current_session, is_recent_for_intraday_decisions, estimated_data_delay_minutes, and volume validity before describing data as live. Never give current intraday signals from delayed bars. The latest intraday bar may be incomplete; resistance_review counts touching bars, not independent attempts. Technical indicators are based on completed daily history. Do not execute trades.",
 )
 
 
@@ -287,9 +498,15 @@ def get_intraday_candles(stock_id: str, market: str = "TSE", interval: str = "5"
     return intraday_candles(stock_id, market, interval, limit, resistance)
 
 
+
+@mcp.tool()
+def scan_prebreakout_candidates(market: str = "ALL", limit: int = 10) -> dict:
+    """Free initial Taiwan stock scan for consolidating, near-resistance candidates. Uses Yahoo Finance most-actives/day-gainers plus daily candles; not exhaustive and never a buy signal. Verify finalists with live quotes and intraday candles."""
+    return _scan_prebreakout_candidates(market, limit)
+
 @mcp.custom_route("/", methods=["GET"])
 async def root(request: Request):
-    return JSONResponse({"ok": True, "service": "Project Compass Market API", "version": "1.2.1", "mcp": "/mcp"})
+    return JSONResponse({"ok": True, "service": "Project Compass Market API", "version": "1.3.0", "mcp": "/mcp"})
 
 
 @mcp.custom_route("/health", methods=["GET"])
