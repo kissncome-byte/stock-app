@@ -334,7 +334,7 @@ def _analyze_scan_quote(quote: dict, active_rank: int) -> dict | None:
         return None
     price = safe_float(quote.get("regularMarketPrice"))
     change_pct = safe_float(quote.get("regularMarketChangePercent"), float("nan"))
-    if price <= 0 or not np.isfinite(change_pct) or not -1.5 <= change_pct <= 4.0:
+    if price <= 0 or not np.isfinite(change_pct) or not -2.5 <= change_pct <= 5.0:
         return None  # look for early setups; skip sharp open gaps and already-running names
     try:
         bars = _yahoo_daily_history(symbol)
@@ -358,12 +358,26 @@ def _analyze_scan_quote(quote: dict, active_rank: int) -> dict | None:
     range_pct = (resistance / support - 1) * 100 if support > 0 else float("inf")
     ma20_rising = ma20 > prior_ma20 * 1.002
 
-    # This is a deliberately conservative watchlist filter, not an auto-buy signal.
-    if not ma20_rising or price < ma20 * 0.98 or price > ma20 * 1.12:
-        return None
-    if not 0 <= distance_to_resistance_pct <= 5.0 or not -4 <= five_day_return_pct <= 8:
-        return None
-    if range_pct > 20 or average_volume_lots < 100:
+    # Keep a strict tier for near-breakout setups and a broader tier for earlier
+    # bases. Both are watchlist candidates, never automatic buy signals.
+    strict_setup = (
+        ma20_rising
+        and ma20 * 0.98 <= price <= ma20 * 1.12
+        and 0 <= distance_to_resistance_pct <= 5.0
+        and -4 <= five_day_return_pct <= 8
+        and range_pct <= 20
+        and average_volume_lots >= 100
+        and -1.5 <= change_pct <= 4.0
+    )
+    broader_setup = (
+        ma20 >= prior_ma20 * 0.99
+        and ma20 * 0.95 <= price <= ma20 * 1.15
+        and 0 <= distance_to_resistance_pct <= 8.0
+        and -7 <= five_day_return_pct <= 12
+        and range_pct <= 28
+        and average_volume_lots >= 50
+    )
+    if not (strict_setup or broader_setup):
         return None
 
     trend_score = 30 if ma5 >= ma20 else 20
@@ -372,6 +386,8 @@ def _analyze_scan_quote(quote: dict, active_rank: int) -> dict | None:
     change_score = max(0, 15 - int(abs(change_pct - 1.0) * 3))
     volume_score = max(0, 15 - min(14, active_rank // 5))
     score = trend_score + distance_score + range_score + change_score + volume_score
+    if not strict_setup:
+        score = max(0, score - 12)
     tick = _tick_size(resistance)
     entry_trigger = round(round((resistance + tick) / tick) * tick, 2)
     return {
@@ -394,8 +410,14 @@ def _analyze_scan_quote(quote: dict, active_rank: int) -> dict | None:
         "distance_to_resistance_percent": round(distance_to_resistance_pct, 2),
         "average_volume_20d_lots": round(average_volume_lots, 1),
         "breakout_trigger_to_watch": entry_trigger,
+        "setup_grade": "A" if strict_setup else "B",
+        "setup_label": "接近突破" if strict_setup else "提前觀察",
         "score": score,
-        "reason": "日線整理且月線方向改善，現價接近近20日壓力；須再用即時1/5分K確認量價，不是買進訊號。",
+        "reason": (
+            "月線方向改善、日線整理且接近近20日壓力；須用即時1/5分K確認量價，不是買進訊號。"
+            if strict_setup else
+            "條件較寬的提前觀察名單，趨勢或距壓力尚未完全符合A級；須再核對量價與風險，不是買進訊號。"
+        ),
     }
 
 
