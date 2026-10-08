@@ -173,6 +173,95 @@ def portfolio_snapshot(stock_ids: list[str], otc_ids: list[str] | None = None) -
     return {"server_time": datetime.now(TZ).isoformat(), "count": len(result), "data": result}
 
 
+def _recent_trade_totals(trades: list[dict], cutoff_us: int, resistance: float | None = None) -> dict:
+    inner = outer = unclassified = above_resistance = 0.0
+    recent = []
+    for trade in trades:
+        when = trade.get("time")
+        if not isinstance(when, (int, float)) or when < cutoff_us:
+            continue
+        price = safe_float(trade.get("price"))
+        size = safe_float(trade.get("size"))
+        if price <= 0 or size <= 0:
+            continue
+        recent.append((int(when), price, size))
+        bid, ask = trade.get("bid"), trade.get("ask")
+        if ask is not None and price >= safe_float(ask) > 0:
+            outer += size
+        elif bid is not None and 0 < price <= safe_float(bid):
+            inner += size
+        else:
+            unclassified += size
+        if resistance is not None and price >= resistance:
+            above_resistance += size
+    recent.sort()
+    return {
+        "inner_volume_lots": inner, "outer_volume_lots": outer,
+        "unclassified_volume_lots": unclassified,
+        "outer_share_percent": round(outer / (inner + outer) * 100, 2) if inner + outer else None,
+        "first_trade_price": recent[0][1] if recent else None,
+        "last_trade_price": recent[-1][1] if recent else None,
+        "trade_count": len(recent),
+        "volume_at_or_above_resistance_lots": above_resistance if resistance is not None else None,
+    }
+
+
+def recent_trade_pressure(stock_id: str, window_minutes: int = 15,
+                          resistance: float | None = None) -> dict:
+    """Inspect actual recent trades without mistaking cumulative daily flow for current pressure."""
+    sid = str(stock_id).strip()
+    if not sid.isdigit() or len(sid) > 10:
+        raise ValueError("Invalid stock id")
+    if window_minutes not in (5, 10, 15):
+        raise ValueError("window_minutes must be 5, 10, or 15")
+    if resistance is not None and (not np.isfinite(resistance) or resistance <= 0):
+        raise ValueError("resistance must be a positive finite price")
+    if not FUGLE_TOKEN:
+        return {"stock_id": sid, "available": False, "reason": "FUGLE_TOKEN unavailable"}
+    now = datetime.now(TZ)
+    cutoff_us = int((now - timedelta(minutes=window_minutes)).timestamp() * 1_000_000)
+    page_size, max_pages = 500, 6
+    trades = []
+    window_complete = False
+    session = requests.Session()
+    for page in range(max_pages):
+        try:
+            response = session.get(
+                f"https://api.fugle.tw/marketdata/v1.0/stock/intraday/trades/{sid}",
+                headers={"X-API-KEY": FUGLE_TOKEN},
+                params={"sort": "desc", "offset": page * page_size, "limit": page_size},
+                timeout=6,
+            )
+            response.raise_for_status()
+            payload = response.json()
+            rows = payload.get("data", [])
+            if not isinstance(rows, list):
+                raise ValueError("Unexpected Fugle trades response")
+        except (requests.RequestException, ValueError) as exc:
+            return {"stock_id": sid, "available": False, "reason": str(exc),
+                    "note": "Recent trade data unavailable; do not infer recent inner/outer flow."}
+        trades.extend(rows)
+        if not rows or len(rows) < page_size:
+            window_complete = True
+            break
+        oldest = rows[-1].get("time")
+        if isinstance(oldest, (int, float)) and oldest < cutoff_us:
+            window_complete = True
+            break
+    summary = _recent_trade_totals(trades, cutoff_us, resistance)
+    return {
+        "stock_id": sid, "source": "Fugle intraday trades",
+        "session_date": str(payload.get("date") or ""),
+        "is_current_session": payload.get("date") == now.strftime("%Y-%m-%d"),
+        "server_time": now.isoformat(), "window_minutes": window_minutes,
+        "window_complete": window_complete,
+        "available": window_complete and bool(summary["trade_count"]),
+        "fetched_trade_count": len(trades), "resistance": resistance,
+        **summary,
+        "note": "Only complete current-session windows support recent pressure decisions. Price crossing resistance alone does not prove sustained breakout; combine with five-minute closes and volume. Unclassified trades are excluded from inner/outer ratio.",
+    }
+
+
 def intraday_candles(stock_id: str, market: str = "TSE", interval: str = "5",
                      limit: int = 60, resistance: float | None = None) -> dict:
     """Return actual exchange-session bars, without inferring a pattern from a quote snapshot."""
@@ -521,7 +610,7 @@ def _scan_prebreakout_candidates(market: str = "ALL", limit: int = 10) -> dict:
 
 mcp = MCPServer(
     "Taiwan Stock Live Market",
-    instructions="Read-only Taiwan stock market data for portfolio analysis. Use scan_prebreakout_candidates for a free initial watchlist, then verify finalists with get_stock_quote, get_portfolio_quotes, and get_intraday_candles. The scan uses Yahoo Finance free most-actives and day-gainers pools and is not exhaustive; it may miss quiet basing stocks. Scan results are watchlist candidates, never buy signals. Use get_stock_quote for one security, get_portfolio_quotes for multiple securities, and get_intraday_candles to inspect actual 1/5-minute OHLCV and resistance tests. Quotes contain order_flow: inner/outer volume is cumulative traded volume, while best-five bids/asks are current unfilled orders. Compare both with price action and recent bars; do not treat resting orders as trades or infer order flow if unavailable. Always inspect quote_time, source, is_current_session, is_recent_for_intraday_decisions, estimated_data_delay_minutes, and volume validity before describing data as live. Never give current intraday signals from delayed bars. The latest intraday bar may be incomplete; resistance_review counts touching bars, not independent attempts. Technical indicators are based on completed daily history. Do not execute trades.",
+    instructions="Read-only Taiwan stock market data for portfolio analysis. Use scan_prebreakout_candidates for a free initial watchlist, then verify finalists with get_stock_quote, get_portfolio_quotes, and get_intraday_candles. The scan uses Yahoo Finance free most-actives and day-gainers pools and is not exhaustive; it may miss quiet basing stocks. Scan results are watchlist candidates, never buy signals. Quotes contain order_flow: inner/outer volume is cumulative traded volume, while best-five bids/asks are current unfilled orders. Use get_recent_trade_pressure for recent 5/10/15-minute executed inner/outer flow, but only when is_current_session, window_complete, and available are true. Compare with recent bar closes and volume; do not treat resting orders as trades or infer flow if unavailable. Always inspect quote_time, source, is_current_session, is_recent_for_intraday_decisions, estimated_data_delay_minutes, and volume validity before describing data as live. Never give current intraday signals from delayed bars. The latest intraday bar may be incomplete; resistance_review counts touching bars, not independent attempts. Technical indicators are based on completed daily history. Do not execute trades.",
 )
 
 
@@ -542,6 +631,13 @@ def get_intraday_candles(stock_id: str, market: str = "TSE", interval: str = "5"
                          limit: int = 60, resistance: float | None = None) -> dict:
     """Get today's 1/5-minute OHLCV (lots) and optional resistance touches and reclaim checks. Check session date, delay, recency, and last_bar_complete."""
     return intraday_candles(stock_id, market, interval, limit, resistance)
+
+
+@mcp.tool()
+def get_recent_trade_pressure(stock_id: str, window_minutes: int = 15,
+                              resistance: float | None = None) -> dict:
+    """Get recent executed inner/outer volume and traded volume at resistance. Reject truncated windows; pair with 5-minute bars and five-level orders."""
+    return recent_trade_pressure(stock_id, window_minutes, resistance)
 
 
 
