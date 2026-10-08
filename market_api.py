@@ -41,6 +41,30 @@ def finmind_api():
     return api
 
 
+def fugle_order_flow(quote: dict) -> dict:
+    """Keep traded inner/outer volume distinct from resting five-level orders."""
+    total = quote.get("total") or {}
+    at_bid = total.get("tradeVolumeAtBid")
+    at_ask = total.get("tradeVolumeAtAsk")
+    bids = quote.get("bids") or []
+    asks = quote.get("asks") or []
+    valid_trades = at_bid is not None and at_ask is not None
+    inner = safe_float(at_bid) if valid_trades else None
+    outer = safe_float(at_ask) if valid_trades else None
+    classified = inner + outer if valid_trades else 0
+    return {
+        "available": valid_trades,
+        "inner_volume_lots": inner,
+        "outer_volume_lots": outer,
+        "outer_share_percent": round(outer / classified * 100, 2) if classified else None,
+        "best_five_bids": [{"price": safe_float(row.get("price")), "size_lots": safe_float(row.get("size"))} for row in bids[:5]],
+        "best_five_asks": [{"price": safe_float(row.get("price")), "size_lots": safe_float(row.get("size"))} for row in asks[:5]],
+        "bid_five_size_lots": sum(safe_float(row.get("size")) for row in bids[:5]),
+        "ask_five_size_lots": sum(safe_float(row.get("size")) for row in asks[:5]),
+        "note": "內外盤為今日累計成交量；五檔為當下未成交委託，會變動。兩者不能互相替代；開盤撮合等量可能未歸入內外盤。",
+    }
+
+
 def history(stock_id: str, days: int = 240):
     try:
         raw = finmind_api().taiwan_stock_daily(stock_id=stock_id, start_date=(datetime.now(TZ) - timedelta(days=days)).strftime("%Y-%m-%d"))
@@ -67,7 +91,7 @@ def live_quote(stock_id: str, market_type: str = "TSE"):
                 total = d.get("total", {}) or {}
                 px = safe_float(d.get("closePrice")) or safe_float(d.get("referencePrice"))
                 if px > 0:
-                    return {"stock_id": stock_id, "price": px, "open": safe_float(d.get("openPrice")) or px, "high": safe_float(d.get("highPrice")) or px, "low": safe_float(d.get("lowPrice")) or px, "previous_close": safe_float(d.get("previousClose")) or safe_float(d.get("referencePrice")), "volume_lots": safe_float(total.get("tradeVolume")), "quote_time": total.get("time") or d.get("lastUpdated") or d.get("closeTime"), "source": "Fugle", "volume_valid": safe_float(total.get("tradeVolume")) > 0}
+                    return {"stock_id": stock_id, "price": px, "open": safe_float(d.get("openPrice")) or px, "high": safe_float(d.get("highPrice")) or px, "low": safe_float(d.get("lowPrice")) or px, "previous_close": safe_float(d.get("previousClose")) or safe_float(d.get("referencePrice")), "volume_lots": safe_float(total.get("tradeVolume")), "quote_time": total.get("time") or d.get("lastUpdated") or d.get("closeTime"), "source": "Fugle", "volume_valid": safe_float(total.get("tradeVolume")) > 0, "order_flow": fugle_order_flow(d)}
         except Exception:
             pass
     is_otc = any(x in str(market_type).upper() for x in ("OTC", "TWO", "櫃", "上櫃"))
@@ -81,7 +105,7 @@ def live_quote(stock_id: str, market_type: str = "TSE"):
                 px = safe_float(d.get("z")) or safe_float(str(d.get("b", "")).split("_")[0]) or safe_float(d.get("o"))
                 if px > 0:
                     vol = safe_float(d.get("v"))
-                    return {"stock_id": stock_id, "price": px, "open": safe_float(d.get("o")) or px, "high": safe_float(d.get("h")) or px, "low": safe_float(d.get("l")) or px, "previous_close": safe_float(d.get("y")), "volume_lots": vol, "quote_time": f"{d.get('d', '')} {d.get('t', '')}".strip(), "source": f"TWSE-{prefix.upper()}", "volume_valid": vol > 0}
+                    return {"stock_id": stock_id, "price": px, "open": safe_float(d.get("o")) or px, "high": safe_float(d.get("h")) or px, "low": safe_float(d.get("l")) or px, "previous_close": safe_float(d.get("y")), "volume_lots": vol, "quote_time": f"{d.get('d', '')} {d.get('t', '')}".strip(), "source": f"TWSE-{prefix.upper()}", "volume_valid": vol > 0, "order_flow": {"available": False, "reason": "TWSE fallback has no classified inner/outer volume"}}
         except Exception:
             continue
     raise HTTPException(status_code=503, detail=f"No live quote available for {stock_id}")
@@ -497,7 +521,7 @@ def _scan_prebreakout_candidates(market: str = "ALL", limit: int = 10) -> dict:
 
 mcp = MCPServer(
     "Taiwan Stock Live Market",
-    instructions="Read-only Taiwan stock market data for portfolio analysis. Use scan_prebreakout_candidates for a free initial watchlist, then verify finalists with get_stock_quote, get_portfolio_quotes, and get_intraday_candles. The scan uses Yahoo Finance free most-actives and day-gainers pools and is not exhaustive; it may miss quiet basing stocks. Scan results are watchlist candidates, never buy signals. Use get_stock_quote for one security, get_portfolio_quotes for multiple securities, and get_intraday_candles to inspect actual 1/5-minute OHLCV and resistance tests. Always inspect quote_time, source, is_current_session, is_recent_for_intraday_decisions, estimated_data_delay_minutes, and volume validity before describing data as live. Never give current intraday signals from delayed bars. The latest intraday bar may be incomplete; resistance_review counts touching bars, not independent attempts. Technical indicators are based on completed daily history. Do not execute trades.",
+    instructions="Read-only Taiwan stock market data for portfolio analysis. Use scan_prebreakout_candidates for a free initial watchlist, then verify finalists with get_stock_quote, get_portfolio_quotes, and get_intraday_candles. The scan uses Yahoo Finance free most-actives and day-gainers pools and is not exhaustive; it may miss quiet basing stocks. Scan results are watchlist candidates, never buy signals. Use get_stock_quote for one security, get_portfolio_quotes for multiple securities, and get_intraday_candles to inspect actual 1/5-minute OHLCV and resistance tests. Quotes contain order_flow: inner/outer volume is cumulative traded volume, while best-five bids/asks are current unfilled orders. Compare both with price action and recent bars; do not treat resting orders as trades or infer order flow if unavailable. Always inspect quote_time, source, is_current_session, is_recent_for_intraday_decisions, estimated_data_delay_minutes, and volume validity before describing data as live. Never give current intraday signals from delayed bars. The latest intraday bar may be incomplete; resistance_review counts touching bars, not independent attempts. Technical indicators are based on completed daily history. Do not execute trades.",
 )
 
 
