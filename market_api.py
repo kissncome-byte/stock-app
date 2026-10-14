@@ -173,6 +173,61 @@ def portfolio_snapshot(stock_ids: list[str], otc_ids: list[str] | None = None) -
     return {"server_time": datetime.now(TZ).isoformat(), "count": len(result), "data": result}
 
 
+def weekly_candles(stock_id: str, market: str = "TSE", limit: int = 52) -> dict:
+    """Aggregate completed daily bars into completed exchange weeks only."""
+    sid = str(stock_id).strip()
+    if not sid.isdigit() or len(sid) > 10:
+        raise ValueError("Invalid stock id")
+    market = str(market).upper()
+    if market not in ("TSE", "OTC"):
+        raise ValueError("market must be TSE or OTC")
+    if not 1 <= limit <= 104:
+        raise ValueError("limit must be between 1 and 104")
+    df = history(sid, days=900)
+    if df.empty or not {"date", "open", "high", "low", "close", "volume"}.issubset(df.columns):
+        raise HTTPException(status_code=503, detail=f"No completed daily history available for {sid}")
+    df = df.copy()
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    df = df.dropna(subset=["date", "open", "high", "low", "close", "volume"])
+    now = datetime.now(TZ)
+    # Exclude the current week even on Friday; holidays and feed lag make its
+    # final status ambiguous until the following week.
+    this_week = now.date() - timedelta(days=now.weekday())
+    df = df[df["date"].dt.date < this_week]
+    if df.empty:
+        raise HTTPException(status_code=503, detail=f"No completed weekly history available for {sid}")
+    df["week_start"] = df["date"] - pd.to_timedelta(df["date"].dt.weekday, unit="D")
+    grouped = df.groupby("week_start", sort=True).agg(
+        open=("open", "first"), high=("high", "max"), low=("low", "min"),
+        close=("close", "last"), volume=("volume", "sum"),
+        last_trading_date=("date", "max"),
+    ).reset_index()
+    grouped["week_end"] = grouped["week_start"] + pd.Timedelta(days=4)
+    weekly = grouped.rename(columns={"week_end": "date"})
+    technical = indicators(weekly)
+    closes = weekly["close"]
+    for n in (10, 20, 40):
+        technical[f"ma{n}w"] = round(float(closes.tail(n).mean()), 4) if len(closes) >= n else None
+    technical["ma20w_slope_3w_percent"] = (
+        round(float((closes.tail(20).mean() / closes.iloc[-23:-3].mean() - 1) * 100), 2)
+        if len(closes) >= 23 else None
+    )
+    technical["history_last_date"] = grouped.iloc[-1]["last_trading_date"].date().isoformat()
+    bars = [
+        {"week_start": row.week_start.date().isoformat(),
+         "week_end": row.week_end.date().isoformat(),
+         "last_trading_date": row.last_trading_date.date().isoformat(),
+         "open": float(row.open), "high": float(row.high), "low": float(row.low),
+         "close": float(row.close), "volume_lots": round(float(row.volume) / 1000, 3)}
+        for row in grouped.tail(limit).itertuples(index=False)
+    ]
+    return {"stock_id": sid, "market_requested": market, "source": "FinMind completed daily history",
+            "server_time": now.isoformat(), "current_week_excluded": True,
+            "last_completed_week_end": bars[-1]["week_end"], "volume_unit": "lots",
+            "bars": bars, "bar_count": len(bars), "indicators": technical,
+            "note": "週指標只使用已完成的週 K；本週盤中變化請另查即時報價與 1/5 分 K。"}
+
+
 def _recent_trade_totals(trades: list[dict], cutoff_us: int, resistance: float | None = None) -> dict:
     inner = outer = unclassified = above_resistance = 0.0
     recent = []
@@ -627,6 +682,12 @@ def get_portfolio_quotes(stock_ids: list[str], otc_ids: list[str] | None = None)
 
 
 @mcp.tool()
+def get_weekly_candles(stock_id: str, market: str = "TSE", limit: int = 52) -> dict:
+    """Get completed weekly OHLCV (lots), weekly MA/RSI/MACD/KD and support/resistance. Excludes the current incomplete week; market is TSE or OTC."""
+    return weekly_candles(stock_id, market, limit)
+
+
+@mcp.tool()
 def get_intraday_candles(stock_id: str, market: str = "TSE", interval: str = "5",
                          limit: int = 60, resistance: float | None = None) -> dict:
     """Get today's 1/5-minute OHLCV (lots) and optional resistance touches and reclaim checks. Check session date, delay, recency, and last_bar_complete."""
@@ -648,7 +709,7 @@ def scan_prebreakout_candidates(market: str = "ALL", limit: int = 10) -> dict:
 
 @mcp.custom_route("/", methods=["GET"])
 async def root(request: Request):
-    return JSONResponse({"ok": True, "service": "Project Compass Market API", "version": "1.3.0", "mcp": "/mcp"})
+    return JSONResponse({"ok": True, "service": "Project Compass Market API", "version": "1.4.0", "mcp": "/mcp"})
 
 
 @mcp.custom_route("/health", methods=["GET"])
